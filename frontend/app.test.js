@@ -188,6 +188,8 @@ assert.match(markup, /leaflet@1\.9\.4/, 'geo map must load the interactive map r
 assert.match(source, /basemaps\.cartocdn\.com/, 'geo map must use a detailed geographic basemap');
 assert.match(source, /CHECKNETWORK_CONFIG\?\.CARTO_BASE_MAP/, 'geo map must accept CARTO_BASE_MAP runtime configuration');
 assert.match(source, /sessionStorage\.setItem\(CARTO_BASE_MAP_STORAGE_KEY/, 'geo map must accept a per-tab CARTO setting');
+assert.match(source, /separator}key=\$\{encodeURIComponent\(configured\)}/, 'CARTO basemap key must use the key query parameter');
+assert.doesNotMatch(source, /access_token=\$\{encodeURIComponent\(configured\)}/, 'CARTO basemap key must not be sent as a CARTO API access token');
 assert.match(markup, /id="carto-base-map-form"/, 'geo map must expose CARTO configuration input');
 assert.match(markup, /type="password"/, 'CARTO configuration must not be displayed as plain text');
 assert.match(source, /geo-map-fullscreen/, 'geo map must provide a large fullscreen view');

@@ -9,7 +9,7 @@ let showUnresponsiveTopologyNodes = true;
 let geoRouteMap;
 let geoRouteBounds;
 const CARTO_BASE_MAP_STORAGE_KEY = 'checknetwork.carto-base-map.v1';
-const DEFAULT_CARTO_TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const DEFAULT_CARTO_TILE_URL = 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_matter/{z}/{x}/{y}{r}.png';
 let cartoBaseMap = loadCartoBaseMap();
 const IP_LABEL_STORAGE_KEY = 'checknetwork.ip-labels.v1';
 const AGGREGATE_LABEL_STORAGE_KEY = 'checknetwork.aggregate-labels.v1';
@@ -111,13 +111,13 @@ function cartoTileURL(value = cartoBaseMap.value) {
   if (/^https:\/\//i.test(configured)) return configured;
   if (!configured) return DEFAULT_CARTO_TILE_URL;
   const separator = DEFAULT_CARTO_TILE_URL.includes('?') ? '&' : '?';
-  return `${DEFAULT_CARTO_TILE_URL}${separator}access_token=${encodeURIComponent(configured)}`;
+  return `${DEFAULT_CARTO_TILE_URL}${separator}key=${encodeURIComponent(configured)}`;
 }
 
 function renderCartoBaseMapStatus(message = '') {
   const status = document.querySelector('#carto-base-map-status');
   if (!status) return;
-  const sourceText = { environment: '배포 환경의 CARTO_BASE_MAP 적용됨', session: '현재 탭의 CARTO 설정 적용됨', default: 'CARTO 공개 기본 지도 사용 중' };
+  const sourceText = { environment: '배포 환경의 CARTO 베이스맵 키 적용됨', session: '현재 탭의 CARTO 베이스맵 키 적용됨', default: 'CARTO 키 미설정 · 워터마크가 표시될 수 있음' };
   status.textContent = message || sourceText[cartoBaseMap.source];
   status.className = `carto-base-map-status ${cartoBaseMap.source === 'default' ? 'degraded' : 'healthy'}`;
 }

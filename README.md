@@ -23,7 +23,7 @@ curl -X POST http://localhost:8080/api/v1/reports \
 
 공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. 별도 `Geo 경로 지도` 메뉴는 위치가 식별된 홉과 traceroute 관측 순서를 확대·이동 가능한 상세 지도에 표시한다. 경로 전체가 보이도록 자동으로 화면을 맞추며 홉 마커에서 지역·좌표·ASN을 확인하거나 전체 화면으로 검토할 수 있다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치다.
 
-Geo 지도는 `CARTO_BASE_MAP` 환경 변수로 CARTO access token 또는 HTTPS 타일 URL을 받을 수 있다. Docker Compose는 이 값을 웹 런타임 설정으로 전달하며, 미설정 시 지도 화면에서 현재 탭에만 적용되는 값을 직접 입력할 수 있다.
+Geo 지도는 `CARTO_BASE_MAP` 환경 변수로 CARTO Basemaps API key 또는 HTTPS 타일 URL을 받을 수 있다. Docker Compose는 이 값을 웹 런타임 설정으로 전달하며, 미설정 시 지도 화면에서 현재 탭에만 적용되는 값을 직접 입력할 수 있다.
 
 웹 UI는 정적 파일 서버로 별도 실행합니다.
 
