@@ -186,6 +186,8 @@ assert.match(source, /node\.geolocation/);
 assert.match(source, /node\.asn/);
 assert.match(markup, /leaflet@1\.9\.4/, 'geo map must load the interactive map renderer');
 assert.match(source, /basemaps\.cartocdn\.com/, 'geo map must use a detailed geographic basemap');
+assert.match(source, /rastertiles\/dark_all\//, 'geo map must use CARTO raster dark style identifier');
+assert.doesNotMatch(source, /rastertiles\/dark_matter\//, 'geo map must not use the unsupported CARTO raster style identifier');
 assert.match(source, /CHECKNETWORK_CONFIG\?\.CARTO_BASE_MAP/, 'geo map must accept CARTO_BASE_MAP runtime configuration');
 assert.match(source, /sessionStorage\.setItem\(CARTO_BASE_MAP_STORAGE_KEY/, 'geo map must accept a per-tab CARTO setting');
 assert.match(source, /separator}key=\$\{encodeURIComponent\(configured\)}/, 'CARTO basemap key must use the key query parameter');

@@ -9,7 +9,7 @@ let showUnresponsiveTopologyNodes = true;
 let geoRouteMap;
 let geoRouteBounds;
 const CARTO_BASE_MAP_STORAGE_KEY = 'checknetwork.carto-base-map.v1';
-const DEFAULT_CARTO_TILE_URL = 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_matter/{z}/{x}/{y}{r}.png';
+const DEFAULT_CARTO_TILE_URL = 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png';
 let cartoBaseMap = loadCartoBaseMap();
 const IP_LABEL_STORAGE_KEY = 'checknetwork.ip-labels.v1';
 const AGGREGATE_LABEL_STORAGE_KEY = 'checknetwork.aggregate-labels.v1';
