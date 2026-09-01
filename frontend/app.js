@@ -96,6 +96,26 @@ function geoPoint(node, groupIndex, attempt) {
   return { ...node, latitude, longitude, groupIndex, attempt };
 }
 
+function normalizeLongitude(longitude) {
+  return ((longitude + 540) % 360) - 180;
+}
+
+function geoRouteSegment(from, to) {
+  const latitudeDelta = to.latitude - from.latitude;
+  const longitudeDelta = normalizeLongitude(to.longitude - from.longitude);
+  if (Math.abs(latitudeDelta) < 1e-9 && Math.abs(longitudeDelta) < 1e-9) return null;
+  const fromLatitude = from.latitude * Math.PI / 180;
+  const toLatitude = to.latitude * Math.PI / 180;
+  const longitudeRadians = longitudeDelta * Math.PI / 180;
+  const y = Math.sin(longitudeRadians) * Math.cos(toLatitude);
+  const x = Math.cos(fromLatitude) * Math.sin(toLatitude) - Math.sin(fromLatitude) * Math.cos(toLatitude) * Math.cos(longitudeRadians);
+  const compassBearing = Math.atan2(y, x) * 180 / Math.PI;
+  return {
+    midpoint: [(from.latitude + to.latitude) / 2, normalizeLongitude(from.longitude + longitudeDelta / 2)],
+    cssRotation: compassBearing - 90
+  };
+}
+
 function loadCartoBaseMap() {
   const runtimeValue = String(window.CHECKNETWORK_CONFIG?.CARTO_BASE_MAP || '').trim();
   if (runtimeValue) return { value: runtimeValue, source: 'environment' };
@@ -153,6 +173,9 @@ function renderGeoRouteMap(report = currentTopologyReport) {
   }
   const mapElement = document.querySelector('#geo-leaflet-map');
   geoRouteMap = window.L.map(mapElement, { zoomControl: false, minZoom: 2, maxZoom: 18, worldCopyJump: true });
+  geoRouteMap.createPane('geoRouteArrows');
+  geoRouteMap.getPane('geoRouteArrows').style.zIndex = 425;
+  geoRouteMap.getPane('geoRouteArrows').style.pointerEvents = 'none';
   window.L.control.zoom({ position: 'bottomright' }).addTo(geoRouteMap);
   window.L.tileLayer(cartoTileURL(), {
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 20
@@ -160,6 +183,16 @@ function renderGeoRouteMap(report = currentTopologyReport) {
   routes.forEach(route => {
     const coordinates = route.points.map(point => [point.latitude, point.longitude]);
     if (coordinates.length > 1) window.L.polyline(coordinates, { color: route.color, weight: 3, opacity: .78, dashArray: '2 8', lineCap: 'round' }).addTo(geoRouteMap);
+    route.points.slice(0, -1).forEach((point, index) => {
+      const segment = geoRouteSegment(point, route.points[index + 1]);
+      if (!segment) return;
+      const icon = window.L.divIcon({
+        className: 'geo-route-arrow-wrap',
+        html: `<span class="geo-route-arrow" style="--arrow:${route.color};--bearing:${segment.cssRotation.toFixed(2)}deg" aria-hidden="true"></span>`,
+        iconSize: [22, 14], iconAnchor: [11, 7]
+      });
+      window.L.marker(segment.midpoint, { icon, pane: 'geoRouteArrows', interactive: false, keyboard: false }).addTo(geoRouteMap);
+    });
   });
   [...unique.values()].forEach(point => {
     const firstHop = Math.max(1, Number(point.hop) || 1);

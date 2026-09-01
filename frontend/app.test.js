@@ -11,6 +11,10 @@ const navigationSource = source.slice(
   source.indexOf('const APP_VIEWS'),
   source.indexOf("document.querySelector('.main-nav').addEventListener")
 );
+const geoRouteSource = source.slice(
+  source.indexOf('function normalizeLongitude'),
+  source.indexOf('function loadCartoBaseMap')
+);
 
 function topologyAttempts(result) {
   return result.details.attempts;
@@ -22,6 +26,15 @@ function escapeHTML(value) {
 
 eval(rendererSource);
 eval(navigationSource);
+eval(geoRouteSource);
+
+const eastboundSegment = geoRouteSegment({ latitude: 37.5, longitude: 126.9 }, { latitude: 37.5, longitude: 127.1 });
+assert.ok(Math.abs(eastboundSegment.cssRotation) < 1, 'eastbound route arrow must point right');
+assert.deepEqual(eastboundSegment.midpoint.map(value => Number(value.toFixed(2))), [37.5, 127]);
+const datelineSegment = geoRouteSegment({ latitude: 0, longitude: 179 }, { latitude: 0, longitude: -179 });
+assert.ok(Math.abs(datelineSegment.cssRotation) < 1, 'dateline crossing must retain the shortest eastbound direction');
+assert.equal(Math.abs(datelineSegment.midpoint[1]), 180, 'dateline midpoint must remain at the date line');
+assert.equal(geoRouteSegment({ latitude: 1, longitude: 2 }, { latitude: 1, longitude: 2 }), null, 'co-located hops must not create an arrow');
 
 const topology = nodes => ({ reached: true, nodes });
 const results = [
@@ -196,6 +209,9 @@ assert.match(markup, /id="carto-base-map-form"/, 'geo map must expose CARTO conf
 assert.match(markup, /type="password"/, 'CARTO configuration must not be displayed as plain text');
 assert.match(source, /geo-map-fullscreen/, 'geo map must provide a large fullscreen view');
 assert.match(source, /window\.L\.marker/, 'geo hops must render as interactive map markers');
+assert.match(source, /geoRouteSegment/, 'geo route links must calculate hop-to-hop direction');
+assert.match(source, /pane: 'geoRouteArrows'/, 'geo route arrows must use a non-interactive layer below hop markers');
+assert.match(source, /class="geo-route-arrow"/, 'geo route links must render visible directional arrows');
 assert.match(source, /fitBounds/, 'geo map must frame all identified hop locations');
 assert.match(markup, /id="topology-label-form"/, 'topology view must expose inline IP label editing');
 assert.match(source, /function populateTopologyLabelEditor/);
