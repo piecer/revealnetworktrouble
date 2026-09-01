@@ -55,6 +55,22 @@ func TestHTTPSRejectsHTTPURL(t *testing.T) {
 	}
 }
 
+func TestHTTPSRejectsRedirectDowngradeWithStableError(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer plain.Close()
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL, http.StatusFound)
+	}))
+	defer secure.Close()
+
+	result := (HTTPSChecker{Client: secure.Client()}).Check(context.Background(), Target{Kind: KindHTTPS, Address: secure.URL})
+	if result.Status != StatusUnreachable || result.ErrorCode != "tls_downgrade" || result.Message != "HTTPS redirect or response did not preserve TLS" {
+		t.Fatalf("downgrade result: %+v", result)
+	}
+}
+
 func TestServiceCheckerUsesDefaultAndExplicitPorts(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

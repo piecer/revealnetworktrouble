@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestTracerouteBuildsHealthyTopology(t *testing.T) {
@@ -96,5 +97,33 @@ func TestTracerouteRejectsUnsafeAddressAndReportsCommandFailure(t *testing.T) {
 	}
 	if result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.com"}); result.ErrorCode != "traceroute_failed" {
 		t.Fatalf("unexpected command failure: %+v", result)
+	}
+}
+
+func TestTracerouteGivesEveryAttemptAFreshTimeout(t *testing.T) {
+	deadlines := make([]time.Duration, 0, 2)
+	checker := TracerouteChecker{Command: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("attempt context has no deadline")
+		}
+		deadlines = append(deadlines, time.Until(deadline))
+		return []byte("traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  1.0 ms"), nil
+	}}
+	runner := NewRunner(checker)
+	_, err := runner.Run(context.Background(), Request{
+		TimeoutMS: 200,
+		Targets:   []Target{{Kind: KindTraceroute, Address: "example.test", Attempts: 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deadlines) != 2 {
+		t.Fatalf("attempt deadlines=%v", deadlines)
+	}
+	for i, remaining := range deadlines {
+		if remaining < 150*time.Millisecond || remaining > 250*time.Millisecond {
+			t.Fatalf("attempt %d received %s instead of a fresh 200ms timeout", i+1, remaining)
+		}
 	}
 }

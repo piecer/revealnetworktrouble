@@ -28,4 +28,4 @@ Web / Mobile / CLI
 
 ## 보안 기준
 
-기본 API는 로컬 개발을 위해 모든 origin을 허용할 수 있으나 운영에서는 `CHECKNETWORK_ALLOWED_ORIGINS`를 명시한다. 요청 본문은 1 MiB, 대상은 요청당 20개로 제한한다. 공개 인터넷에 노출할 때는 사설·링크 로컬·메타데이터 주소 접근 차단, 인증, rate limit을 게이트웨이 또는 후속 네트워크 정책 계층에 반드시 추가한다.
+기본 API는 `127.0.0.1:8080`의 `trusted-local` 모드이며 사설망 진단을 허용한다. 공개 인터넷에서는 `public` 모드가 API key와 source IP rate limit을 요구하고, DNS 재해석과 HTTP redirect를 포함한 실제 dial 직전에 사설·loopback·link-local·metadata·특수 목적 주소를 차단한다. CORS는 인증으로 취급하지 않는다. 요청 본문은 1 MiB, 대상은 요청당 20개, 동시 report는 기본 4개로 제한한다. 운영에서는 TLS gateway의 인증/rate limit도 중첩한다.

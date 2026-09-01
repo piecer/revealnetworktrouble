@@ -33,3 +33,12 @@
 ```json
 {"error":{"code":"invalid_request","message":"targets must contain 1 to 20 items"}}
 ```
+
+운영 오류 계약:
+
+- `401 unauthorized`: public 모드 Bearer credential 누락/오류
+- `429 rate_limited`: source IP 요청 상한 초과, `Retry-After` 포함
+- `503 server_busy`: 동시 report 실행 상한 초과, `Retry-After` 포함
+- `422 network_policy_blocked`: public 모드에서 허용되지 않은 주소 대역
+
+HTTPS 검사는 redirect 전체가 HTTPS를 유지하고 최종 응답에 검증된 TLS 연결이 있어야 정상이다. downgrade는 결과의 `error_code: "tls_downgrade"`로 보고한다.

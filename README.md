@@ -32,7 +32,7 @@ cd frontend
 python3 -m http.server 3000
 ```
 
-브라우저에서 `http://localhost:3000`을 열고 API 주소에 `http://localhost:8080`을 입력합니다.
+직접 실행 시 브라우저에서 `http://localhost:3000`을 열고 API 주소에 `http://localhost:8080`을 입력합니다. Docker Compose에서는 API 주소가 `http://localhost:9090`입니다.
 
 ## 검증
 

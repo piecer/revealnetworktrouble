@@ -13,8 +13,9 @@ type ServiceChecker struct {
 	ServiceKind Kind
 	DefaultPort int
 	UseTLS      bool
-	Dialer      *net.Dialer
+	Dialer      Dialer
 	TLSConfig   *tls.Config
+	Policy      *NetworkPolicy
 }
 
 func (c ServiceChecker) Kind() Kind { return c.ServiceKind }
@@ -22,8 +23,10 @@ func (c ServiceChecker) Kind() Kind { return c.ServiceKind }
 func (c ServiceChecker) Check(ctx context.Context, target Target) Result {
 	started := time.Now().UTC()
 	address := serviceAddress(target.Address, c.DefaultPort)
-	dialer := c.Dialer
-	if dialer == nil {
+	var dialer Dialer = c.Dialer
+	if c.Policy != nil {
+		dialer = c.Policy
+	} else if dialer == nil {
 		dialer = &net.Dialer{}
 	}
 	var conn net.Conn
@@ -44,11 +47,21 @@ func (c ServiceChecker) Check(ctx context.Context, target Target) Result {
 		if config.ServerName == "" {
 			config.ServerName = host
 		}
-		conn, err = (&tls.Dialer{NetDialer: dialer, Config: config}).DialContext(ctx, "tcp", address)
+		var raw net.Conn
+		raw, err = dialer.DialContext(ctx, "tcp", address)
+		if err == nil {
+			secured := tls.Client(raw, config)
+			err = secured.HandshakeContext(ctx)
+			if err != nil {
+				_ = raw.Close()
+			} else {
+				conn = secured
+			}
+		}
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", address)
 	}
-	result := baseResult(c.ServiceKind, target.Address, started, err)
+	result := networkPolicyResult(c.ServiceKind, target.Address, started, err)
 	if err != nil {
 		return result
 	}

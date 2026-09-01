@@ -18,7 +18,43 @@ const (
 	MaxTargets           = 20
 	DefaultTraceAttempts = 5
 	MaxTraceAttempts     = 10
+	RequestBudgetGrace   = time.Second
+	MaxRequestBudget     = MaxTimeout*MaxTraceAttempts + RequestBudgetGrace
 )
+
+type attemptTimeoutKey struct{}
+
+func RequestBudget(req Request) time.Duration {
+	timeout := DefaultTimeout
+	if req.TimeoutMS != 0 {
+		timeout = time.Duration(req.TimeoutMS) * time.Millisecond
+	}
+	longest := timeout
+	for _, target := range req.Targets {
+		if target.Kind != KindTraceroute {
+			continue
+		}
+		attempts := target.Attempts
+		if attempts == 0 {
+			attempts = DefaultTraceAttempts
+		}
+		if candidate := timeout * time.Duration(attempts); candidate > longest {
+			longest = candidate
+		}
+	}
+	return longest + RequestBudgetGrace
+}
+
+func withAttemptTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	return context.WithValue(ctx, attemptTimeoutKey{}, timeout)
+}
+
+func attemptTimeout(ctx context.Context) time.Duration {
+	if timeout, ok := ctx.Value(attemptTimeoutKey{}).(time.Duration); ok && timeout > 0 {
+		return timeout
+	}
+	return DefaultTimeout
+}
 
 type Checker interface {
 	Kind() Kind
@@ -42,8 +78,7 @@ func (r *Runner) Validate(req Request) error {
 		return fmt.Errorf("targets must contain 1 to %d items", MaxTargets)
 	}
 	if req.TimeoutMS != 0 {
-		t := time.Duration(req.TimeoutMS) * time.Millisecond
-		if t < MinTimeout || t > MaxTimeout {
+		if req.TimeoutMS < int(MinTimeout.Milliseconds()) || req.TimeoutMS > int(MaxTimeout.Milliseconds()) {
 			return fmt.Errorf("timeout_ms must be between %d and %d", MinTimeout.Milliseconds(), MaxTimeout.Milliseconds())
 		}
 	}
@@ -73,21 +108,19 @@ func (r *Runner) Run(ctx context.Context, req Request) (Report, error) {
 		timeout = time.Duration(req.TimeoutMS) * time.Millisecond
 	}
 	started := time.Now().UTC()
+	runCtx, cancelRun := context.WithTimeout(ctx, RequestBudget(req))
+	defer cancelRun()
 	results := make([]Result, len(req.Targets))
 	var wg sync.WaitGroup
 	for i, target := range req.Targets {
 		wg.Add(1)
 		go func(i int, target Target) {
 			defer wg.Done()
-			checkTimeout := timeout
 			if target.Kind == KindTraceroute {
-				attempts := target.Attempts
-				if attempts == 0 {
-					attempts = DefaultTraceAttempts
-				}
-				checkTimeout *= time.Duration(attempts)
+				results[i] = r.checkers[target.Kind].Check(withAttemptTimeout(runCtx, timeout), target)
+				return
 			}
-			checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
+			checkCtx, cancel := context.WithTimeout(runCtx, timeout)
 			defer cancel()
 			results[i] = r.checkers[target.Kind].Check(checkCtx, target)
 		}(i, target)

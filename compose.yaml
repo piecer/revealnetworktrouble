@@ -4,8 +4,9 @@ services:
     environment:
       CHECKNETWORK_ALLOWED_ORIGINS: http://localhost:3000
       CHECKNETWORK_ADDR: :8080
+      CHECKNETWORK_MODE: trusted-local
     ports:
-      - "9090:8080"
+      - "127.0.0.1:9090:8080"
   web:
     build: ./frontend
     environment:

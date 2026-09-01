@@ -48,6 +48,7 @@ func TestRunnerRejectsInvalidRequests(t *testing.T) {
 		{Targets: []Target{{Kind: KindDNS, Address: ""}}},
 		{Targets: []Target{{Kind: KindHTTP, Address: "https://example.test"}}},
 		{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}, TimeoutMS: 50},
+		{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}, TimeoutMS: (1 << 58) + 1000},
 		{Targets: []Target{{Kind: KindDNS, Address: "example.test", Attempts: 2}}},
 		{Targets: []Target{{Kind: KindDNS, Address: "example.test", Attempts: MaxTraceAttempts + 1}}},
 	}
@@ -55,5 +56,23 @@ func TestRunnerRejectsInvalidRequests(t *testing.T) {
 		if err := runner.Validate(req); err == nil {
 			t.Fatalf("Validate(%+v) returned nil", req)
 		}
+	}
+}
+
+func TestMaximumValidRequestBudgetCoversEveryTracerouteAttempt(t *testing.T) {
+	req := Request{
+		TimeoutMS: int(MaxTimeout.Milliseconds()),
+		Targets:   []Target{{Kind: KindTraceroute, Address: "example.test", Attempts: MaxTraceAttempts}},
+	}
+	runner := NewRunner(fakeChecker{kind: KindTraceroute, status: StatusHealthy})
+	if err := runner.Validate(req); err != nil {
+		t.Fatalf("maximum request was rejected: %v", err)
+	}
+	wantMinimum := MaxTimeout * MaxTraceAttempts
+	if got := RequestBudget(req); got < wantMinimum {
+		t.Fatalf("RequestBudget() = %s, want at least %s", got, wantMinimum)
+	}
+	if MaxRequestBudget < RequestBudget(req) || MaxRequestBudget <= 35*time.Second {
+		t.Fatalf("MaxRequestBudget=%s request=%s", MaxRequestBudget, RequestBudget(req))
 	}
 }

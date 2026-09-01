@@ -52,6 +52,7 @@ type traceCommand func(context.Context, string, ...string) ([]byte, error)
 type TracerouteChecker struct {
 	Command traceCommand
 	GeoIP   GeoIPLookup
+	Policy  *NetworkPolicy
 }
 
 func (TracerouteChecker) Kind() Kind { return KindTraceroute }
@@ -81,7 +82,18 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 	reached := 0
 	degraded := false
 	for attemptNumber := 1; attemptNumber <= attemptCount; attemptNumber++ {
-		output, commandErr := run(ctx, "traceroute", "-n", "-q", "1", "-w", "2", "-m", "30", destination)
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, attemptTimeout(ctx))
+		commandDestination := destination
+		if c.Policy != nil {
+			addresses, resolveErr := c.Policy.Resolve(attemptCtx, destination)
+			if resolveErr != nil {
+				cancelAttempt()
+				return networkPolicyResult(KindTraceroute, target.Address, started, resolveErr)
+			}
+			commandDestination = addresses[0].String()
+		}
+		output, commandErr := run(attemptCtx, "traceroute", "-n", "-q", "1", "-w", "2", "-m", "30", commandDestination)
+		cancelAttempt()
 		topology, parseErr := parseTraceroute(string(output), destination)
 		if parseErr != nil {
 			if commandErr != nil {
