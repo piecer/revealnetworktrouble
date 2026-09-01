@@ -35,10 +35,12 @@ const flatMapProjection = {
 const eastboundSegment = geoRouteSegment(flatMapProjection, { latitude: 37.5, longitude: 126.9 }, { latitude: 37.5, longitude: 127.1 });
 assert.ok(Math.abs(eastboundSegment.cssRotation) < 1, 'eastbound route arrow must point right');
 assert.deepEqual(eastboundSegment.midpoint.map(value => Number(value.toFixed(2))), [37.5, 127]);
+assert.equal(eastboundSegment.arrow.length, 7, 'route arrow must be rendered as a vector polygon in the route coordinate system');
 const datelineSegment = geoRouteSegment(flatMapProjection, { latitude: 0, longitude: 179 }, { latitude: 0, longitude: -179 });
 assert.ok(Math.abs(datelineSegment.cssRotation) < 1, 'dateline crossing must retain the shortest eastbound direction');
 assert.equal(Math.abs(datelineSegment.midpoint[1]), 180, 'dateline midpoint must remain at the date line');
 assert.deepEqual(geoRouteCoordinates([{ latitude: 0, longitude: 179 }, { latitude: 0, longitude: -179 }]), [[0, 179], [0, 181]], 'route lines must use the same shortest dateline path as their arrows');
+assert.deepEqual(geoRouteCoordinates([{ latitude: 37, longitude: -121 }, { latitude: 37, longitude: 127 }], 127), [[37, 239], [37, 127]], 'route coordinates must stay in the world copy selected by the map anchor');
 assert.equal(geoRouteSegment(flatMapProjection, { latitude: 1, longitude: 2 }, { latitude: 1, longitude: 2 }), null, 'co-located hops must not create an arrow');
 
 const topology = nodes => ({ reached: true, nodes });
@@ -216,7 +218,8 @@ assert.match(source, /geo-map-fullscreen/, 'geo map must provide a large fullscr
 assert.match(source, /window\.L\.marker/, 'geo hops must render as interactive map markers');
 assert.match(source, /geoRouteSegment/, 'geo route links must calculate hop-to-hop direction');
 assert.match(source, /pane: 'geoRouteArrows'/, 'geo route arrows must use a non-interactive layer below hop markers');
-assert.match(source, /class="geo-route-arrow"/, 'geo route links must render visible directional arrows');
+assert.match(source, /window\.L\.polygon\(segment\.arrow/, 'geo route links must render arrows in the same vector coordinate system as route lines');
+assert.doesNotMatch(source, /worldCopyJump:\s*true/, 'geo map must not independently wrap arrow and route layers into different world copies');
 assert.match(source, /data-geo-route-index/, 'geo route legend must toggle individual route layers');
 assert.match(source, /zoomend moveend/, 'geo route arrows must be recalculated for the current map projection');
 assert.match(source, /fitBounds/, 'geo map must frame all identified hop locations');

@@ -100,9 +100,9 @@ function normalizeLongitude(longitude) {
   return ((longitude + 540) % 360) - 180;
 }
 
-function geoRouteCoordinates(points) {
+function geoRouteCoordinates(points, anchorLongitude = points[0]?.longitude) {
   if (!points.length) return [];
-  const coordinates = [[points[0].latitude, points[0].longitude]];
+  const coordinates = [[points[0].latitude, anchorLongitude + normalizeLongitude(points[0].longitude - anchorLongitude)]];
   points.slice(1).forEach((point, index) => {
     const previous = points[index];
     const previousLongitude = coordinates[index][1];
@@ -118,9 +118,21 @@ function geoRouteSegment(map, from, to) {
   const toPoint = map.latLngToLayerPoint([to.latitude, from.longitude + longitudeDelta]);
   const midpointPoint = { x: (fromPoint.x + toPoint.x) / 2, y: (fromPoint.y + toPoint.y) / 2 };
   const midpoint = map.layerPointToLatLng(midpointPoint);
+  const distance = Math.hypot(toPoint.x - fromPoint.x, toPoint.y - fromPoint.y);
+  const unit = { x: (toPoint.x - fromPoint.x) / distance, y: (toPoint.y - fromPoint.y) / distance };
+  const perpendicular = { x: -unit.y, y: unit.x };
+  const arrowPoint = (forward, sideways) => {
+    const point = {
+      x: midpointPoint.x + unit.x * forward + perpendicular.x * sideways,
+      y: midpointPoint.y + unit.y * forward + perpendicular.y * sideways
+    };
+    const latLng = map.layerPointToLatLng(point);
+    return [latLng.lat, latLng.lng];
+  };
   return {
     midpoint: [midpoint.lat, midpoint.lng],
-    cssRotation: Math.atan2(toPoint.y - fromPoint.y, toPoint.x - fromPoint.x) * 180 / Math.PI
+    cssRotation: Math.atan2(toPoint.y - fromPoint.y, toPoint.x - fromPoint.x) * 180 / Math.PI,
+    arrow: [arrowPoint(11, 0), arrowPoint(2, 6), arrowPoint(2, 2), arrowPoint(-11, 2), arrowPoint(-11, -2), arrowPoint(2, -2), arrowPoint(2, -6)]
   };
 }
 
@@ -180,7 +192,7 @@ function renderGeoRouteMap(report = currentTopologyReport) {
     return;
   }
   const mapElement = document.querySelector('#geo-leaflet-map');
-  geoRouteMap = window.L.map(mapElement, { zoomControl: false, minZoom: 2, maxZoom: 18, worldCopyJump: true });
+  geoRouteMap = window.L.map(mapElement, { zoomControl: false, minZoom: 2, maxZoom: 18 });
   geoRouteMap.createPane('geoRouteArrows');
   geoRouteMap.getPane('geoRouteArrows').style.zIndex = 425;
   geoRouteMap.getPane('geoRouteArrows').style.pointerEvents = 'none';
@@ -189,7 +201,9 @@ function renderGeoRouteMap(report = currentTopologyReport) {
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 20
   }).addTo(geoRouteMap);
   // Leaflet cannot project route arrows until the map has an initial center and zoom.
-  geoRouteBounds = window.L.latLngBounds(points.map(point => [point.latitude, point.longitude]));
+  const anchorLongitude = points[0].longitude;
+  routes.forEach(route => { route.coordinates = geoRouteCoordinates(route.points, anchorLongitude); });
+  geoRouteBounds = window.L.latLngBounds(routes.flatMap(route => route.coordinates));
   if (unique.size === 1) geoRouteMap.setView(geoRouteBounds.getCenter(), 8);
   else geoRouteMap.fitBounds(geoRouteBounds, { padding: [70, 70], maxZoom: 8 });
   const routeLayers = new Map();
@@ -197,30 +211,25 @@ function renderGeoRouteMap(report = currentTopologyReport) {
   groups.filter(group => group.routes.length).forEach(group => routeLayers.set(group.groupIndex, window.L.layerGroup().addTo(geoRouteMap)));
   routes.forEach(route => {
     const layer = routeLayers.get(route.groupIndex);
-    const coordinates = geoRouteCoordinates(route.points);
+    const coordinates = route.coordinates;
     if (coordinates.length > 1) window.L.polyline(coordinates, { color: route.color, weight: 3, opacity: .78, dashArray: '2 8', lineCap: 'round' }).addTo(layer);
     route.points.slice(0, -1).forEach((point, index) => {
-      const nextPoint = route.points[index + 1];
-      const segment = geoRouteSegment(geoRouteMap, point, nextPoint);
+      const [latitude, longitude] = coordinates[index];
+      const [nextLatitude, nextLongitude] = coordinates[index + 1];
+      const displayPoint = { latitude, longitude };
+      const nextPoint = { latitude: nextLatitude, longitude: nextLongitude };
+      const segment = geoRouteSegment(geoRouteMap, displayPoint, nextPoint);
       if (!segment) return;
-      const icon = window.L.divIcon({
-        className: 'geo-route-arrow-wrap',
-        html: `<span class="geo-route-arrow" style="--arrow:${route.color};--bearing:${segment.cssRotation.toFixed(2)}deg" aria-hidden="true"></span>`,
-        iconSize: [22, 14], iconAnchor: [11, 7]
-      });
-      const marker = window.L.marker(segment.midpoint, { icon, pane: 'geoRouteArrows', interactive: false, keyboard: false }).addTo(layer);
-      routeArrows.push({ marker, point, nextPoint, color: route.color });
+      const arrowLayer = window.L.polygon(segment.arrow, {
+        pane: 'geoRouteArrows', interactive: false, color: route.color, fillColor: route.color, fillOpacity: .92, opacity: .92, weight: 1
+      }).addTo(layer);
+      routeArrows.push({ layer: arrowLayer, point: displayPoint, nextPoint });
     });
   });
   const updateRouteArrows = () => routeArrows.forEach(arrow => {
     const segment = geoRouteSegment(geoRouteMap, arrow.point, arrow.nextPoint);
     if (!segment) return;
-    arrow.marker.setLatLng(segment.midpoint);
-    arrow.marker.setIcon(window.L.divIcon({
-      className: 'geo-route-arrow-wrap',
-      html: `<span class="geo-route-arrow" style="--arrow:${arrow.color};--bearing:${segment.cssRotation.toFixed(2)}deg" aria-hidden="true"></span>`,
-      iconSize: [22, 14], iconAnchor: [11, 7]
-    }));
+    arrow.layer.setLatLngs(segment.arrow);
   });
   geoRouteMap.on('zoomend moveend', updateRouteArrows);
   root.querySelectorAll('[data-geo-route-index]').forEach(toggle => toggle.addEventListener('change', () => {
@@ -235,7 +244,8 @@ function renderGeoRouteMap(report = currentTopologyReport) {
     const asn = asnLabel(point.asn) || 'ASN 정보 없음';
     const icon = window.L.divIcon({ className: 'geo-marker-wrap', html: `<span class="geo-marker-pin" style="--marker:${color}"><b>${firstHop}</b></span>`, iconSize: [34, 42], iconAnchor: [17, 38], popupAnchor: [0, -34] });
     const popup = `<article class="geo-popup"><span>HOP ${firstHop} · ${point.observations}회 관측</span><h3>${escapeHTML(labelForAddress(point.address))}</h3><p>${escapeHTML(location)}</p><code>${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}</code><small>${escapeHTML(asn)}</small></article>`;
-    window.L.marker([point.latitude, point.longitude], { icon, title: `${point.address} · ${location}` }).addTo(geoRouteMap).bindPopup(popup, { maxWidth: 300 });
+    const displayLongitude = anchorLongitude + normalizeLongitude(point.longitude - anchorLongitude);
+    window.L.marker([point.latitude, displayLongitude], { icon, title: `${point.address} · ${location}` }).addTo(geoRouteMap).bindPopup(popup, { maxWidth: 300 });
   });
   root.querySelector('.geo-map-fullscreen')?.addEventListener('click', async () => {
     await root.querySelector('.geo-route-map')?.requestFullscreen?.();

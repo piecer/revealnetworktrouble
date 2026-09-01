@@ -54,10 +54,6 @@ textarea:focus { border-color:#6b754e; box-shadow:0 0 0 2px rgba(201,255,70,.08)
 .geo-route-map:fullscreen { display:flex; height:100vh; flex-direction:column; border:0; border-radius:0; }
 .geo-route-map:fullscreen .geo-map-stage { min-height:0; flex:1; height:auto; }
 .geo-marker-wrap { background:transparent; border:0; }
-.geo-route-arrow-wrap { background:transparent; border:0; }
-.geo-route-arrow { position:relative; display:block; width:22px; height:14px; transform:rotate(var(--bearing)); opacity:.92; filter:drop-shadow(0 1px 2px #050705) drop-shadow(0 0 3px color-mix(in srgb,var(--arrow) 65%,transparent)); }
-.geo-route-arrow::before { content:""; position:absolute; top:5px; left:1px; width:14px; height:4px; border-radius:4px 0 0 4px; background:var(--arrow); }
-.geo-route-arrow::after { content:""; position:absolute; top:1px; right:0; border-top:6px solid transparent; border-bottom:6px solid transparent; border-left:9px solid var(--arrow); }
 .geo-marker-pin { display:flex; width:34px; height:34px; align-items:center; justify-content:center; border:2px solid #eef9df; border-radius:50% 50% 50% 12%; transform:rotate(-45deg); background:var(--marker); box-shadow:0 0 0 6px color-mix(in srgb,var(--marker) 18%,transparent),0 8px 24px rgba(0,0,0,.75); color:#071007; }
 .geo-marker-pin b { transform:rotate(45deg); font:800 11px ui-monospace,monospace; }
 .geo-popup { min-width:210px; color:#dfe7dc; font:11px/1.45 ui-monospace,monospace; }
