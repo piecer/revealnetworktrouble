@@ -77,7 +77,7 @@
 - `evidence[]`: result index/kind/address, signal, observed value, provenance
 - `actions[]`: 안전한 확인 단계, 예상 결과, escalation 조건
 - `coverage`: available/missing signals, provider failures, limitations
-- Analyzer input은 checker의 임의 `map[string]any`를 직접 순회하지 않는다. 먼저 `Result`를 stable normalized facts(DNS answers, endpoint, HTTP/TLS facts, typed trace attempts/topology)로 변환하고, malformed/legacy details는 panic 없이 `coverage.missing`으로 보낸다.
+- Analyzer input은 checker의 임의 `map[string]any`를 직접 규칙 입력으로 사용하지 않는다. 먼저 `Result`를 stable normalized facts(DNS answers, endpoint, HTTP/TLS facts, typed trace attempts/topology)로 변환한다. 관측되지 않은 신호는 `coverage.missing`, 존재하지만 형식 또는 의미가 잘못된 신호는 `coverage.limitations`로 분리하고, malformed/legacy details는 panic 없이 처리한다.
 - `Report.Analysis`는 `omitempty` additive field이며 legacy JSON fixture가 byte-semantic contract를 유지하는지 검증한다.
 
 **Vertical slices:**

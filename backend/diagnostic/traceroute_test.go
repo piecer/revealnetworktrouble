@@ -127,3 +127,109 @@ func TestTracerouteGivesEveryAttemptAFreshTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestTracerouteParsablePartialOutputWithCommandErrorsIsNotHealthy(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, code: "timeout"},
+		{name: "cancelled", err: context.Canceled, code: "cancelled"},
+		{name: "nonzero exit", err: errors.New("exit status 1"), code: "traceroute_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := TracerouteChecker{Command: func(context.Context, string, ...string) ([]byte, error) {
+				return []byte("traceroute to example.test (203.0.113.8), 30 hops max\n1  192.0.2.1  1.0 ms\n2  203.0.113.8  5.0 ms"), tt.err
+			}}
+			result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 1})
+			if result.Status == StatusHealthy || result.ErrorCode != tt.code {
+				t.Fatalf("command error became healthy: %+v", result)
+			}
+			attempts, ok := result.Details["attempts"].([]TraceAttempt)
+			if !ok || len(attempts) != 1 || attempts[0].Topology == nil || !attempts[0].Topology.Reached || attempts[0].ErrorCode != tt.code {
+				t.Fatalf("safe partial topology was not retained: %#v", result.Details["attempts"])
+			}
+		})
+	}
+}
+
+func TestTracerouteUnparseableCommandErrorsKeepStableCodes(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, code: "timeout"},
+		{name: "cancelled", err: context.Canceled, code: "cancelled"},
+		{name: "exit", err: errors.New("exit status 1"), code: "traceroute_failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := TracerouteChecker{Command: func(context.Context, string, ...string) ([]byte, error) { return nil, tt.err }}
+			result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 1})
+			if result.Status == StatusHealthy || result.ErrorCode != tt.code {
+				t.Fatalf("result = %+v", result)
+			}
+			attempts := result.Details["attempts"].([]TraceAttempt)
+			if attempts[0].ErrorCode != tt.code {
+				t.Fatalf("attempt = %+v", attempts[0])
+			}
+		})
+	}
+}
+
+func TestTracerouteUsesAttemptContextErrorOverKilledProcessError(t *testing.T) {
+	checker := TracerouteChecker{Command: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, errors.New("signal: killed")
+	}}
+	result := checker.Check(withAttemptTimeout(context.Background(), 10*time.Millisecond), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 1})
+	if result.ErrorCode != "timeout" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestTracerouteSeparatesExecutionFailureAndUnreachedCounters(t *testing.T) {
+	calls := 0
+	checker := TracerouteChecker{Command: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return []byte("traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  1.0 ms"), nil
+		}
+		<-ctx.Done()
+		return nil, errors.New("signal: killed")
+	}}
+	result := checker.Check(withAttemptTimeout(context.Background(), 10*time.Millisecond), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 2})
+	if result.Status != StatusDegraded || result.Details["attempts_reached"] != 1 || result.Details["attempts_unreached"] != 0 || result.Details["attempts_execution_failed"] != 1 || result.Details["attempts_timed_out"] != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestTracerouteMixedExecutionErrorSummaryIsPermutationInvariant(t *testing.T) {
+	run := func(errorsInOrder []error) Result {
+		index := 0
+		checker := TracerouteChecker{Command: func(context.Context, string, ...string) ([]byte, error) {
+			err := errorsInOrder[index]
+			index++
+			return nil, err
+		}}
+		return checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.test", Attempts: len(errorsInOrder)})
+	}
+	first := run([]error{context.Canceled, context.DeadlineExceeded})
+	second := run([]error{context.DeadlineExceeded, context.Canceled})
+	if first.ErrorCode != "traceroute_execution_incomplete" || second.ErrorCode != first.ErrorCode {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+}
+
+func TestTracerouteLatencyIncludesAttemptsAndEnrichment(t *testing.T) {
+	checker := TracerouteChecker{Command: func(context.Context, string, ...string) ([]byte, error) {
+		time.Sleep(20 * time.Millisecond)
+		return []byte("traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  1.0 ms"), nil
+	}}
+	result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 1})
+	if result.LatencyMS < 15 {
+		t.Fatalf("LatencyMS=%d was captured before the attempt completed", result.LatencyMS)
+	}
+}

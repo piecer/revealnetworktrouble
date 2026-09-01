@@ -9,12 +9,16 @@ Web / Mobile / CLI
         |
  Report Service
         |
+ Analysis Interpreter  <- normalized facts / deterministic evidence rules
+        |
  Diagnostic Runner
    |      |       |         |
   DNS    TCP   HTTP(S)   Services   <- 교체 가능한 Checker
 ```
 
 `internal/api`는 HTTP 전송만 담당하고, `diagnostic` 패키지는 프로토콜이나 UI를 알지 못한다. 새 프론트엔드는 API만 사용하며, 새 검사 방식은 `Checker` 인터페이스 구현으로 추가한다.
+
+진단 checker가 만든 `Result`는 먼저 typed normalized facts로 변환한 뒤 결정적 analysis 규칙에 입력된다. 분석은 backend의 자유 형식 오류 message를 파싱하지 않고 stable `error_code`와 구조화된 details만 사용한다. `confidence`는 원인 확률이 아니라 finding 문장을 지지하는 evidence의 직접성이고, 관측 불가·malformed·legacy 데이터는 별도 coverage limitation으로 보존한다.
 
 ## 일관성 기준
 

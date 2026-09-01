@@ -7,7 +7,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+type pipeDialer struct{}
+
+func (pipeDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	client, server := net.Pipe()
+	go func() {
+		<-time.After(time.Second)
+		_ = server.Close()
+	}()
+	return client, nil
+}
 
 func TestTCPCheckerWithLocalListener(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -37,6 +49,15 @@ func TestHTTPCheckerExpectedStatus(t *testing.T) {
 	failed := (HTTPChecker{}).Check(context.Background(), Target{Kind: KindHTTP, Address: server.URL, ExpectedStatus: http.StatusOK})
 	if failed.ErrorCode != "unexpected_status" {
 		t.Fatalf("unexpected mismatch result: %+v", failed)
+	}
+}
+
+func TestHTTPSCheckerReportsStableTLSHandshakeFailure(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	result := (HTTPSChecker{}).Check(context.Background(), Target{Kind: KindHTTPS, Address: server.URL})
+	if result.Status != StatusUnreachable || result.ErrorCode != "tls_handshake_failed" {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
@@ -99,5 +120,33 @@ func TestTLSServiceCheckerReportsHandshake(t *testing.T) {
 	result := (ServiceChecker{ServiceKind: KindIMAPS, DefaultPort: 993, UseTLS: true, TLSConfig: &tls.Config{InsecureSkipVerify: true}}).Check(context.Background(), Target{Kind: KindIMAPS, Address: address})
 	if result.Status != StatusHealthy || result.Details["tls_version"] == nil {
 		t.Fatalf("unexpected TLS service result: %+v", result)
+	}
+}
+
+func TestTLSServiceCheckerPreservesHandshakeTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	result := (ServiceChecker{ServiceKind: KindIMAPS, DefaultPort: 993, UseTLS: true, Dialer: pipeDialer{}}).Check(ctx, Target{Kind: KindIMAPS, Address: "example.test"})
+	if result.ErrorCode != "timeout" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestTLSServiceCheckerReportsStableHandshakeFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_, _ = conn.Write([]byte("not tls"))
+			_ = conn.Close()
+		}
+	}()
+	result := (ServiceChecker{ServiceKind: KindIMAPS, DefaultPort: 993, UseTLS: true}).Check(context.Background(), Target{Kind: KindIMAPS, Address: listener.Addr().String()})
+	if result.Status != StatusUnreachable || result.ErrorCode != "tls_handshake_failed" {
+		t.Fatalf("result = %+v", result)
 	}
 }

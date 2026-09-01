@@ -63,10 +63,18 @@ type Checker interface {
 
 type Runner struct {
 	checkers map[Kind]Checker
+	now      func() time.Time
 }
 
 func NewRunner(checkers ...Checker) *Runner {
-	r := &Runner{checkers: make(map[Kind]Checker, len(checkers))}
+	return NewRunnerWithClock(time.Now, checkers...)
+}
+
+func NewRunnerWithClock(now func() time.Time, checkers ...Checker) *Runner {
+	if now == nil {
+		now = time.Now
+	}
+	r := &Runner{checkers: make(map[Kind]Checker, len(checkers)), now: now}
 	for _, checker := range checkers {
 		r.checkers[checker.Kind()] = checker
 	}
@@ -148,6 +156,8 @@ func (r *Runner) Run(ctx context.Context, req Request) (Report, error) {
 	default:
 		report.Status = StatusUnreachable
 	}
+	analysis := Analyze(report.Results, r.now().UTC())
+	report.Analysis = &analysis
 	return report, nil
 }
 

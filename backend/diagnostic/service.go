@@ -31,6 +31,7 @@ func (c ServiceChecker) Check(ctx context.Context, target Target) Result {
 	}
 	var conn net.Conn
 	var err error
+	tlsHandshakeFailed := false
 	if c.UseTLS {
 		host, _, splitErr := net.SplitHostPort(address)
 		if splitErr != nil {
@@ -52,7 +53,11 @@ func (c ServiceChecker) Check(ctx context.Context, target Target) Result {
 		if err == nil {
 			secured := tls.Client(raw, config)
 			err = secured.HandshakeContext(ctx)
+			if contextErr := ctx.Err(); contextErr != nil {
+				err = contextErr
+			}
 			if err != nil {
+				tlsHandshakeFailed = ctx.Err() == nil
 				_ = raw.Close()
 			} else {
 				conn = secured
@@ -63,6 +68,10 @@ func (c ServiceChecker) Check(ctx context.Context, target Target) Result {
 	}
 	result := networkPolicyResult(c.ServiceKind, target.Address, started, err)
 	if err != nil {
+		if tlsHandshakeFailed {
+			result.ErrorCode = "tls_handshake_failed"
+			result.Message = "TLS handshake failed"
+		}
 		return result
 	}
 	defer conn.Close()

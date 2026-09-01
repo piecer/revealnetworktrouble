@@ -2,10 +2,11 @@ package diagnostic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
-	"os/exec"
+
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,9 +69,7 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 
 	run := c.Command
 	if run == nil {
-		run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			return exec.CommandContext(ctx, name, args...).CombinedOutput()
-		}
+		run = runTraceCommand
 	}
 	result := baseResult(KindTraceroute, target.Address, started, nil)
 	attemptCount := target.Attempts
@@ -80,7 +79,11 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 	attempts := make([]TraceAttempt, 0, attemptCount)
 	var representative *Topology
 	reached := 0
+	unreached := 0
 	degraded := false
+	executionFailed := 0
+	timedOut := 0
+	cancelled := 0
 	for attemptNumber := 1; attemptNumber <= attemptCount; attemptNumber++ {
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, attemptTimeout(ctx))
 		commandDestination := destination
@@ -93,38 +96,71 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 			commandDestination = addresses[0].String()
 		}
 		output, commandErr := run(attemptCtx, "traceroute", "-n", "-q", "1", "-w", "2", "-m", "30", commandDestination)
+		if contextErr := attemptCtx.Err(); contextErr != nil {
+			commandErr = contextErr
+		}
 		cancelAttempt()
 		topology, parseErr := parseTraceroute(string(output), destination)
 		if parseErr != nil {
+			errorCode := "traceroute_failed"
 			if commandErr != nil {
+				errorCode = traceCommandErrorCode(commandErr)
 				parseErr = fmt.Errorf("traceroute 실행 실패: %w", commandErr)
 			}
-			attempts = append(attempts, TraceAttempt{Attempt: attemptNumber, Status: StatusUnreachable, ErrorCode: "traceroute_failed", Message: parseErr.Error()})
+			executionFailed++
+			if errorCode == "timeout" {
+				timedOut++
+			} else if errorCode == "cancelled" {
+				cancelled++
+			}
+			attempts = append(attempts, TraceAttempt{Attempt: attemptNumber, Status: StatusUnreachable, ErrorCode: errorCode, Message: parseErr.Error()})
 			continue
 		}
 
 		attemptStatus := topologyStatus(topology)
 		topologyCopy := topology
-		attempts = append(attempts, TraceAttempt{Attempt: attemptNumber, Status: attemptStatus, Topology: &topologyCopy})
+		attempt := TraceAttempt{Attempt: attemptNumber, Status: attemptStatus, Topology: &topologyCopy}
+		if commandErr != nil {
+			attempt.Status = StatusUnreachable
+			attempt.ErrorCode = traceCommandErrorCode(commandErr)
+			attempt.Message = commandErr.Error()
+			executionFailed++
+			if attempt.ErrorCode == "timeout" {
+				timedOut++
+			} else if attempt.ErrorCode == "cancelled" {
+				cancelled++
+			}
+		}
+		attempts = append(attempts, attempt)
 		if representative == nil || (!representative.Reached && topology.Reached) {
 			representative = &topologyCopy
 		}
-		if topology.Reached {
+		if topology.Reached && commandErr == nil {
 			reached++
+		} else if commandErr == nil {
+			unreached++
 		}
 		if attemptStatus == StatusDegraded {
 			degraded = true
 		}
 	}
+	geoIPProviderFailures := 0
 	if c.GeoIP != nil {
-		enrichTopologies(ctx, attempts, c.GeoIP)
+		geoIPProviderFailures = enrichTopologies(ctx, attempts, c.GeoIP)
 	}
 
 	result.Details = map[string]any{
-		"attempts":         attempts,
-		"attempts_total":   attemptCount,
-		"attempts_reached": reached,
-		"attempts_failed":  attemptCount - reached,
+		"attempts":                  attempts,
+		"attempts_total":            attemptCount,
+		"attempts_reached":          reached,
+		"attempts_failed":           attemptCount - reached,
+		"attempts_unreached":        unreached,
+		"attempts_execution_failed": executionFailed,
+		"attempts_timed_out":        timedOut,
+		"attempts_cancelled":        cancelled,
+	}
+	if geoIPProviderFailures > 0 {
+		result.Details["geoip_provider_failures"] = geoIPProviderFailures
 	}
 	if representative != nil {
 		result.Details["topology"] = *representative
@@ -143,7 +179,10 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 	case StatusDegraded:
 		result.Message = fmt.Sprintf("traceroute %d회 중 %d회 도달했습니다. 경로 분기와 품질을 확인하세요.", attemptCount, reached)
 	default:
-		if representative == nil {
+		if executionFailed > 0 {
+			result.Message = fmt.Sprintf("traceroute %d회 실행이 완료되지 않았습니다.", attemptCount)
+			result.ErrorCode = summarizeTraceExecutionErrors(executionFailed, timedOut, cancelled)
+		} else if representative == nil {
 			result.Message = fmt.Sprintf("traceroute %d회 모두 실행 결과를 해석하지 못했습니다.", attemptCount)
 			result.ErrorCode = "traceroute_failed"
 		} else {
@@ -151,10 +190,37 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 			result.ErrorCode = "destination_unreached"
 		}
 	}
+	result.LatencyMS = time.Since(started).Milliseconds()
 	return result
 }
 
-func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIPLookup) {
+func traceCommandErrorCode(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	default:
+		return "traceroute_failed"
+	}
+}
+
+func summarizeTraceExecutionErrors(total, timedOut, cancelled int) string {
+	switch {
+	case total <= 0:
+		return ""
+	case timedOut == total:
+		return "timeout"
+	case cancelled == total:
+		return "cancelled"
+	case total-timedOut-cancelled == total:
+		return "traceroute_failed"
+	default:
+		return "traceroute_execution_incomplete"
+	}
+}
+
+func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIPLookup) int {
 	type enrichment struct {
 		public   bool
 		metadata IPMetadata
@@ -180,6 +246,7 @@ func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIP
 	}
 	jobs := make(chan net.IP)
 	var mu sync.Mutex
+	providerFailures := 0
 	var workers sync.WaitGroup
 	workerCount := min(6, len(addresses))
 	for range workerCount {
@@ -189,6 +256,9 @@ func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIP
 			for ip := range jobs {
 				metadata, err := lookup.Lookup(ctx, ip)
 				if err != nil {
+					mu.Lock()
+					providerFailures++
+					mu.Unlock()
 					continue
 				}
 				mu.Lock()
@@ -221,6 +291,7 @@ func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIP
 			node.ASN = known.metadata.ASN
 		}
 	}
+	return providerFailures
 }
 
 func traceDestination(address string) (string, error) {

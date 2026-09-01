@@ -108,3 +108,13 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 - 목적지 선택 상태가 summary와 topology에 일관되게 반영된다.
 - 무응답 노드 toggle을 해제하면 무응답 노드는 제거되고 전후 응답 노드가 연결된다.
 - 기존 노드 병합, 네트워크 집계, 무응답 홉 접기, drag 및 전체 화면 기능이 회귀하지 않는다.
+
+## 10. 설명 가능한 자동 분석
+
+- 모든 신규 report는 측정 결과와 별도로 `analysis`를 제공한다.
+- 분석은 안정적인 `error_code`와 구조화된 details만 사용하며 backend 오류 message 문구를 규칙 입력으로 파싱하지 않는다.
+- 원인 후보, 관측 evidence, 안전한 다음 action, confidence와 coverage를 분리한다.
+- confidence는 확률이 아니며 현재 telemetry가 관측하지 못한 packet loss, bandwidth, Wi-Fi/VPN/proxy 상태나 실제 root cause를 단정하지 않는다.
+- malformed 또는 이전 버전 details는 panic이나 낙관적 정상 판정 대신 limitation과 `inconclusive`로 표현한다.
+- finding/evidence/action ID와 정렬은 같은 report 입력에 대해 결정적이어야 한다.
+- TLS downgrade/만료, DNS 실패, endpoint 연결 실패, HTTP status 불일치, 실행 timeout/cancel, traceroute 도달·부분 도달·producer 분류 경로 저하를 회귀 fixture로 검증한다.

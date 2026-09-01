@@ -13,7 +13,11 @@ type fakeChecker struct {
 
 func (f fakeChecker) Kind() Kind { return f.kind }
 func (f fakeChecker) Check(_ context.Context, target Target) Result {
-	return Result{Kind: f.kind, Address: target.Address, Status: f.status, StartedAt: time.Now().UTC()}
+	result := Result{Kind: f.kind, Address: target.Address, Status: f.status, StartedAt: time.Now().UTC()}
+	if f.status == StatusUnreachable {
+		result.ErrorCode = "connection_failed"
+	}
+	return result
 }
 
 func TestRunnerAggregatesStatusAndPreservesOrder(t *testing.T) {
@@ -74,5 +78,17 @@ func TestMaximumValidRequestBudgetCoversEveryTracerouteAttempt(t *testing.T) {
 	}
 	if MaxRequestBudget < RequestBudget(req) || MaxRequestBudget <= 35*time.Second {
 		t.Fatalf("MaxRequestBudget=%s request=%s", MaxRequestBudget, RequestBudget(req))
+	}
+}
+
+func TestRunnerAddsAnalysisUsingInjectedClock(t *testing.T) {
+	clock := func() time.Time { return analysisTestNow }
+	runner := NewRunnerWithClock(clock, fakeChecker{kind: KindDNS, status: StatusUnreachable})
+	report, err := runner.Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "missing.example"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Analysis == nil || report.Analysis.Verdict != VerdictAttention || len(report.Analysis.Findings) != 1 || report.Analysis.Findings[0].Code != FindingDNSResolutionFailed {
+		t.Fatalf("report analysis = %+v", report.Analysis)
 	}
 }

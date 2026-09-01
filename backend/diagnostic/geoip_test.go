@@ -121,6 +121,12 @@ type recordingGeoIP struct {
 	calls map[string]int
 }
 
+type failingGeoIP struct{}
+
+func (failingGeoIP) Lookup(context.Context, net.IP) (IPMetadata, error) {
+	return IPMetadata{}, errors.New("provider unavailable")
+}
+
 func (r *recordingGeoIP) Lookup(_ context.Context, ip net.IP) (IPMetadata, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -148,6 +154,13 @@ func TestEnrichTopologiesOnlyLooksUpUniquePublicIPs(t *testing.T) {
 	node := attempts[0].Topology.Nodes[1]
 	if !node.PublicIP || node.Geolocation == nil || node.Geolocation.City != "Seoul" || node.ASN == nil || node.ASN.Number != 15169 {
 		t.Fatalf("node = %+v", node)
+	}
+}
+
+func TestEnrichTopologiesCountsProviderFailures(t *testing.T) {
+	attempts := []TraceAttempt{{Topology: &Topology{Nodes: []TopologyNode{{Address: "8.8.8.8"}, {Address: "1.1.1.1"}}}}}
+	if failures := enrichTopologies(context.Background(), attempts, failingGeoIP{}); failures != 2 {
+		t.Fatalf("failures = %d", failures)
 	}
 }
 

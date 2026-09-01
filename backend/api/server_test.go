@@ -73,7 +73,7 @@ func TestCreateReport(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var report diagnostic.Report
-	if err := json.NewDecoder(rec.Body).Decode(&report); err != nil || report.Status != diagnostic.StatusHealthy {
+	if err := json.NewDecoder(rec.Body).Decode(&report); err != nil || report.Status != diagnostic.StatusHealthy || report.Analysis == nil {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
 }

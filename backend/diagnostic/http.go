@@ -2,6 +2,7 @@ package diagnostic
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
@@ -96,6 +97,9 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		if errors.Is(err, errTLSDowngrade) {
 			result.ErrorCode = "tls_downgrade"
 			result.Message = "HTTPS redirect or response did not preserve TLS"
+		} else if kind == KindHTTPS && isTLSHandshakeError(err) {
+			result.ErrorCode = "tls_handshake_failed"
+			result.Message = "TLS handshake failed"
 		}
 		return result
 	}
@@ -132,4 +136,10 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		result.Message = "service returned an unexpected HTTP status"
 	}
 	return result
+}
+
+func isTLSHandshakeError(err error) bool {
+	var verificationError *tls.CertificateVerificationError
+	var recordHeaderError tls.RecordHeaderError
+	return errors.As(err, &verificationError) || errors.As(err, &recordHeaderError)
 }
