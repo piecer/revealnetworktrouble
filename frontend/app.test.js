@@ -220,6 +220,11 @@ assert.match(source, /class="geo-route-arrow"/, 'geo route links must render vis
 assert.match(source, /data-geo-route-index/, 'geo route legend must toggle individual route layers');
 assert.match(source, /zoomend moveend/, 'geo route arrows must be recalculated for the current map projection');
 assert.match(source, /fitBounds/, 'geo map must frame all identified hop locations');
+const geoMapRenderer = source.slice(source.indexOf('function renderGeoRouteMap'), source.indexOf('function renderTopologyTargetFilter'));
+assert.ok(
+  geoMapRenderer.indexOf('geoRouteMap.setView') < geoMapRenderer.indexOf('geoRouteSegment(geoRouteMap'),
+  'geo map must set its center and zoom before projecting route arrows'
+);
 assert.match(markup, /id="topology-label-form"/, 'topology view must expose inline IP label editing');
 assert.match(source, /function populateTopologyLabelEditor/);
 assert.match(source, /\.map-node\[data-label-address\]/);

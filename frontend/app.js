@@ -188,6 +188,10 @@ function renderGeoRouteMap(report = currentTopologyReport) {
   window.L.tileLayer(cartoTileURL(), {
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 20
   }).addTo(geoRouteMap);
+  // Leaflet cannot project route arrows until the map has an initial center and zoom.
+  geoRouteBounds = window.L.latLngBounds(points.map(point => [point.latitude, point.longitude]));
+  if (unique.size === 1) geoRouteMap.setView(geoRouteBounds.getCenter(), 8);
+  else geoRouteMap.fitBounds(geoRouteBounds, { padding: [70, 70], maxZoom: 8 });
   const routeLayers = new Map();
   const routeArrows = [];
   groups.filter(group => group.routes.length).forEach(group => routeLayers.set(group.groupIndex, window.L.layerGroup().addTo(geoRouteMap)));
@@ -233,9 +237,6 @@ function renderGeoRouteMap(report = currentTopologyReport) {
     const popup = `<article class="geo-popup"><span>HOP ${firstHop} · ${point.observations}회 관측</span><h3>${escapeHTML(labelForAddress(point.address))}</h3><p>${escapeHTML(location)}</p><code>${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}</code><small>${escapeHTML(asn)}</small></article>`;
     window.L.marker([point.latitude, point.longitude], { icon, title: `${point.address} · ${location}` }).addTo(geoRouteMap).bindPopup(popup, { maxWidth: 300 });
   });
-  geoRouteBounds = window.L.latLngBounds(points.map(point => [point.latitude, point.longitude]));
-  if (unique.size === 1) geoRouteMap.setView(geoRouteBounds.getCenter(), 8);
-  else geoRouteMap.fitBounds(geoRouteBounds, { padding: [70, 70], maxZoom: 8 });
   root.querySelector('.geo-map-fullscreen')?.addEventListener('click', async () => {
     await root.querySelector('.geo-route-map')?.requestFullscreen?.();
     setTimeout(() => geoRouteMap?.invalidateSize(), 80);
