@@ -100,19 +100,27 @@ function normalizeLongitude(longitude) {
   return ((longitude + 540) % 360) - 180;
 }
 
-function geoRouteSegment(from, to) {
-  const latitudeDelta = to.latitude - from.latitude;
+function geoRouteCoordinates(points) {
+  if (!points.length) return [];
+  const coordinates = [[points[0].latitude, points[0].longitude]];
+  points.slice(1).forEach((point, index) => {
+    const previous = points[index];
+    const previousLongitude = coordinates[index][1];
+    coordinates.push([point.latitude, previousLongitude + normalizeLongitude(point.longitude - previous.longitude)]);
+  });
+  return coordinates;
+}
+
+function geoRouteSegment(map, from, to) {
   const longitudeDelta = normalizeLongitude(to.longitude - from.longitude);
-  if (Math.abs(latitudeDelta) < 1e-9 && Math.abs(longitudeDelta) < 1e-9) return null;
-  const fromLatitude = from.latitude * Math.PI / 180;
-  const toLatitude = to.latitude * Math.PI / 180;
-  const longitudeRadians = longitudeDelta * Math.PI / 180;
-  const y = Math.sin(longitudeRadians) * Math.cos(toLatitude);
-  const x = Math.cos(fromLatitude) * Math.sin(toLatitude) - Math.sin(fromLatitude) * Math.cos(toLatitude) * Math.cos(longitudeRadians);
-  const compassBearing = Math.atan2(y, x) * 180 / Math.PI;
+  if (Math.abs(to.latitude - from.latitude) < 1e-9 && Math.abs(longitudeDelta) < 1e-9) return null;
+  const fromPoint = map.latLngToLayerPoint([from.latitude, from.longitude]);
+  const toPoint = map.latLngToLayerPoint([to.latitude, from.longitude + longitudeDelta]);
+  const midpointPoint = { x: (fromPoint.x + toPoint.x) / 2, y: (fromPoint.y + toPoint.y) / 2 };
+  const midpoint = map.layerPointToLatLng(midpointPoint);
   return {
-    midpoint: [(from.latitude + to.latitude) / 2, normalizeLongitude(from.longitude + longitudeDelta / 2)],
-    cssRotation: compassBearing - 90
+    midpoint: [midpoint.lat, midpoint.lng],
+    cssRotation: Math.atan2(toPoint.y - fromPoint.y, toPoint.x - fromPoint.x) * 180 / Math.PI
   };
 }
 
@@ -163,7 +171,7 @@ function renderGeoRouteMap(report = currentTopologyReport) {
     observed.groups.add(point.groupIndex); observed.observations++;
     unique.set(key, observed);
   });
-  const legend = groups.filter(group => group.routes.length).map(group => `<li><i style="--route:${group.color}"></i>${escapeHTML(group.address)}</li>`).join('');
+  const legend = groups.filter(group => group.routes.length).map(group => `<li><label style="--route:${group.color}"><input type="checkbox" data-geo-route-index="${group.groupIndex}" checked><i></i><span>${escapeHTML(group.address)}</span></label></li>`).join('');
   const locations = [...unique.values()].map(point => `<li><span class="geo-location-dot" style="--dot:${routeColor([...point.groups][0])}"></span><div><strong>${escapeHTML(labelForAddress(point.address))}</strong><span>${escapeHTML(locationLabel(point.geolocation) || '지역명 없음')}</span></div><code>${point.latitude.toFixed(4)}, ${point.longitude.toFixed(4)}</code></li>`).join('');
   root.innerHTML = `<section class="geo-route-map"><div class="geo-map-toolbar"><div class="geo-map-summary"><strong>${unique.size}</strong><span>개 공인 IP 위치</span><strong>${routes.length}</strong><span>개 관측 경로</span></div><div class="geo-map-actions"><span>스크롤 확대 · 드래그 이동</span><button class="secondary geo-map-fullscreen" type="button">전체 화면</button></div></div><div id="geo-leaflet-map" class="geo-map-stage" role="application" aria-label="확대와 이동이 가능한 공인 IP traceroute 지도"></div><div class="geo-map-detail"><div><p>TRACE ROUTES</p><ul class="geo-route-legend">${legend}</ul></div><div><p>LOCATED HOPS</p><ol class="geo-location-list">${locations}</ol></div></div><p class="geo-map-notice">GeoIP 좌표는 네트워크 사업자 등록 정보 기반의 추정치입니다. 정확한 장비 소재지나 실제 패킷 이동 경로를 보장하지 않습니다.</p></section>`;
 
@@ -180,20 +188,42 @@ function renderGeoRouteMap(report = currentTopologyReport) {
   window.L.tileLayer(cartoTileURL(), {
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 20
   }).addTo(geoRouteMap);
+  const routeLayers = new Map();
+  const routeArrows = [];
+  groups.filter(group => group.routes.length).forEach(group => routeLayers.set(group.groupIndex, window.L.layerGroup().addTo(geoRouteMap)));
   routes.forEach(route => {
-    const coordinates = route.points.map(point => [point.latitude, point.longitude]);
-    if (coordinates.length > 1) window.L.polyline(coordinates, { color: route.color, weight: 3, opacity: .78, dashArray: '2 8', lineCap: 'round' }).addTo(geoRouteMap);
+    const layer = routeLayers.get(route.groupIndex);
+    const coordinates = geoRouteCoordinates(route.points);
+    if (coordinates.length > 1) window.L.polyline(coordinates, { color: route.color, weight: 3, opacity: .78, dashArray: '2 8', lineCap: 'round' }).addTo(layer);
     route.points.slice(0, -1).forEach((point, index) => {
-      const segment = geoRouteSegment(point, route.points[index + 1]);
+      const nextPoint = route.points[index + 1];
+      const segment = geoRouteSegment(geoRouteMap, point, nextPoint);
       if (!segment) return;
       const icon = window.L.divIcon({
         className: 'geo-route-arrow-wrap',
         html: `<span class="geo-route-arrow" style="--arrow:${route.color};--bearing:${segment.cssRotation.toFixed(2)}deg" aria-hidden="true"></span>`,
         iconSize: [22, 14], iconAnchor: [11, 7]
       });
-      window.L.marker(segment.midpoint, { icon, pane: 'geoRouteArrows', interactive: false, keyboard: false }).addTo(geoRouteMap);
+      const marker = window.L.marker(segment.midpoint, { icon, pane: 'geoRouteArrows', interactive: false, keyboard: false }).addTo(layer);
+      routeArrows.push({ marker, point, nextPoint, color: route.color });
     });
   });
+  const updateRouteArrows = () => routeArrows.forEach(arrow => {
+    const segment = geoRouteSegment(geoRouteMap, arrow.point, arrow.nextPoint);
+    if (!segment) return;
+    arrow.marker.setLatLng(segment.midpoint);
+    arrow.marker.setIcon(window.L.divIcon({
+      className: 'geo-route-arrow-wrap',
+      html: `<span class="geo-route-arrow" style="--arrow:${arrow.color};--bearing:${segment.cssRotation.toFixed(2)}deg" aria-hidden="true"></span>`,
+      iconSize: [22, 14], iconAnchor: [11, 7]
+    }));
+  });
+  geoRouteMap.on('zoomend moveend', updateRouteArrows);
+  root.querySelectorAll('[data-geo-route-index]').forEach(toggle => toggle.addEventListener('change', () => {
+    const layer = routeLayers.get(Number(toggle.dataset.geoRouteIndex));
+    if (!layer) return;
+    if (toggle.checked) layer.addTo(geoRouteMap); else layer.remove();
+  }));
   [...unique.values()].forEach(point => {
     const firstHop = Math.max(1, Number(point.hop) || 1);
     const color = routeColor([...point.groups][0]);
