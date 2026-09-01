@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CheckNetwork</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">NETWORK TROUBLESHOOTING COMPANY</p>
+      <h1>네트워크 상태를<br><span>한 번에 확인하세요.</span></h1>
+      <p class="lead">DNS, TCP 연결, 웹 서비스를 동시에 점검하고 공유 가능한 결과를 만듭니다.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="setup-title">
+      <div class="section-head">
+        <div><p class="step">01 / SETUP</p><h2 id="setup-title">검사 설정</h2></div>
+        <label class="api-field">API 주소<input id="api-url" value="http://localhost:8080" inputmode="url"></label>
+      </div>
+      <form id="check-form">
+        <div id="targets" class="targets"></div>
+        <div class="actions">
+          <button class="secondary" id="add-target" type="button">+ 검사 추가</button>
+          <label>제한 시간<input id="timeout" type="number" min="100" max="30000" value="5000"><span>ms</span></label>
+          <button class="primary" id="run" type="submit">진단 시작 <span>→</span></button>
+        </div>
+      </form>
+    </section>
+
+    <section id="report-section" class="panel report-panel" hidden aria-live="polite">
+      <div class="section-head">
+        <div><p class="step">02 / REPORT</p><h2>진단 결과</h2></div>
+        <button class="secondary" id="download" type="button">JSON 저장</button>
+      </div>
+      <div id="summary" class="summary"></div>
+      <div id="results" class="results"></div>
+    </section>
+    <p id="error" class="error" role="alert" hidden></p>
+  </main>
+  <template id="target-template">
+    <div class="target-row">
+      <select aria-label="검사 종류"><option value="dns">DNS</option><option value="tcp">TCP</option><option value="http">HTTP</option></select>
+      <input aria-label="검사 주소" placeholder="example.com" required>
+      <input class="expected" aria-label="기대 HTTP 상태" type="number" min="100" max="599" value="200" hidden>
+      <button class="icon-button" type="button" aria-label="검사 삭제">×</button>
+    </div>
+  </template>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,14 @@
+services:
+  api:
+    build: .
+    environment:
+      CHECKNETWORK_ALLOWED_ORIGINS: http://localhost:3000
+    ports:
+      - "8080:8080"
+  web:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
