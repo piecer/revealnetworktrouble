@@ -4,20 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>CheckNetwork</title>
+  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="preconnect" href="https://basemaps.cartocdn.com">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="styles.css">
+  <script src="runtime-config.js"></script>
 </head>
 <body>
   <main class="shell">
+    <nav class="main-nav" aria-label="주요 메뉴">
+      <a href="#diagnostics" data-view-link="diagnostics">통합 진단</a>
+      <a href="#topology" data-view-link="topology">경로 토폴로지</a>
+      <a href="#geo-map" data-view-link="geo-map">Geo 경로 지도</a>
+      <a href="#ip-labels" data-view-link="ip-labels">IP 라벨</a>
+    </nav>
     <header>
       <p class="eyebrow">NETWORK TROUBLESHOOTING COMPANY</p>
       <h1>네트워크 상태를<br><span>한 번에 확인하세요.</span></h1>
-      <p class="lead">DNS, TCP 연결, 웹 서비스를 동시에 점검하고 공유 가능한 결과를 만듭니다.</p>
+      <p class="lead">DNS, TCP, HTTPS, 경로 추적과 주요 서비스 연결을 동시에 점검하고 공유 가능한 결과를 만듭니다.</p>
     </header>
 
+    <div id="diagnostics-view" class="app-view" data-view="diagnostics">
     <section class="panel" aria-labelledby="setup-title">
       <div class="section-head">
         <div><p class="step">01 / SETUP</p><h2 id="setup-title">검사 설정</h2></div>
-        <label class="api-field">API 주소<input id="api-url" value="http://localhost:8080" inputmode="url"></label>
+        <label class="api-field">API 주소<input id="api-url" value="http://localhost:9090" inputmode="url"></label>
       </div>
       <form id="check-form">
         <div id="targets" class="targets"></div>
@@ -38,16 +49,96 @@
       <div id="results" class="results"></div>
     </section>
     <p id="error" class="error" role="alert" hidden></p>
+    </div>
+
+    <div id="topology-view" class="app-view" data-view="topology" hidden>
+      <section class="panel topology-setup" aria-labelledby="topology-setup-title">
+        <div class="section-head">
+          <div><p class="step">01 / PATH CHECK</p><h2 id="topology-setup-title">경로 토폴로지 점검</h2></div>
+          <label class="api-field">API 주소<input id="topology-api-url" value="http://localhost:9090" inputmode="url"></label>
+        </div>
+        <p class="section-description">각 목적지의 traceroute를 기본 5회 반복해 일시적인 실패와 대체 경로까지 수집하고, 공통 경로와 분기 지점을 하나의 토폴로지 맵에서 비교합니다.</p>
+        <form id="topology-form">
+          <div class="topology-inputs">
+            <label class="topology-target-field">점검 대상 <span class="field-hint">한 줄에 하나 · 최대 20개</span><textarea id="topology-targets" rows="4" placeholder="example.com&#10;1.1.1.1&#10;google.com" required>example.com
+1.1.1.1
+google.com</textarea></label>
+            <label>제한 시간<input id="topology-timeout" type="number" min="100" max="30000" value="5000"><span>ms</span></label>
+            <label>반복 횟수<input id="topology-attempts" type="number" min="1" max="10" value="5"><span>회</span></label>
+            <button class="primary" id="run-topology" type="submit">토폴로지 분석 <span>→</span></button>
+          </div>
+        </form>
+      </section>
+      <section id="topology-report-section" class="panel report-panel" hidden aria-live="polite">
+        <div class="section-head">
+          <div><p class="step">02 / MULTI-PATH MAP</p><h2>통합 토폴로지 분석</h2></div>
+          <button class="secondary" id="download-topology" type="button">JSON 저장</button>
+        </div>
+        <div id="topology-result-summary" class="summary"></div>
+        <div id="topology-target-filter" class="topology-target-filter" aria-label="표시할 trace 목적지 선택"></div>
+        <form id="topology-label-form" class="topology-label-form" aria-labelledby="topology-label-title">
+          <input id="topology-label-kind" type="hidden" value="ip"><input id="topology-label-key" type="hidden">
+          <div class="topology-label-intro"><strong id="topology-label-title">노드 라벨 바로 편집</strong><span>맵의 개별 IP 또는 N 집계 노드를 누르면 대상을 자동으로 불러옵니다.</span></div>
+          <label><span id="topology-label-subject-label">IP 주소</span><input id="topology-label-address" placeholder="노드를 선택하거나 IP 입력" required></label>
+          <label>표시 라벨<input id="topology-label-name" placeholder="서울 IDC 경계 라우터" required></label>
+          <label>설명<input id="topology-label-note" placeholder="선택 입력"></label>
+          <div class="topology-label-actions"><button class="primary" type="submit">저장</button><button class="mapping-delete" id="topology-label-delete" type="button" hidden>삭제</button></div>
+          <p id="topology-label-message" class="mapping-message" role="status"></p>
+        </form>
+        <div id="topology-result" class="standalone-topology"></div>
+      </section>
+      <p id="topology-error" class="error" role="alert" hidden></p>
+    </div>
+
+    <div id="geo-map-view" class="app-view" data-view="geo-map" hidden>
+      <section class="panel report-panel" aria-labelledby="geo-map-title">
+        <div class="section-head">
+          <div><p class="step">GEO / ROUTE MAP</p><h2 id="geo-map-title">공인 IP 경로 지도</h2></div>
+          <a class="secondary button-link" href="#topology">경로 분석 실행</a>
+        </div>
+        <p class="section-description">최근 경로 분석에서 위치가 식별된 공인 IP를 확대·이동 가능한 상세 지도에 표시합니다. 번호는 traceroute 관측 순서이며 마커를 선택하면 좌표, 지역과 ASN 정보를 확인할 수 있습니다.</p>
+        <form id="carto-base-map-form" class="carto-base-map-form" autocomplete="off">
+          <div><strong>CARTO 베이스맵 설정</strong><span id="carto-base-map-status" class="carto-base-map-status" role="status"></span></div>
+          <label>Access token 또는 HTTPS 타일 URL<input id="carto-base-map-input" type="password" placeholder="CARTO_BASE_MAP" spellcheck="false" autocomplete="new-password"></label>
+          <button class="secondary" type="submit">현재 탭에 적용</button>
+          <p>배포 환경의 <code>CARTO_BASE_MAP</code>이 우선 적용됩니다. 직접 입력한 값은 현재 브라우저 탭에만 보관되며 빈 값으로 적용하면 초기화됩니다.</p>
+        </form>
+        <div id="geo-map-result" class="geo-map-result" aria-live="polite"><p class="empty-topology">먼저 경로 토폴로지 메뉴에서 분석을 실행해 주세요.</p></div>
+      </section>
+    </div>
+
+    <div id="ip-labels-view" class="app-view" data-view="ip-labels" hidden>
+      <section class="panel" aria-labelledby="ip-label-title">
+        <div class="section-head">
+          <div><p class="step">IP / LABEL MAPPING</p><h2 id="ip-label-title">IP 라벨 관리</h2></div>
+          <label class="import-button secondary">CSV / JSON 가져오기<input id="ip-label-import" type="file" accept=".csv,.json,text/csv,application/json" hidden></label>
+        </div>
+        <p class="section-description">IP에 장비명이나 지점명을 연결하면 토폴로지에서 라벨을 먼저 표시합니다. 데이터는 이 브라우저에 저장되며 CSV는 <code>ip,label,note</code>, JSON은 배열 또는 IP-라벨 객체 형식을 지원합니다.</p>
+        <form id="ip-label-form" class="ip-label-form">
+          <label>IP 주소<input id="ip-label-address" placeholder="203.0.113.10" required></label>
+          <label>표시 라벨<input id="ip-label-name" placeholder="서울 IDC 경계 라우터" required></label>
+          <label>설명<input id="ip-label-note" placeholder="선택 입력"></label>
+          <button class="primary" type="submit">매핑 추가</button>
+        </form>
+        <p id="ip-label-message" class="mapping-message" role="status"></p>
+        <div class="mapping-table-wrap">
+          <table class="mapping-table">
+            <thead><tr><th>IP 주소</th><th>표시 라벨</th><th>설명</th><th>관리</th></tr></thead>
+            <tbody id="ip-label-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   </main>
   <template id="target-template">
     <div class="target-row">
-      <select aria-label="검사 종류"><option value="dns">DNS</option><option value="tcp">TCP</option><option value="http">HTTP</option></select>
+      <select aria-label="검사 종류"><option value="dns">DNS</option><option value="tcp">TCP</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="traceroute">Traceroute</option><option value="ssh">SSH</option><option value="smtp">SMTP</option><option value="submission">메일 제출</option><option value="smtps">SMTPS</option><option value="imap">IMAP</option><option value="imaps">IMAPS</option><option value="pop3">POP3</option><option value="pop3s">POP3S</option></select>
       <input aria-label="검사 주소" placeholder="example.com" required>
       <input class="expected" aria-label="기대 HTTP 상태" type="number" min="100" max="599" value="200" hidden>
       <button class="icon-button" type="button" aria-label="검사 삭제">×</button>
     </div>
   </template>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>
-

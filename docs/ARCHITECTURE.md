@@ -10,8 +10,8 @@ Web / Mobile / CLI
  Report Service
         |
  Diagnostic Runner
-   |      |      |
-  DNS    TCP    HTTP   <- 교체 가능한 Checker
+   |      |       |         |
+  DNS    TCP   HTTP(S)   Services   <- 교체 가능한 Checker
 ```
 
 `internal/api`는 HTTP 전송만 담당하고, `diagnostic` 패키지는 프로토콜이나 UI를 알지 못한다. 새 프론트엔드는 API만 사용하며, 새 검사 방식은 `Checker` 인터페이스 구현으로 추가한다.
@@ -29,4 +29,3 @@ Web / Mobile / CLI
 ## 보안 기준
 
 기본 API는 로컬 개발을 위해 모든 origin을 허용할 수 있으나 운영에서는 `CHECKNETWORK_ALLOWED_ORIGINS`를 명시한다. 요청 본문은 1 MiB, 대상은 요청당 20개로 제한한다. 공개 인터넷에 노출할 때는 사설·링크 로컬·메타데이터 주소 접근 차단, 인증, rate limit을 게이트웨이 또는 후속 네트워크 정책 계층에 반드시 추가한다.
-

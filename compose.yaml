@@ -3,12 +3,14 @@ services:
     build: .
     environment:
       CHECKNETWORK_ALLOWED_ORIGINS: http://localhost:3000
+      CHECKNETWORK_ADDR: :8080
     ports:
-      - "8080:8080"
+      - "9090:8080"
   web:
     build: ./frontend
+    environment:
+      CARTO_BASE_MAP: ${CARTO_BASE_MAP:-}
     ports:
       - "3000:80"
     depends_on:
       - api
-

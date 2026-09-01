@@ -42,8 +42,8 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) checks(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kinds":  []string{"dns", "tcp", "http"},
-		"limits": map[string]any{"max_targets": diagnostic.MaxTargets, "timeout_ms_min": diagnostic.MinTimeout.Milliseconds(), "timeout_ms_max": diagnostic.MaxTimeout.Milliseconds()},
+		"kinds":  []string{"dns", "tcp", "http", "https", "traceroute", "ssh", "smtp", "submission", "smtps", "imap", "imaps", "pop3", "pop3s"},
+		"limits": map[string]any{"max_targets": diagnostic.MaxTargets, "max_traceroute_attempts": diagnostic.MaxTraceAttempts, "timeout_ms_min": diagnostic.MinTimeout.Milliseconds(), "timeout_ms_max": diagnostic.MaxTimeout.Milliseconds()},
 	})
 }
 

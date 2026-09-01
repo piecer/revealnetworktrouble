@@ -5,6 +5,7 @@
 ```bash
 go test ./...
 go test -race ./...
+node frontend/app.test.js
 go vet ./...
 ```
 
@@ -13,7 +14,7 @@ go vet ./...
 - 단위: 입력 정규화, 상태 집계, checker 오류 분류
 - 통합: `httptest` 기반 API 요청·응답과 CORS
 - 회귀: 성공과 일부 실패가 섞인 리포트, 잘못된 JSON, 과도한 대상 수
+- 프런트엔드 회귀: 동일 노드 재합류, 네트워크 계층 집계, 연속 무응답 홉 folding
 - 수동: Windows/macOS/Linux에서 실행, 브라우저 UI, 실제 DNS/TCP/HTTPS 대상
 
 외부 인터넷 대상은 수동·스테이징 시험에서만 사용한다. 자동 테스트는 로컬 리스너와 테스트 서버로 결정적이어야 한다.
-

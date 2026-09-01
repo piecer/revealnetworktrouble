@@ -3,8 +3,3 @@
 *.test
 .DS_Store
 coverage.out
-android/.gradle/
-android/local.properties
-android/**/build/
-*.apk
-*.aab

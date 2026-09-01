@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	DefaultTimeout = 5 * time.Second
-	MinTimeout     = 100 * time.Millisecond
-	MaxTimeout     = 30 * time.Second
-	MaxTargets     = 20
+	DefaultTimeout       = 5 * time.Second
+	MinTimeout           = 100 * time.Millisecond
+	MaxTimeout           = 30 * time.Second
+	MaxTargets           = 20
+	DefaultTraceAttempts = 5
+	MaxTraceAttempts     = 10
 )
 
 type Checker interface {
@@ -52,6 +54,12 @@ func (r *Runner) Validate(req Request) error {
 		if _, ok := r.checkers[target.Kind]; !ok {
 			return fmt.Errorf("targets[%d].kind is unsupported", i)
 		}
+		if target.Attempts < 0 || target.Attempts > MaxTraceAttempts {
+			return fmt.Errorf("targets[%d].attempts must be between 1 and %d", i, MaxTraceAttempts)
+		}
+		if target.Attempts != 0 && target.Kind != KindTraceroute {
+			return fmt.Errorf("targets[%d].attempts is only supported for traceroute", i)
+		}
 	}
 	return nil
 }
@@ -71,7 +79,15 @@ func (r *Runner) Run(ctx context.Context, req Request) (Report, error) {
 		wg.Add(1)
 		go func(i int, target Target) {
 			defer wg.Done()
-			checkCtx, cancel := context.WithTimeout(ctx, timeout)
+			checkTimeout := timeout
+			if target.Kind == KindTraceroute {
+				attempts := target.Attempts
+				if attempts == 0 {
+					attempts = DefaultTraceAttempts
+				}
+				checkTimeout *= time.Duration(attempts)
+			}
+			checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 			defer cancel()
 			results[i] = r.checkers[target.Kind].Check(checkCtx, target)
 		}(i, target)
@@ -79,6 +95,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (Report, error) {
 	wg.Wait()
 
 	report := Report{ID: newID(), StartedAt: started, DurationMS: time.Since(started).Milliseconds(), Results: results}
+	hasDegraded := false
 	for _, result := range results {
 		report.Summary.Total++
 		if result.Status == StatusHealthy {
@@ -86,14 +103,17 @@ func (r *Runner) Run(ctx context.Context, req Request) (Report, error) {
 		} else {
 			report.Summary.Failed++
 		}
+		if result.Status == StatusDegraded {
+			hasDegraded = true
+		}
 	}
 	switch {
 	case report.Summary.Failed == 0:
 		report.Status = StatusHealthy
-	case report.Summary.Passed == 0:
-		report.Status = StatusUnreachable
-	default:
+	case hasDegraded || report.Summary.Passed > 0:
 		report.Status = StatusDegraded
+	default:
+		report.Status = StatusUnreachable
 	}
 	return report, nil
 }

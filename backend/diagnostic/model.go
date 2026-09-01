@@ -5,9 +5,19 @@ import "time"
 type Kind string
 
 const (
-	KindDNS  Kind = "dns"
-	KindTCP  Kind = "tcp"
-	KindHTTP Kind = "http"
+	KindDNS        Kind = "dns"
+	KindTCP        Kind = "tcp"
+	KindHTTP       Kind = "http"
+	KindHTTPS      Kind = "https"
+	KindSSH        Kind = "ssh"
+	KindSMTP       Kind = "smtp"
+	KindSubmission Kind = "submission"
+	KindSMTPS      Kind = "smtps"
+	KindIMAP       Kind = "imap"
+	KindIMAPS      Kind = "imaps"
+	KindPOP3       Kind = "pop3"
+	KindPOP3S      Kind = "pop3s"
+	KindTraceroute Kind = "traceroute"
 )
 
 type Status string
@@ -22,6 +32,7 @@ type Target struct {
 	Kind           Kind   `json:"kind"`
 	Address        string `json:"address"`
 	ExpectedStatus int    `json:"expected_status,omitempty"`
+	Attempts       int    `json:"attempts,omitempty"`
 }
 
 type Request struct {

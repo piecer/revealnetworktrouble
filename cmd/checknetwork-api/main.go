@@ -19,7 +19,10 @@ var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	runner := diagnostic.NewRunner(diagnostic.DNSChecker{}, diagnostic.TCPChecker{}, diagnostic.HTTPChecker{})
+	geoIP := diagnostic.NewIPWhoIsLookup(nil, envOr("CHECKNETWORK_GEOIP_URL", "https://ipwho.is/"))
+	checkers := []diagnostic.Checker{diagnostic.DNSChecker{}, diagnostic.TCPChecker{}, diagnostic.HTTPChecker{}, diagnostic.HTTPSChecker{}, diagnostic.TracerouteChecker{GeoIP: geoIP}}
+	checkers = append(checkers, diagnostic.DefaultServiceCheckers()...)
+	runner := diagnostic.NewRunner(checkers...)
 	allowedOrigins := splitCSV(envOr("CHECKNETWORK_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"))
 	handler := api.NewServer(runner, logger, version, allowedOrigins)
 	server := &http.Server{

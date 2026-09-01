@@ -35,6 +35,32 @@ func TestHealthAndCORS(t *testing.T) {
 	}
 }
 
+func TestChecksAdvertisesHTTPSAndServices(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/checks", nil)
+	rec := httptest.NewRecorder()
+	newTestHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Kinds []string `json:"kinds"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"https": false, "traceroute": false, "ssh": false, "imaps": false}
+	for _, kind := range response.Kinds {
+		if _, ok := want[kind]; ok {
+			want[kind] = true
+		}
+	}
+	for kind, found := range want {
+		if !found {
+			t.Errorf("%q missing from kinds: %v", kind, response.Kinds)
+		}
+	}
+}
+
 func TestCreateReport(t *testing.T) {
 	body := bytes.NewBufferString(`{"targets":[{"kind":"dns","address":"example.test"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reports", body)

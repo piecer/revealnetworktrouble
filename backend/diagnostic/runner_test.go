@@ -30,6 +30,17 @@ func TestRunnerAggregatesStatusAndPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestRunnerKeepsAllDegradedResultsDegraded(t *testing.T) {
+	runner := NewRunner(fakeChecker{kind: KindDNS, status: StatusDegraded})
+	report, err := runner.Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if report.Status != StatusDegraded || report.Summary.Failed != 1 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+}
+
 func TestRunnerRejectsInvalidRequests(t *testing.T) {
 	runner := NewRunner(fakeChecker{kind: KindDNS, status: StatusHealthy})
 	tests := []Request{
@@ -37,6 +48,8 @@ func TestRunnerRejectsInvalidRequests(t *testing.T) {
 		{Targets: []Target{{Kind: KindDNS, Address: ""}}},
 		{Targets: []Target{{Kind: KindHTTP, Address: "https://example.test"}}},
 		{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}, TimeoutMS: 50},
+		{Targets: []Target{{Kind: KindDNS, Address: "example.test", Attempts: 2}}},
+		{Targets: []Target{{Kind: KindDNS, Address: "example.test", Attempts: MaxTraceAttempts + 1}}},
 	}
 	for _, req := range tests {
 		if err := runner.Validate(req); err == nil {
