@@ -1,4 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">CheckNetwork</string>
+    <string name="hero_eyebrow">NETWORK DIAGNOSTICS</string>
+    <string name="hero_title">Find where the connection breaks.</string>
+    <string name="hero_body">Run bounded network checks and create a safe, human-readable report.</string>
+    <string name="api_base_label">API server</string><string name="api_base_hint">HTTPS API origin, for example https://api.example.com</string>
+    <string name="auth_enabled">Use bearer authentication</string><string name="bearer_label">Bearer credential</string><string name="bearer_hint">Credential kept in memory only</string>
+    <string name="targets_label">Check targets</string><string name="add_target">Add check target</string>
+    <string name="timeout_label">Timeout in milliseconds</string><string name="timeout_hint">100 to 30000</string>
+    <string name="run">Start diagnostics</string><string name="running">Diagnostics running</string><string name="cancel">Cancel</string><string name="retry">Retry</string>
+    <string name="share">Share human summary</string><string name="share_subject">CheckNetwork diagnostic summary</string><string name="share_chooser">Share diagnostic summary</string>
+    <string name="share_raw">Share raw JSON</string><string name="raw_share_chooser">Share raw diagnostic JSON</string>
+    <string name="raw_share_warning_title">Share potentially sensitive raw JSON?</string>
+    <string name="raw_share_privacy_warning">Raw JSON may contain sensitive target addresses and diagnostic details. Share it only with a trusted recipient.</string>
+    <string name="raw_share_warning_message">This raw JSON may contain sensitive target addresses and diagnostic details. After confirmation, Android’s share sheet controls which recipient receives it, and recipient apps may retain a copy.</string>
+    <string name="raw_share_confirm">Share raw JSON</string><string name="raw_share_cancel">Cancel</string>
+    <string name="raw_share_error">The raw report could not be prepared safely.</string>
+    <string name="raw_results_show">Show raw results</string><string name="raw_results_hide">Hide raw results</string>
+    <string name="raw_results_collapsed">Collapsed</string><string name="raw_results_expanded">Expanded</string>
+    <string name="state_idle">Idle</string><string name="state_loading">Loading diagnostics</string><string name="state_ready">Report ready</string><string name="state_error">Diagnostics failed</string><string name="state_cancelled">Diagnostics cancelled</string>
+    <string name="address_label">Address</string><string name="expected_status_label">Expected HTTP status</string><string name="expected_status_hint">100 to 599</string>
+    <string name="attempts_label">Traceroute attempts</string><string name="attempts_hint">1 to 10</string><string name="remove_target">Remove target %1$d, %2$s, %3$s</string><string name="remove_symbol">×</string>
+    <string name="error_api_base">Enter an allowed API origin. Release builds require HTTPS.</string><string name="error_timeout">Timeout must be 100 to 30000 ms.</string><string name="error_target">Check target %1$d: %2$s</string>
+    <string name="error_network">Could not reach the API. Check the address and network.</string><string name="error_timeout_request">The diagnostics request timed out.</string><string name="error_response_large">The report was too large to display safely.</string><string name="error_invalid_response">The server returned an invalid report.</string>
+    <string name="error_401">Authentication was rejected. Check the bearer credential.</string><string name="error_422">The targets or options were rejected. Review the highlighted inputs.</string><string name="error_429">Too many requests. Wait before retrying.</string><string name="error_503">The diagnostics service is temporarily busy.</string><string name="error_500">The server could not complete diagnostics.</string><string name="error_http">The server rejected the diagnostics request (HTTP %1$d).</string>
+    <string name="retry_after">Try again after %1$s.</string>
+    <string name="report_heading">Report</string>
+    <string name="kind_dns">DNS lookup</string><string name="kind_tcp">TCP connection</string><string name="kind_http">HTTP request</string><string name="kind_https">HTTPS request</string><string name="kind_ssh">SSH service</string><string name="kind_smtp">SMTP service</string><string name="kind_submission">Mail submission</string><string name="kind_smtps">Secure SMTP</string><string name="kind_imap">IMAP service</string><string name="kind_imaps">Secure IMAP</string><string name="kind_pop3">POP3 service</string><string name="kind_pop3s">Secure POP3</string><string name="kind_traceroute">Traceroute path</string>
+    <string name="hint_dns">Hostname, for example example.com</string><string name="hint_tcp">Host:port, for example 1.1.1.1:443</string><string name="hint_http">http:// URL</string><string name="hint_https">https:// URL</string><string name="hint_service">Host or host:port</string><string name="hint_trace">Hostname or IP address</string>
 </resources>

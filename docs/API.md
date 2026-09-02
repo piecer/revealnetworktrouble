@@ -46,6 +46,8 @@ Compact transport copy에서는 traceroute `details.attempts`와 대표 `details
 - `analysis.actions[]`: 안전한 확인 단계, 기대 결과와 escalation 조건
 - `analysis.coverage`: 사용한 signal, 누락 signal, provider failure와 limitation
 
+분석 배열은 bounded consumer 계약이다. 현재 `Analyze`가 유효한 최대 20 results에서 만들 수 있는 상한은 HTTPS result당 certificate와 HTTP status finding을 함께 내는 경우의 findings/evidence/actions 각 40개다. coverage의 현재 계산 상한은 `available` 80, `missing` 60, `provider_failures` 20, `limitations` 100개다. Web과 Android는 향후 무제한 증가를 수용하지 않고 findings/evidence/actions를 각각 64개, coverage의 각 목록을 각각 128개에서 제한하며 초과 report 전체를 거부한다. 기존 8 MiB transport, 1,000,000 string characters, 32,768 containers 누적 제한도 그대로 적용된다.
+
 `coverage.missing`은 입력에 존재하지 않아 관측할 수 없었던 신호만 포함한다. 키가 존재하지만 타입·범위·상호 관계가 잘못된 신호는 missing으로 중복 표시하지 않고 `coverage.limitations`의 `malformed_details`로 구분한다.
 
 `confidence`는 원인 확률이 아니라 현재 문장에 대한 관측 근거의 직접성(`direct`, `corroborated`, `limited`)이다. `inconclusive`는 취소, 미지원/malformed details 또는 관측 부족으로 상태를 확정할 수 없음을 뜻한다. traceroute 분석은 도달 여부, 실행 실패, 성공 경로 간 변동, producer가 분류한 경로 저하만 설명하며 packet loss나 root cause를 단정하지 않는다. TLS transport가 연결된 뒤 handshake가 실패하면 `tls_handshake_failed`로 구분한다.

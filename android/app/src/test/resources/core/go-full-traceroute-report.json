@@ -1,0 +1,45 @@
+{
+  "id": "go-full-traceroute-report",
+  "status": "healthy",
+  "started_at": "2026-09-02T00:00:00Z",
+  "duration_ms": 12,
+  "summary": {"total": 1, "passed": 1, "failed": 0},
+  "results": [
+    {
+      "kind": "traceroute",
+      "address": "example.test",
+      "status": "healthy",
+      "latency_ms": 12,
+      "started_at": "2026-09-02T00:00:00Z",
+      "details": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "healthy",
+            "topology": {
+              "reached": true,
+              "nodes": [
+                {"id": "hop-1", "hop": 1, "address": "192.0.2.1", "latency_ms": 12, "status": "healthy", "public_ip": true}
+              ],
+              "links": []
+            }
+          }
+        ],
+        "topology": {
+          "reached": true,
+          "nodes": [
+            {"id": "hop-1", "hop": 1, "address": "192.0.2.1", "latency_ms": 12, "status": "healthy", "public_ip": true}
+          ],
+          "links": []
+        },
+        "attempts_total": 1,
+        "attempts_reached": 1,
+        "attempts_failed": 0,
+        "attempts_unreached": 0,
+        "attempts_execution_failed": 0,
+        "attempts_timed_out": 0,
+        "attempts_cancelled": 0
+      }
+    }
+  ]
+}

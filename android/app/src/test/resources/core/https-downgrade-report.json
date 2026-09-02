@@ -1,0 +1,32 @@
+{
+  "id": "fixture-report-id",
+  "status": "unreachable",
+  "started_at": "2026-09-02T00:00:00Z",
+  "duration_ms": 14,
+  "summary": {"total": 1, "passed": 0, "failed": 1},
+  "results": [{
+    "kind": "https",
+    "address": "secure.example.test",
+    "status": "unreachable",
+    "latency_ms": 12,
+    "started_at": "2026-09-02T00:00:00Z",
+    "error_code": "tls_downgrade"
+  }],
+  "analysis": {
+    "verdict": "attention",
+    "findings": [{
+      "id": "f-1", "code": "tls_downgrade", "severity": "critical", "category": "security",
+      "title": "HTTPS redirected to HTTP", "summary": "The verified route did not remain on TLS.",
+      "confidence": "direct", "evidence_ids": ["e-1"], "action_ids": ["a-1"]
+    }],
+    "evidence": [{
+      "id": "e-1", "result_index": 0, "kind": "https", "address": "secure.example.test",
+      "signal": "error_code", "observed": "tls_downgrade", "expected": "validated TLS", "provenance": "result"
+    }],
+    "actions": [{
+      "id": "a-1", "title": "Inspect redirect policy", "step": "Confirm each redirect keeps HTTPS.",
+      "expected_result": "Every redirect uses HTTPS.", "escalation_condition": "A redirect still uses HTTP."
+    }],
+    "coverage": {"available": ["error_code"], "missing": [], "provider_failures": [], "limitations": []}
+  }
+}

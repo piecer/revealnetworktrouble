@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import {
   REQUEST_PHASES, ERROR_KINDS, SCHEMA_LIMITS,
@@ -69,6 +70,39 @@ test('exports fixed lifecycle, error, and schema contracts', () => {
   assert.deepEqual(ERROR_KINDS, ['http', 'network', 'timeout', 'invalid-response', 'cancelled']);
   assert.equal(SCHEMA_LIMITS.results, 20);
   assert.equal(SCHEMA_LIMITS.string, 4096);
+  assert.equal(SCHEMA_LIMITS.findings, 64);
+  assert.equal(SCHEMA_LIMITS.evidence, 64);
+  assert.equal(SCHEMA_LIMITS.actions, 64);
+  assert.equal(SCHEMA_LIMITS.coverage, 128);
+});
+
+test('normalizes the serialized maximum Go analysis and rejects every cap plus one', async () => {
+  const serialized = await readFile(new URL('../testdata/maximum-analysis-report.json', import.meta.url), 'utf8');
+  const maximum = normalizeReport(JSON.parse(serialized));
+  assert.deepEqual([
+    maximum.analysis.findings.length,
+    maximum.analysis.evidence.length,
+    maximum.analysis.actions.length,
+    maximum.analysis.coverage.available.length
+  ], [40, 40, 40, 80]);
+
+  const padded = (name, limit) => {
+    const report = JSON.parse(serialized);
+    const values = report.analysis[name];
+    while (values.length <= limit) values.push({ ...structuredClone(values[0]), id: `${name}-${values.length}` });
+    return report;
+  };
+  for (const [name, limit] of [['findings', SCHEMA_LIMITS.findings], ['evidence', SCHEMA_LIMITS.evidence], ['actions', SCHEMA_LIMITS.actions]]) {
+    assert.throws(() => normalizeReport(padded(name, limit)), new RegExp(`analysis\\.${name}.*limit`, 'i'));
+  }
+
+  const issue = { code: 'missing_details', result_index: 0, kind: 'https', signal: 'fixture', reason: 'fixture coverage issue' };
+  for (const name of ['available', 'missing', 'provider_failures', 'limitations']) {
+    const report = JSON.parse(serialized);
+    const values = report.analysis.coverage[name];
+    while (values.length <= SCHEMA_LIMITS.coverage) values.push(name === 'available' || name === 'missing' ? `fixture-${values.length}` : structuredClone(issue));
+    assert.throws(() => normalizeReport(report), new RegExp(`coverage\\.${name}.*limit`, 'i'));
+  }
 });
 
 test('request lane replaces owners and rejects stale completion/finalize', () => {

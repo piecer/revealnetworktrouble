@@ -11,23 +11,32 @@
     </style>
     <style name="Input">
         <item name="android:layout_width">match_parent</item>
-        <item name="android:layout_height">52dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
         <item name="android:backgroundTint">@color/line</item>
         <item name="android:textColor">@color/ink</item>
         <item name="android:textColorHint">@color/muted</item>
         <item name="android:paddingStart">12dp</item>
         <item name="android:paddingEnd">12dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
     </style>
     <style name="PrimaryButton" parent="android:style/Widget.Material.Button">
         <item name="android:layout_width">match_parent</item>
-        <item name="android:layout_height">56dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
         <item name="android:backgroundTint">@color/lime</item>
         <item name="android:textColor">@color/background</item>
         <item name="android:textStyle">bold</item>
     </style>
     <style name="SecondaryButton" parent="android:style/Widget.Material.Button">
         <item name="android:layout_width">match_parent</item>
-        <item name="android:layout_height">48dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
         <item name="android:backgroundTint">@color/panel</item>
         <item name="android:textColor">@color/ink</item>
     </style>

@@ -3,6 +3,9 @@ package diagnostic
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +13,94 @@ import (
 )
 
 var analysisTestNow = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+const (
+	maxConsumerAnalysisItems  = 64
+	maxConsumerCoverageItems = 128
+)
+
+func maximumAnalysisReport() Report {
+	results := make([]Result, 20)
+	for index := range results {
+		results[index] = Result{
+			Kind: KindHTTPS, Address: fmt.Sprintf("https://max-%02d.example.test", index),
+			Status: StatusUnreachable, ErrorCode: "unexpected_status", StartedAt: analysisTestNow,
+			Details: map[string]any{
+				"status_code": 503, "expected_status": 200, "tls_version": "TLS 1.3",
+				"certificate_expires_at": analysisTestNow.Add(-time.Hour),
+			},
+		}
+	}
+	analysis := Analyze(results, analysisTestNow)
+	return Report{
+		ID: "maximum-analysis-report", Status: StatusUnreachable, StartedAt: analysisTestNow,
+		DurationMS: 20, Summary: Summary{Total: 20, Failed: 20}, Results: results, Analysis: &analysis,
+	}
+}
+
+func TestMaximumAnalysisProducerCardinalityFitsBoundedConsumers(t *testing.T) {
+	report := maximumAnalysisReport()
+	analysis := report.Analysis
+	if got := [4]int{len(analysis.Findings), len(analysis.Evidence), len(analysis.Actions), len(analysis.Coverage.Available)}; got != [4]int{40, 40, 40, 80} {
+		t.Fatalf("maximum producer cardinality = %v, want [40 40 40 80]", got)
+	}
+	for name, count := range map[string]int{
+		"findings": len(analysis.Findings), "evidence": len(analysis.Evidence), "actions": len(analysis.Actions),
+	} {
+		if count > maxConsumerAnalysisItems {
+			t.Fatalf("%s producer cardinality %d exceeds consumer cap %d", name, count, maxConsumerAnalysisItems)
+		}
+	}
+	for name, count := range map[string]int{
+		"coverage.available": len(analysis.Coverage.Available), "coverage.missing": len(analysis.Coverage.Missing),
+		"coverage.provider_failures": len(analysis.Coverage.ProviderFailures), "coverage.limitations": len(analysis.Coverage.Limitations),
+	} {
+		if count > maxConsumerCoverageItems {
+			t.Fatalf("%s producer cardinality %d exceeds consumer cap %d", name, count, maxConsumerCoverageItems)
+		}
+	}
+
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePath := filepath.Join("..", "..", "testdata", "maximum-analysis-report.json")
+	if os.Getenv("UPDATE_ANALYSIS_FIXTURE") == "1" {
+		if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil { t.Fatal(err) }
+		if err := os.WriteFile(fixturePath, append(encoded, '\n'), 0o644); err != nil { t.Fatal(err) }
+	}
+	want, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(append(encoded, '\n'), want) {
+		t.Fatal("maximum analysis fixture is stale; regenerate with UPDATE_ANALYSIS_FIXTURE=1 go test ./backend/diagnostic -run TestMaximumAnalysisProducerCardinalityFitsBoundedConsumers")
+	}
+}
+
+func TestAnalysisCoveragePerResultMaximaFitBoundedConsumers(t *testing.T) {
+	maxMissing := Analyze([]Result{{Kind: KindHTTPS, Status: StatusHealthy, Details: map[string]any{}}}, analysisTestNow)
+	if got := len(maxMissing.Coverage.Missing); got != 3 {
+		t.Fatalf("maximum missing signals per result = %d, want 3", got)
+	}
+	maxLimitations := Analyze([]Result{{Kind: KindHTTPS, Status: StatusHealthy, ErrorCode: "unexpected_status", Details: map[string]any{}}}, analysisTestNow)
+	if got := len(maxLimitations.Coverage.Limitations); got != 5 {
+		t.Fatalf("maximum limitations per result = %d, want 5", got)
+	}
+	maxProviderFailures := Analyze([]Result{{Kind: KindTraceroute, Status: StatusHealthy, Details: map[string]any{
+		"attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0,
+		"attempts_unreached": 0, "attempts_execution_failed": 0, "attempts_timed_out": 0, "attempts_cancelled": 0,
+		"geoip_provider_failures": 1,
+	}}}, analysisTestNow)
+	if len(maxProviderFailures.Coverage.ProviderFailures) != 1 {
+		t.Fatalf("maximum provider failures per result = %d, want 1", len(maxProviderFailures.Coverage.ProviderFailures))
+	}
+	for name, perResult := range map[string]int{"missing": 3, "limitations": 5, "provider_failures": 1} {
+		if total := perResult * 20; total > maxConsumerCoverageItems {
+			t.Fatalf("coverage.%s maximum %d exceeds consumer cap %d", name, total, maxConsumerCoverageItems)
+		}
+	}
+}
 
 func TestAnalyzeDNSFailureFromTypedFacts(t *testing.T) {
 	analysis := Analyze([]Result{{Kind: KindDNS, Address: "missing.example", Status: StatusUnreachable, ErrorCode: "connection_failed"}}, analysisTestNow)

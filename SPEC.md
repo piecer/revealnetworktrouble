@@ -114,6 +114,7 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 - confidence는 확률이 아니며 현재 telemetry가 관측하지 못한 packet loss, bandwidth, Wi-Fi/VPN/proxy 상태나 실제 root cause를 단정하지 않는다.
 - malformed 또는 이전 버전 details는 panic이나 낙관적 정상 판정 대신 limitation과 `inconclusive`로 표현한다.
 - finding/evidence/action ID와 정렬은 같은 report 입력에 대해 결정적이어야 한다.
+- 최대 20 results의 현재 producer 상한은 findings/evidence/actions 각 40, coverage available/missing/provider_failures/limitations 각각 80/60/20/100이다. Web과 Android의 고정 수용 상한은 findings/evidence/actions 각 64와 coverage 각 목록 128이며, 이를 넘는 future response는 report 전체를 거부한다. report 전체의 8 MiB transport와 누적 string/container 제한은 유지한다.
 - TLS downgrade/만료, DNS 실패, endpoint 연결 실패, HTTP status 불일치, 실행 timeout/cancel, traceroute 도달·부분 도달·producer 분류 경로 저하를 회귀 fixture로 검증한다.
 
 ## 11. Web 요청 lifecycle과 응답 신뢰 경계
@@ -141,3 +142,15 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 - topology request는 `topology_mode:"compact"`를 사용한다. compact payload는 nodes 500, links 1,000, response 1 MiB 미만이며 Web은 active view만 mount해 chunk 100/document 1,200 actual elements를 넘지 않는다.
 - label import는 1 MiB/500 records/label 256자/note 1024자로 제한하고 한 페이지에 최대 100행을 점진적으로 삽입한다.
 - `createApp` instance는 상태·storage·listener를 공유하지 않으며 `destroy()` 이후 async completion이 후속 instance를 변경하지 못한다.
+
+## 13. Android 진단 클라이언트
+
+- Android는 `/api/v1/checks`를 bounded하게 조회한 뒤 server가 광고한 kind/limit/topology mode 안에서만 report를 요청한다.
+- 13종 kind를 제공하고 HTTP/HTTPS의 expected status와 traceroute attempts를 kind별로 검증한다. traceroute-only topology 요청은 compact mode를 사용한다.
+- report transport는 Content-Length와 stream을 UTF-8 8 MiB로 제한하고 absolute deadline, cancel과 exactly-once disconnect를 적용한다.
+- request state는 owner ID와 canonical signature를 가지며 replacement, input mutation, cancel, recreation과 final destroy 뒤 stale success/error/finally를 게시하지 않는다.
+- Android analysis 순서는 status/verdict/coverage → findings → evidence/actions → limitations/provider failures → raw results/compact summary다. confidence를 장애 확률로 표현하지 않는다.
+- release는 HTTPS만 허용하고 기본 origin은 비어 있다. Bearer는 메모리에서만 사용하며 URL, signature, saved state, preferences, report, log 또는 share에 포함하지 않는다.
+- 기본 공유는 식별자·주소·raw observation을 제외한 human summary다. raw JSON은 명시적 경고 확인 후 8 MiB 이하 private-cache file과 non-exported `FileProvider` read grant로만 공유한다.
+- form state는 최대 20 targets와 bounded strings만 복원한다. portrait를 강제하지 않으며 320dp/landscape/large font에서 control은 stack되고 touch target은 48dp 이상이다.
+- JVM/Robolectric은 schema, lifecycle, resource와 outbound Intent를 검증한다. 실제 TalkBack, Switch Access, OEM share sheet, physical-device network cancellation은 device acceptance 전까지 미검증 limitation이다.

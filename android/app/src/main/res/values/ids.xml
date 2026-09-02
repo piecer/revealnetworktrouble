@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="raw_results_toggle" type="id" />
+    <item name="raw_results_body" type="id" />
+</resources>

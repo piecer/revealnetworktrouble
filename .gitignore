@@ -3,3 +3,23 @@
 *.test
 .DS_Store
 coverage.out
+/frontend/node_modules/
+
+# Android/Gradle local state and generated outputs.
+/android/.gradle/
+/android/.idea/
+/android/local.properties
+/android/**/build/
+/android/captures/
+/android/.externalNativeBuild/
+/android/.cxx/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.hprof
+/android/**/output-metadata.json
+/android/google-services.json
+*.iml
+
+# Keep android/gradle/wrapper/gradle-wrapper.jar versioned for reproducible builds.

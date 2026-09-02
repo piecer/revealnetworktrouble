@@ -9,6 +9,12 @@ make web-test-syntax      # 모든 Web JavaScript 구문 검사
 make test-race
 make vet
 GOFLAGS=-buildvcs=false make build
+make android-wrapper-verify # Gradle 8.11.1 wrapper/JAR/distribution checksum
+make android-env            # JDK 17, Android platform 35/build-tools 35.0.0
+make android-test           # debug/release JVM tests + nonzero collection
+make android-lint
+make android-assemble       # debug + minified release
+# 전체 로컬 CI gate: make ci
 git diff --check
 ```
 
@@ -20,6 +26,7 @@ git diff --check
 - 통합: `httptest` 기반 API 요청·응답과 CORS
 - 회귀: 성공과 일부 실패가 섞인 리포트, 잘못된 JSON, 과도한 대상 수
 - 분석 계약: typed/legacy details 정규화, deterministic finding/evidence/action, confidence/coverage 분리, malformed 입력의 inconclusive 처리
+- 분석 cardinality: Go가 생성·직렬화한 20 HTTPS 최대 fixture(40 findings/40 evidence/40 actions/80 available)를 Web `normalizeReport`와 Android `ReportParser`에 직접 통과시키고, 64/64/64 및 coverage 각 128의 cap+1은 양쪽에서 거부
 - 생산자 정확성: traceroute 부분 출력과 command error 동시 발생, attempt별 timeout, 전체 latency
 - 런타임 경계: traceroute 30-hop/256 KiB parser 경계, 실제 subprocess overflow 취소·prefix 상한·process-group pipe 정리, Unix/Windows compile
 - Windows traceroute: `tracert.exe` command spec과 세 probe parser fixture, 386/amd64/arm64 compile을 검증한다. 명령은 `CREATE_SUSPENDED`로 시작하고 `KILL_ON_JOB_CLOSE` Job Object에 할당한 뒤 primary thread를 재개한다.
@@ -33,6 +40,8 @@ git diff --check
 - Web 보안/계층: reflected Bearer 비저장, 대소문자·겹침·report ID human redaction, XSS inert DOM, legacy analysis, compact header→analysis→folded raw 순서
 - Web label/lifecycle: import 1 MiB/500 records/256 label/1024 note, 100-row pagination, A/B 격리, destroy/HMR와 timer/scheduler/import/fullscreen late-completion faults
 - Web 접근성/반응형: concise live/alert/busy, native import, roving topology focus, Canvas accessible list, caption/scope 표, fullscreen focus, 320/375/400 reflow, reduced motion
+- Android JVM/Robolectric: request/report/error/state contracts, debug/release network policy, lifecycle/resource/accessibility contracts. `assert-android-test-results.sh`가 debug/release 각각 0 tests를 실패로 처리한다.
+- Android build: Gradle Wrapper checksum, JDK/SDK 환경, debug/release lint와 assemble을 독립 gate로 실행한다.
 - 수동: Windows/macOS/Linux에서 실행, 브라우저 UI, 실제 DNS/TCP/HTTPS 대상
 
 외부 인터넷 대상은 수동·스테이징 시험에서만 사용한다. 자동 테스트는 로컬 리스너와 테스트 서버로 결정적이어야 한다.

@@ -25,6 +25,8 @@ curl -X POST http://localhost:8080/api/v1/reports \
 
 지원 검사는 DNS, 임의 TCP, HTTP, HTTPS, traceroute와 SSH·SMTP·IMAP·POP3 계열 서비스다. 웹의 `경로 토폴로지`는 목적지별 1~10회 경로를 canonical node와 directed link로 합치고 result/attempt 사이에 공정한 complete-prefix를 표시한다. 서버 제한과 화면 제한, 실제/표시/생략 수를 구분하며 목적지 필터, roving keyboard focus와 전체 화면을 지원한다. `IP 라벨`은 CSV/JSON import와 직접 편집을 지원하되 1 MiB/500 records/100-row page 경계를 적용한다. HTTPS와 암시적 TLS 서비스는 TLS 버전, 암호 스위트, 인증서 제목과 만료 시각도 보고한다.
 
+Android 앱도 `/checks` capability와 13종 검사, HTTPS-only public credential, request owner/cancel/recreation, 설명 가능한 analysis와 compact topology 요약을 사용한다. 기본 공유는 redacted human summary이고 원본 JSON은 경고 확인 후 private cache의 bounded content URI로만 공유한다. Interactive Android graph와 실기기 TalkBack 검증은 아직 별도 acceptance 항목이다.
+
 공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. `Geo 경로 지도`는 같은 bounded selection을 외부 tile/credential 없는 Canvas 경로 개요와 접근 가능한 위치 목록으로 표시한다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치다.
 
 웹 UI는 정적 파일 서버로 별도 실행합니다.
@@ -45,6 +47,13 @@ make web-test-syntax
 make test-race
 make vet
 GOFLAGS=-buildvcs=false make build
+make android-wrapper-verify
+make android-env
+make android-test
+make android-lint
+make android-assemble
+# Go/Web와 Android 전체 gate
+make ci
 ```
 
 자세한 내용은 [구현 계획](docs/PLAN.md), [아키텍처](docs/ARCHITECTURE.md), [API 명세](docs/API.md), [테스트 기준](docs/TESTING.md)을 참고하세요.
