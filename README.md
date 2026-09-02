@@ -1,5 +1,7 @@
 # CheckNetwork
 
+Web UI는 진단과 토폴로지를 독립 request lane으로 실행하며 취소, 입력 변경 무효화, client timeout과 stale-response 차단을 제공한다. 공용 API 연결 설정의 선택적 Bearer credential은 API base별 현재 탭(`sessionStorage`)에만 유지되고 보고서와 export에는 포함되지 않는다. 응답은 8 MiB byte 상한과 report 전체 누적 schema budget 안에서만 정규화한다. Stage 2 자동 분석은 compact 상태/관측 위치/coverage header → findings → evidence/actions → coverage/한계 → 접힌 원시 결과 순서로 표시하며 legacy server는 명시적인 분석 미지원 상태로 표시된다. Export는 검증용 원본 JSON과 target/evidence 원문을 제외한 사람용 Markdown 보고서로 분리한다.
+
 CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망, 특정 서비스 상태를 한 번에 검사하고 구조화된 리포트를 만드는 멀티플랫폼 애플리케이션입니다.
 
 신규 리포트는 단순 PASS/FAIL과 함께 원인 후보, 그 판단을 지지하는 관측 증거, 안전한 다음 확인 단계와 분석 한계를 구조화된 `analysis`로 제공한다. 분석 confidence는 장애 확률이 아니며 현재 수집한 telemetry의 근거 수준을 뜻한다.
@@ -39,8 +41,12 @@ python3 -m http.server 3000
 ## 검증
 
 ```bash
-go test ./...
-go vet ./...
+npm --prefix frontend ci
+make test
+make web-test-syntax
+make test-race
+make vet
+GOFLAGS=-buildvcs=false make build
 ```
 
 자세한 내용은 [구현 계획](docs/PLAN.md), [아키텍처](docs/ARCHITECTURE.md), [API 명세](docs/API.md), [테스트 기준](docs/TESTING.md)을 참고하세요.

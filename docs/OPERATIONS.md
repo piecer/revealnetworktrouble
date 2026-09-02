@@ -13,7 +13,7 @@
 
 `trusted-local`은 사설망 진단을 허용하므로 loopback에만 bind하는 것이 기본이다. `public`은 API key와 rate limit 없이는 시작하지 않으며 DNS, TCP, HTTP(S) redirect, 서비스, traceroute의 모든 실제 dial 주소를 재검사해 사설·loopback·link-local·metadata·특수 목적 대역을 차단한다. CORS 허용은 인증이 아니다. reverse proxy 뒤에서는 현재 직접 연결 source IP가 rate-limit key이므로 프록시 자체의 인증/rate limit도 함께 사용한다.
 
-Public client는 `Authorization: Bearer <CHECKNETWORK_API_KEY>`를 모든 API 요청에 보낸다. 현재 정적 Web UI는 credential 입력을 제공하지 않으므로 `trusted-local` 모드용이다. public Web 배포용 session-only credential UX는 별도 UI 단계에서 제공한다.
+Public client는 모든 API 요청에 설정된 API key를 Bearer credential로 보낸다. Web UI의 공용 연결 설정에서 API base별 Bearer를 명시적으로 활성화할 수 있으며, 값은 해당 탭의 `sessionStorage`에만 보관된다. 원격 API에는 HTTPS가 필요하고 loopback HTTP만 예외다. credential은 URL, request signature, report, DOM text, JSON/Markdown export 또는 `localStorage`에 포함하지 않는다.
 
 traceroute의 공인 IP는 서버에서 GeoIP 제공자에 전달된다. 사내 정책상 외부 조회를 제한해야 한다면 호환되는 내부 프록시를 `CHECKNETWORK_GEOIP_URL`로 지정한다. 성공 조회는 프로세스 메모리에 최대 2048개, 24시간 TTL의 LRU 캐시로 보관되며 GeoIP 실패는 traceroute 상태에 영향을 주지 않는다.
 

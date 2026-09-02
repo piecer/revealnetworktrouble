@@ -1,32 +1,12 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {
+  renderTopologyMap, parseIPLabelImport, isIPAddress, viewFromHash, activateView,
+  geoRouteSegment, geoRouteCoordinates
+} from './app.js';
 
-const source = fs.readFileSync(`${__dirname}/app.js`, 'utf8');
-const markup = fs.readFileSync(`${__dirname}/index.html`, 'utf8');
-const rendererSource = source.slice(
-  source.indexOf('function renderTopologyMap'),
-  source.indexOf('function renderTopology(topology)')
-);
-const navigationSource = source.slice(
-  source.indexOf('const APP_VIEWS'),
-  source.indexOf("document.querySelector('.main-nav').addEventListener")
-);
-const geoRouteSource = source.slice(
-  source.indexOf('function normalizeLongitude'),
-  source.indexOf('function loadCartoBaseMap')
-);
-
-function topologyAttempts(result) {
-  return result.details.attempts;
-}
-
-function escapeHTML(value) {
-  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-}
-
-eval(rendererSource);
-eval(navigationSource);
-eval(geoRouteSource);
+const source = fs.readFileSync(`${import.meta.dirname}/app.js`, 'utf8');
+const markup = fs.readFileSync(`${import.meta.dirname}/index.html`, 'utf8');
 
 const flatMapProjection = {
   latLngToLayerPoint([latitude, longitude]) { return { x: longitude * 10, y: -latitude * 10 }; },

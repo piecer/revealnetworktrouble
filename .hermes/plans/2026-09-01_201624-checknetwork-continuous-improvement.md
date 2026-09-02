@@ -117,7 +117,7 @@
 1. A-success → B-loading/failure에서 request ID/input signature로 이전 결과를 제거하거나 명시적으로 “이전 실행”으로 표시.
 2. A-late → B-success에서 A publish 차단, AbortController, owner-matched busy cleanup, navigation-away cleanup.
 3. non-JSON/empty/429/timeout/cancel 오류 normalization과 idle/loading/ready/error/cancelled 상태.
-4. analysis fixture를 semantic HTML로 렌더하고 empty/inconclusive 상태를 구분.
+4. analysis fixture를 semantic HTML로 렌더하고 empty/inconclusive 상태를 구분. Web response는 legacy full report 호환을 위해 8 MiB에서 streaming 중단하며 report 전체 누적 topology/string/container budget을 별도로 강제한다.
 5. keyboard accordion/action navigation과 focus restoration; import를 native focusable control로 전환.
 6. 320/375/400px single-column reflow, wide graph/table component scroll.
 7. AA contrast, double focus ring, reduced motion, live region/busy state.

@@ -18,17 +18,32 @@
       <a href="#geo-map" data-view-link="geo-map">Geo 경로 지도</a>
       <a href="#ip-labels" data-view-link="ip-labels">IP 라벨</a>
     </nav>
-    <header>
-      <p class="eyebrow">NETWORK TROUBLESHOOTING COMPANY</p>
-      <h1>네트워크 상태를<br><span>한 번에 확인하세요.</span></h1>
-      <p class="lead">DNS, TCP, HTTPS, 경로 추적과 주요 서비스 연결을 동시에 점검하고 공유 가능한 결과를 만듭니다.</p>
+    <header class="product-header">
+      <p class="eyebrow">CHECKNETWORK / OPERATIONS</p>
+      <h1>네트워크 진단 워크스페이스</h1>
+      <p class="lead">측정, 근거, 다음 조치를 한 화면에서 검토합니다.</p>
     </header>
+
+    <details id="connection-settings" class="connection-settings">
+      <summary>API 연결 설정</summary>
+      <div class="connection-grid">
+        <label for="api-base-url">API 주소</label>
+        <input id="api-base-url" type="url" value="http://localhost:9090" inputmode="url">
+        <label class="auth-toggle"><input id="public-auth-enabled" type="checkbox"> 공개 API Bearer 인증 사용</label>
+        <label for="bearer-token">Bearer credential</label>
+        <input id="bearer-token" type="password" autocomplete="new-password" spellcheck="false">
+        <div class="connection-actions"><button id="apply-bearer" type="button" class="secondary">현재 탭에 적용</button><button id="clear-bearer" type="button" class="secondary">credential 삭제</button></div>
+        <p id="credential-status" role="status" aria-live="polite"></p>
+      </div>
+    </details>
+    <p id="request-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+    <p id="request-alert" class="request-alert" tabindex="-1" role="alert" aria-live="assertive" aria-atomic="true" hidden></p>
 
     <div id="diagnostics-view" class="app-view" data-view="diagnostics">
     <section class="panel" aria-labelledby="setup-title">
       <div class="section-head">
         <div><p class="step">01 / SETUP</p><h2 id="setup-title">검사 설정</h2></div>
-        <label class="api-field">API 주소<input id="api-url" value="http://localhost:9090" inputmode="url"></label>
+
       </div>
       <form id="check-form">
         <div id="targets" class="targets"></div>
@@ -36,26 +51,31 @@
           <button class="secondary" id="add-target" type="button">+ 검사 추가</button>
           <label>제한 시간<input id="timeout" type="number" min="100" max="30000" value="5000"><span>ms</span></label>
           <button class="primary" id="run" type="submit">진단 시작 <span>→</span></button>
+          <button class="secondary cancel-request" id="cancel-diagnostics" type="button" hidden>취소</button>
         </div>
       </form>
     </section>
 
-    <section id="report-section" class="panel report-panel" hidden aria-live="polite">
+    <section id="diagnostics-workspace" class="panel diagnostic-workspace" data-state="idle" aria-labelledby="workspace-title" aria-busy="false">
+      <div class="workspace-status"><p class="step">02 / ANALYSIS</p><h2 id="workspace-title">분석 워크스페이스</h2><p id="diagnostics-state-message">진단을 실행하면 분석이 표시됩니다.</p></div>
+    <section id="report-section" class="report-panel" hidden>
       <div class="section-head">
-        <div><p class="step">02 / REPORT</p><h2>진단 결과</h2></div>
-        <button class="secondary" id="download" type="button">JSON 저장</button>
+        <div><h2 id="analysis-title" tabindex="-1">진단 결과</h2></div>
+        <div class="report-actions"><button class="secondary" id="download-human" type="button" disabled>사람용 보고서</button><button class="secondary" id="download" type="button" disabled>원본 JSON</button></div>
       </div>
       <div id="summary" class="summary"></div>
-      <div id="results" class="results"></div>
+      <section id="analysis-report" aria-labelledby="analysis-title" hidden></section>
+      <details class="secondary-results"><summary>원시 측정 카드</summary><div id="results" class="results"></div></details>
     </section>
-    <p id="error" class="error" role="alert" hidden></p>
+    </section>
+    <p id="error" class="error" hidden></p>
     </div>
 
     <div id="topology-view" class="app-view" data-view="topology" hidden>
       <section class="panel topology-setup" aria-labelledby="topology-setup-title">
         <div class="section-head">
           <div><p class="step">01 / PATH CHECK</p><h2 id="topology-setup-title">경로 토폴로지 점검</h2></div>
-          <label class="api-field">API 주소<input id="topology-api-url" value="http://localhost:9090" inputmode="url"></label>
+
         </div>
         <p class="section-description">각 목적지의 traceroute를 기본 5회 반복해 일시적인 실패와 대체 경로까지 수집하고, 공통 경로와 분기 지점을 하나의 토폴로지 맵에서 비교합니다.</p>
         <form id="topology-form">
@@ -65,14 +85,15 @@
 google.com</textarea></label>
             <label>제한 시간<input id="topology-timeout" type="number" min="100" max="30000" value="5000"><span>ms</span></label>
             <label>반복 횟수<input id="topology-attempts" type="number" min="1" max="10" value="5"><span>회</span></label>
-            <button class="primary" id="run-topology" type="submit">토폴로지 분석 <span>→</span></button>
+            <button class="primary" id="run-topology" type="submit">토폴로지 분석 <span>→</span></button><button class="secondary cancel-request" id="cancel-topology" type="button" hidden>취소</button>
           </div>
         </form>
       </section>
-      <section id="topology-report-section" class="panel report-panel" hidden aria-live="polite">
+      <section id="topology-workspace" class="panel diagnostic-workspace" data-state="idle" aria-busy="false" aria-label="토폴로지 분석 워크스페이스"><p id="topology-state-message">경로 분석을 실행해 주세요.</p>
+      <section id="topology-report-section" class="report-panel" hidden>
         <div class="section-head">
           <div><p class="step">02 / MULTI-PATH MAP</p><h2>통합 토폴로지 분석</h2></div>
-          <button class="secondary" id="download-topology" type="button">JSON 저장</button>
+          <button class="secondary" id="download-topology" type="button" disabled>원본 JSON</button>
         </div>
         <div id="topology-result-summary" class="summary"></div>
         <div id="topology-target-filter" class="topology-target-filter" aria-label="표시할 trace 목적지 선택"></div>
@@ -86,8 +107,8 @@ google.com</textarea></label>
           <p id="topology-label-message" class="mapping-message" role="status"></p>
         </form>
         <div id="topology-result" class="standalone-topology"></div>
-      </section>
-      <p id="topology-error" class="error" role="alert" hidden></p>
+      </section></section>
+      <p id="topology-error" class="error" hidden></p>
     </div>
 
     <div id="geo-map-view" class="app-view" data-view="geo-map" hidden>
@@ -111,7 +132,7 @@ google.com</textarea></label>
       <section class="panel" aria-labelledby="ip-label-title">
         <div class="section-head">
           <div><p class="step">IP / LABEL MAPPING</p><h2 id="ip-label-title">IP 라벨 관리</h2></div>
-          <label class="import-button secondary">CSV / JSON 가져오기<input id="ip-label-import" type="file" accept=".csv,.json,text/csv,application/json" hidden></label>
+          <div class="native-import"><label for="ip-label-import">CSV 또는 JSON 가져오기</label><input id="ip-label-import" class="native-file-input" type="file" accept=".csv,.json,text/csv,application/json"></div>
         </div>
         <p class="section-description">IP에 장비명이나 지점명을 연결하면 토폴로지에서 라벨을 먼저 표시합니다. 데이터는 이 브라우저에 저장되며 CSV는 <code>ip,label,note</code>, JSON은 배열 또는 IP-라벨 객체 형식을 지원합니다.</p>
         <form id="ip-label-form" class="ip-label-form">
@@ -123,7 +144,8 @@ google.com</textarea></label>
         <p id="ip-label-message" class="mapping-message" role="status"></p>
         <div class="mapping-table-wrap">
           <table class="mapping-table">
-            <thead><tr><th>IP 주소</th><th>표시 라벨</th><th>설명</th><th>관리</th></tr></thead>
+            <caption class="sr-only">저장된 IP 주소 라벨과 설명</caption>
+            <thead><tr><th scope="col">IP 주소</th><th scope="col">표시 라벨</th><th scope="col">설명</th><th scope="col">관리</th></tr></thead>
             <tbody id="ip-label-rows"></tbody>
           </table>
         </div>

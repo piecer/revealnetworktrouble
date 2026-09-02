@@ -6,10 +6,10 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 
 ## 2. 화면과 탐색
 
-상단 메뉴는 `통합 진단`, `경로 토폴로지`, `IP 라벨`의 세 화면을 제공한다.
+상단 메뉴는 `통합 진단`, `경로 토폴로지`, `Geo 경로 지도`, `IP 라벨`의 네 화면을 제공한다.
 
 - 메뉴 클릭은 해당 화면을 즉시 표시하고 URL hash를 동기화한다.
-- `#diagnostics`, `#topology`, `#ip-labels` 직접 접근과 브라우저 앞·뒤 이동을 지원한다.
+- `#diagnostics`, `#topology`, `#geo-map`, `#ip-labels` 직접 접근과 브라우저 앞·뒤 이동을 지원한다.
 - 알 수 없는 hash는 `통합 진단`으로 안전하게 복귀한다.
 - 활성 메뉴에는 시각적 상태와 `aria-current="page"`를 함께 제공한다.
 
@@ -118,3 +118,27 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 - malformed 또는 이전 버전 details는 panic이나 낙관적 정상 판정 대신 limitation과 `inconclusive`로 표현한다.
 - finding/evidence/action ID와 정렬은 같은 report 입력에 대해 결정적이어야 한다.
 - TLS downgrade/만료, DNS 실패, endpoint 연결 실패, HTTP status 불일치, 실행 timeout/cancel, traceroute 도달·부분 도달·producer 분류 경로 저하를 회귀 fixture로 검증한다.
+
+## 11. Web 요청 lifecycle과 응답 신뢰 경계
+
+- 통합 진단과 경로 토폴로지는 서로 독립된 request lane이며 `idle`, `loading`, `ready`, `error`, `cancelled` 상태를 가진다.
+- 각 요청은 `ownerId`, canonical input signature, `AbortController`로 소유권을 증명한다. 교체된 요청의 늦은 성공·오류·`finally`는 새 요청의 결과, busy 상태, live message 또는 focus를 바꾸지 못한다.
+- 새 실행과 측정 입력 변경은 이전 report, Geo/topology 파생 상태, download 가능 상태를 즉시 제거한다. download·Geo·topology는 현재 signature의 `ready` report만 사용한다.
+- 명시적 취소, 화면 이탈, 입력 변경, `beforeunload`, client budget timeout에서 진행 중 fetch를 abort한다. 브라우저 abort는 별도 서버 cancel API가 아니며 HTTP request context에 전달되는 범위만 보장한다.
+- 응답 body는 한 번만 소비해 JSON을 parse한다. 빈/malformed 성공과 schema 위반은 `invalid_response`; HTML/plain/empty 오류는 원문을 노출하지 않는 status 기반 오류로 정규화한다. 401, 422, 429, 503 및 `Retry-After`를 구분한다.
+- Web client는 `Content-Length`와 streaming read 모두에서 응답을 8 MiB로 제한한다. reader cancellation이 실패해도 `response_too_large`가 우선하며 multibyte 문자열도 encoded byte로 계산한다.
+- 정규화는 report 전체에 8,192 topology nodes, 16,384 links, 1,000,000 string value characters와 32,768 containers의 누적 예산을 적용한다. 반복되는 JSON key 이름은 string value budget에 중복 과금하지 않으며, 정상 최대 20 traceroutes × 10 attempts × 30 hops와 GeoIP/ASN 및 대표 topology를 수용한다.
+- exported normalizer는 plain JSON object/array만 허용하고 custom prototype 및 getter/accessor를 실행하지 않고 거부한다.
+
+## 12. 연결 credential과 분석 UI
+
+- API base는 공용 연결 설정 하나에서 관리한다. Bearer는 명시적으로 활성화하며 normalized API base별 `sessionStorage`에만 저장한다.
+- raw token은 URL, input signature, report state, DOM text, download/export, `localStorage`에 포함하지 않는다. 원격 HTTP에는 credential을 보내지 않고 HTTPS를 요구하며 loopback HTTP만 예외다.
+- 서버의 structured error가 Bearer를 반사해도 client는 안정적인 HTTP status/code 메시지만 state와 DOM에 저장한다.
+- 원본 JSON export는 현재 signature가 소유한 normalized ready report만 저장한다. 사람용 Markdown export는 generic filename을 사용하고 대소문자 변형·겹치는 target·report ID의 target 값을 redaction하며 raw evidence를 제외한다.
+- 분석 정보 계층은 compact 상태·관측 위치·coverage header → 원인 후보 → 근거와 안전한 조치 → coverage/한계 → 접힌 원시 결과 순이다. 서버 문자열은 `textContent`로만 삽입하고 severity/status class는 allowlist에서 선택한다.
+- `analysis`가 없는 legacy report는 측정 결과를 ready로 유지하되 자동 분석을 미지원/판단 보류로 명시한다.
+- 상태 알림은 짧은 live region만 사용한다. 성공은 분석 heading, 오류는 alert, 명시적 취소는 실행 button, 초기 deep-link와 hash 탐색은 현재 보이는 화면의 `h2`로 focus를 이동한다.
+- topology SVG는 accessible name을 제공하고 IP 라벨 표는 caption과 column scope를 가진다. 파일 import는 숨기지 않은 native file input을 제공한다.
+- 320/375/400px에서는 document overflow 대신 table, raw JSON, topology/map 구성요소가 자체 horizontal scroll을 소유한다. double focus ring과 reduced-motion 설정을 제공한다.
+- CARTO 설정은 배포 환경 `CARTO_BASE_MAP`이 현재 탭 입력보다 우선하며 화면 설명과 runtime 선택 순서가 일치한다.

@@ -292,3 +292,66 @@ dt { color:var(--muted); font-size:11px; } dd { margin:3px 0 0; font:600 17px ui
   .geo-map-stage { height:70vh; min-height:520px; }
   .geo-map-detail { grid-template-columns:1fr; }
 }
+
+/* Request lifecycle and analysis workspace */
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+.product-header { margin:28px 0; }
+.product-header h1 { margin:8px 0; max-width:none; font-size:clamp(28px,5vw,44px); line-height:1.05; }
+.connection-settings { margin:0 0 24px; border:1px solid var(--line); background:var(--panel); }
+.connection-settings > summary { min-height:44px; padding:12px 16px; cursor:pointer; font-weight:700; }
+.connection-grid { display:grid; grid-template-columns:150px minmax(0,1fr); gap:10px 14px; padding:0 16px 16px; align-items:center; }
+.connection-grid input { min-width:0; }
+.auth-toggle,.connection-actions,#credential-status { grid-column:2; }
+.auth-toggle { display:flex; align-items:center; gap:8px; }.auth-toggle input { width:auto; }
+.connection-actions { display:flex; flex-wrap:wrap; gap:8px; }
+#credential-status { min-height:1.5em; margin:0; color:var(--muted); }
+.request-alert { margin:12px 0; padding:14px; border:1px solid var(--red); background:#271412; color:#ffd0c8; }
+.diagnostic-workspace { min-width:0; }
+.workspace-status { margin:0 0 20px; }.workspace-status p:last-child { color:var(--muted); }
+.report-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.secondary-results { margin-top:16px; border:1px solid var(--line); background:#0b0d0b; }
+.secondary-results > summary { min-height:44px; padding:12px 16px; cursor:pointer; color:var(--muted); font:600 11px ui-monospace,monospace; letter-spacing:.08em; text-transform:uppercase; }
+.secondary-results > .results { padding:0 12px 12px; }
+.diagnostic-workspace[data-state="loading"] { border-top:2px solid var(--amber); }
+.diagnostic-workspace[data-state="ready"] { border-top:2px solid var(--lime); }
+.diagnostic-workspace[data-state="error"] { border-top:2px solid var(--red); }
+#analysis-report { display:grid; gap:16px; margin-top:24px; }
+#analysis-report > section { min-width:0; padding:18px; border:1px solid var(--line); background:#10120f; }
+.analysis-verdict { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 18px; }
+.analysis-verdict strong { color:var(--lime); font-size:22px; }.analysis-verdict span,.analysis-verdict time { color:var(--muted); font:11px ui-monospace,monospace; }
+.analysis-verdict.verdict-attention strong { color:var(--amber); }
+.analysis-verdict.verdict-inconclusive strong { color:#b8c2cb; }
+.finding { margin-top:12px; padding:16px; border-left:4px solid #8fa0ad; background:#151713; }
+.finding-critical { border-left-color:var(--red); }.finding-warning { border-left-color:var(--amber); }.finding-info { border-left-color:#67d5ff; }
+.finding h4 { margin:0; }.finding p { overflow-wrap:anywhere; color:var(--muted); }
+.finding-toggle { min-height:44px; border:1px solid var(--line); background:#111410; color:var(--ink); }
+.finding > [id^="finding-panel-"] { display:grid; gap:14px; margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+.finding > [id^="finding-panel-"][hidden] { display:none; }
+.finding > [id^="finding-panel-"] h3 { margin:0 0 8px; font-size:15px; }
+.evidence-scroll { max-width:100%; overflow-x:auto; }
+.evidence-scroll table { width:100%; min-width:680px; border-collapse:collapse; }
+.evidence-scroll caption { padding:8px; color:var(--muted); text-align:left; }
+.evidence-scroll th,.evidence-scroll td { padding:9px; border:1px solid var(--line); text-align:left; overflow-wrap:anywhere; }
+[data-analysis-section="actions"] ol { padding-left:24px; }[data-analysis-section="actions"] li { margin:10px 0; }
+[data-analysis-section="actions"] input { width:auto; margin-right:8px; }[data-analysis-section="actions"] label { font-weight:700; }
+[data-analysis-section="raw"] pre { max-width:100%; overflow:auto; padding:12px; background:#090b09; white-space:pre; }
+.native-import { display:flex; min-width:0; flex-direction:column; gap:5px; color:var(--muted); font-size:11px; }
+.native-file-input { max-width:320px; padding:5px; }.native-file-input::file-selector-button { min-height:38px; margin-right:10px; border:1px solid #4a4c45; background:#151815; color:var(--ink); }
+:where(a,button,input,select,textarea,summary,[tabindex]):focus-visible { outline:2px solid var(--lime); outline-offset:2px; box-shadow:0 0 0 2px #0d0f0d; }
+.target-toggles label:has(input:focus-visible),.geo-route-legend label:has(input:focus-visible),.unknown-node-toggle:has(input:focus-visible) { outline:2px solid var(--lime); outline-offset:2px; }
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; } }
+@media (max-width:760px) {
+  html,body { max-width:100%; overflow-x:hidden; }
+  .shell { width:100%; padding:24px 12px 60px; }
+  .main-nav { max-width:100%; overflow-x:auto; }.main-nav a { min-width:max-content; flex:0 0 auto; min-height:44px; }
+  .connection-grid { grid-template-columns:1fr; }.connection-grid > * { grid-column:1; }
+  .panel { padding:16px; }.section-head { gap:12px; }
+  .report-actions { width:100%; display:grid; grid-template-columns:1fr; }
+  button,input,select,summary { min-height:44px; }
+  .target-row { grid-template-columns:minmax(82px,.7fr) minmax(0,1.3fr) 44px; }.target-row .expected { grid-column:1/3; }
+  .summary { gap:12px; }.analysis-verdict { align-items:flex-start; flex-direction:column; }
+  .evidence-scroll,[data-analysis-section="raw"] details,.map-stage,.topology-viewport,.mapping-table-wrap { max-width:100%; overflow-x:auto; }
+  .geo-map-stage { height:clamp(320px,58vh,520px); min-height:320px; }
+}
+@media (max-width:400px) { .actions { display:grid; grid-template-columns:1fr; }.actions label { width:100%; }.actions label input { flex:1; width:auto; }.connection-actions { display:grid; }.result { grid-template-columns:52px minmax(0,1fr); }.result strong,.result time { grid-column:2; } }
+@media (max-width:320px) { .shell { padding-inline:12px; }.panel { padding:12px; }.target-row { grid-template-columns:76px minmax(0,1fr) 44px; }.summary dl { display:grid; grid-template-columns:1fr; }.summary dl div { border-left:0; border-top:1px solid var(--line); } }

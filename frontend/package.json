@@ -1,0 +1,17 @@
+{
+  "name": "checknetwork-frontend",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node app.test.js && node --test --test-concurrency=1 state.test.js dom.test.js",
+    "test:state": "node --test --test-concurrency=1 state.test.js",
+    "test:dom": "node --test --test-concurrency=1 dom.test.js",
+    "test:syntax": "node --check app.js && node --check state.js && node --check app.test.js && node --check state.test.js && node --check dom.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1"
+  }
+}
