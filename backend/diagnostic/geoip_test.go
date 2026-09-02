@@ -22,6 +22,19 @@ func TestIPWhoIsLookupPublicPolicyBlocksPrivateProviderSink(t *testing.T) {
 	}
 }
 
+func TestIPWhoIsLookupPublicPolicyDisablesLegacyDialTLSBypass(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer server.Close()
+	client := legacyDialTLSClient(server.Listener.Addr().String())
+	lookup := NewIPWhoIsLookupWithPolicy(client, "https://127.0.0.1/", NewNetworkPolicy(nil, nil))
+	_, err := lookup.Lookup(context.Background(), net.ParseIP("8.8.8.8"))
+	if !errors.Is(err, ErrNetworkPolicyBlocked) {
+		t.Fatalf("legacy DialTLS bypassed GeoIP policy: %v", err)
+	}
+}
+
 func TestIPWhoIsLookupPublicPolicyRechecksRedirectAndBypassesProxy(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

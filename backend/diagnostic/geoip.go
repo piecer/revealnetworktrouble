@@ -197,15 +197,10 @@ func (l *IPWhoIsLookup) Lookup(ctx context.Context, ip net.IP) (IPMetadata, erro
 
 func geoIPPolicyClient(base *http.Client, policy *NetworkPolicy, initialScheme string) (*http.Client, error) {
 	client := *base
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if configured, ok := base.Transport.(*http.Transport); ok && configured != nil {
-		transport = configured.Clone()
-	} else if base.Transport != nil {
-		return nil, ErrNetworkPolicyBlocked
+	transport, err := newPolicyTransport(base.Transport, policy)
+	if err != nil {
+		return nil, err
 	}
-	transport.Proxy = nil
-	transport.DialContext = policy.DialContext
-	transport.DialTLSContext = nil
 	client.Transport = transport
 	configuredRedirect := base.CheckRedirect
 	client.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {

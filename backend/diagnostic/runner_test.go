@@ -11,6 +11,16 @@ type fakeChecker struct {
 	status Status
 }
 
+type checkerFunc struct {
+	kind Kind
+	fn   func(context.Context, Target) Result
+}
+
+func (c checkerFunc) Kind() Kind { return c.kind }
+func (c checkerFunc) Check(ctx context.Context, target Target) Result {
+	return c.fn(ctx, target)
+}
+
 func (f fakeChecker) Kind() Kind { return f.kind }
 func (f fakeChecker) Check(_ context.Context, target Target) Result {
 	result := Result{Kind: f.kind, Address: target.Address, Status: f.status, StartedAt: time.Now().UTC()}
@@ -78,6 +88,31 @@ func TestMaximumValidRequestBudgetCoversEveryTracerouteAttempt(t *testing.T) {
 	}
 	if MaxRequestBudget < RequestBudget(req) || MaxRequestBudget <= 35*time.Second {
 		t.Fatalf("MaxRequestBudget=%s request=%s", MaxRequestBudget, RequestBudget(req))
+	}
+}
+
+func TestRunnerWiresRequestDeadlineAndAttemptTimeoutToTraceroute(t *testing.T) {
+	req := Request{
+		TimeoutMS: 200,
+		Targets:   []Target{{Kind: KindTraceroute, Address: "example.test", Attempts: 2}},
+	}
+	checker := checkerFunc{kind: KindTraceroute, fn: func(ctx context.Context, target Target) Result {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("traceroute checker context has no request deadline")
+		}
+		remaining := time.Until(deadline)
+		budget := RequestBudget(req)
+		if remaining <= 0 || remaining > budget || remaining < budget-100*time.Millisecond {
+			t.Fatalf("request deadline remaining=%s budget=%s", remaining, budget)
+		}
+		if got := attemptTimeout(ctx); got != 200*time.Millisecond {
+			t.Fatalf("attempt timeout=%s", got)
+		}
+		return Result{Kind: target.Kind, Address: target.Address, Status: StatusHealthy}
+	}}
+	if _, err := NewRunner(checker).Run(context.Background(), req); err != nil {
+		t.Fatal(err)
 	}
 }
 

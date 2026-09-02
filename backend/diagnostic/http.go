@@ -60,17 +60,13 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 	}
 	clientCopy := *client
 	if policy != nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		if configured, ok := client.Transport.(*http.Transport); ok && configured != nil {
-			transport = configured.Clone()
-		} else if client.Transport != nil {
+		transport, transportErr := newPolicyTransport(client.Transport, policy)
+		if transportErr != nil {
 			result := networkPolicyResult(kind, target.Address, started, ErrNetworkPolicyBlocked)
 			return result
 		}
-		transport.Proxy = nil
-		transport.DialContext = policy.DialContext
-		transport.DialTLSContext = nil
 		clientCopy.Transport = transport
+		defer transport.CloseIdleConnections()
 	}
 	configuredRedirect := client.CheckRedirect
 	clientCopy.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {

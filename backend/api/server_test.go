@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -307,16 +308,23 @@ func (policyBlockedChecker) Check(_ context.Context, target diagnostic.Target) d
 }
 
 func TestPublicPolicyBlockReturnsStablePrivacySafe422(t *testing.T) {
-	handler, err := NewServerWithConfig(diagnostic.NewRunner(policyBlockedChecker{}), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", publicServerConfig())
+	var logs bytes.Buffer
+	handler, err := NewServerWithConfig(diagnostic.NewRunner(policyBlockedChecker{}), slog.New(slog.NewTextHandler(&logs, nil)), "test", publicServerConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := reportRequest(context.Background())
+	req.URL.RawQuery = "token=query-secret"
 	req.Header.Set("Authorization", "Bearer test-secret")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnprocessableEntity || bytes.Contains(rec.Body.Bytes(), []byte("example.test")) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, secret := range []string{"example.test", "query-secret", "test-secret"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("logs leaked %q: %s", secret, logs.String())
+		}
 	}
 	var response struct {
 		Error struct {
