@@ -53,6 +53,44 @@ function labelRows(count, offset = 0) {
 }
 function drain(queue) { while (queue.length) queue.shift()(); }
 
+test('coverage renders fixed enrichment summaries after available and missing without reflecting prose', async () => {
+  const serialized = await readFile(new URL('../testdata/enrichment-failures-report.json', import.meta.url), 'utf8');
+  const parsed = JSON.parse(serialized);
+  parsed.analysis.coverage.available = ['SAFE-AVAILABLE'];
+  parsed.analysis.coverage.missing = ['SAFE-MISSING'];
+  // Isolate the enrichment renderer from the fixture's correctly derived
+  // aggregate provider-failure coverage, which is rendered separately.
+  parsed.analysis.coverage.provider_failures = [];
+  const { app, document } = setup(async () => response(JSON.stringify(parsed)));
+  await app.start('diagnostics');
+  const coverage = document.querySelector('[data-analysis-section="coverage"]');
+  assert.ok(coverage);
+  const text = coverage.textContent;
+  assert.match(text, /SAFE-AVAILABLE/);
+  assert.match(text, /SAFE-MISSING/);
+  assert.match(text, /Source: none/);
+  assert.match(text, /Cache hits: 0/);
+  assert.match(text, /Upstream fetches: 0/);
+  assert.match(text, /Maximum age: 0 ms/);
+  assert.match(text, /busy: 1 \(retryable\)/);
+  assert.match(text, /cancelled: 2 \(not retryable\)/);
+  assert.ok(text.indexOf('SAFE-AVAILABLE') < text.indexOf('Source: none'));
+  assert.ok(text.indexOf('SAFE-MISSING') < text.indexOf('Source: none'));
+  assert.ok(coverage.compareDocumentPosition(document.querySelector('[data-analysis-section="raw"]')) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.doesNotMatch(text, /provider|geoip/i);
+
+  const hostile = JSON.parse(serialized);
+  hostile.analysis.coverage.enrichment[0].provider = 'PROVIDER-CANARY';
+  hostile.analysis.coverage.enrichment[0].url = 'URL-CANARY';
+  hostile.analysis.coverage.enrichment[0].ip = 'IP-CANARY';
+  hostile.analysis.coverage.enrichment[0].target = 'TARGET-CANARY';
+  hostile.analysis.coverage.enrichment[0].error = 'ERROR-CANARY';
+  const rejected = setup(async () => response(JSON.stringify(hostile)));
+  await rejected.app.start('diagnostics');
+  assert.doesNotMatch(rejected.document.body.textContent, /CANARY/);
+  assert.match(rejected.document.body.textContent, /expected schema|response|응답/i);
+});
+
 test('concurrent apps send only their own diagnostics and topology inputs', async () => {
   const callsA = []; const callsB = [];
   const topology = address => report(`topology-${address}`, {
@@ -485,6 +523,92 @@ test('throwing timer cleanup cannot strand a successful request and a retry rema
   assert.equal(document.querySelector('#diagnostics-workspace').getAttribute('aria-busy'), 'false');
 });
 
+test('report deadline subtracts setup elapsed since client request start', async () => {
+  const times = [1000, 1250];
+  let delay;
+  const { app } = setup((_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+    reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+  })), {
+    clock: () => {
+      assert.ok(times.length, 'request setup must not read the clock more than twice');
+      return times.shift();
+    },
+    setTimer: (_callback, milliseconds) => { delay = milliseconds; return 1; }
+  });
+  const pending = app.start('diagnostics');
+  assert.equal(delay, 39750);
+  assert.equal(times.length, 0);
+  app.cancel('diagnostics');
+  await pending;
+});
+
+test('clock regression cannot extend the report deadline beyond its total budget', async () => {
+  const times = [1000, 750];
+  let delay;
+  const { app } = setup((_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+    reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+  })), {
+    clock: () => {
+      assert.ok(times.length, 'request setup must not read the clock more than twice');
+      return times.shift();
+    },
+    setTimer: (_callback, milliseconds) => { delay = milliseconds; return 1; }
+  });
+  const pending = app.start('diagnostics');
+  assert.equal(delay, 40000);
+  assert.equal(times.length, 0);
+  app.cancel('diagnostics');
+  await pending;
+});
+
+test('deadline reached during setup aborts at the exact boundary without timer or fetch', async () => {
+  const times = [1000, 41000]; let timerCalls = 0; let fetchCalls = 0;
+  const { app, document } = setup(async () => { fetchCalls++; return response(JSON.stringify(report('stale'))); }, {
+    clock: () => {
+      assert.ok(times.length, 'expired request setup must read the clock exactly twice');
+      return times.shift();
+    },
+    setTimer: () => { timerCalls++; return 1; }
+  });
+  await app.start('diagnostics');
+  assert.equal(times.length, 0);
+  assert.equal(timerCalls, 0);
+  assert.equal(fetchCalls, 0);
+  assert.equal(app.getState().diagnostics.phase, 'error');
+  assert.equal(app.getState().diagnostics.active, null);
+  assert.equal(document.querySelector('#diagnostics-workspace').getAttribute('aria-busy'), 'false');
+  assert.match(document.querySelector('#request-alert').textContent, /시간|timed out/i);
+});
+
+test('replacement and destroy own request-start clocks, timers, and aborts independently', async () => {
+  const times = [1000, 1250, 2000, 2500]; const delays = []; const cleared = []; let aborts = 0; let fetches = 0;
+  const { app } = setup((_url, init) => {
+    fetches++;
+    return new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+      aborts++;
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    }));
+  }, {
+    clock: () => {
+      assert.ok(times.length, 'each request setup must read the clock exactly twice');
+      return times.shift();
+    },
+    setTimer: (_callback, milliseconds) => { delays.push(milliseconds); return delays.length; },
+    clearTimer: handle => { cleared.push(handle); }
+  });
+  const first = app.start('diagnostics');
+  const second = app.start('diagnostics');
+  assert.deepEqual(delays, [39750, 39500]);
+  assert.equal(times.length, 0);
+  assert.equal(fetches, 2);
+  assert.equal(aborts, 1);
+  assert.equal(app.destroy(), true);
+  assert.equal(aborts, 2);
+  await assert.doesNotReject(Promise.all([first, second]));
+  assert.ok(cleared.includes(1));
+  assert.ok(cleared.includes(2));
+});
+
 test('timeout abort produces focused error alert and previous output stays removed', async () => {
   let timer;
   const { document } = setup((_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))), { setTimer: fn => { timer = fn; return 1; }, clearTimer: () => {} });
@@ -526,6 +650,19 @@ test('analysis renders verdict then findings/evidence/actions/coverage/raw and k
   toggle.dispatchEvent(new document.defaultView.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
   assert.equal(document.getElementById(toggle.getAttribute('aria-controls')).hidden, false);
+});
+
+test('checker execution findings render generic text instead of backend prose', async () => {
+  const serialized = await readFile(new URL('../testdata/checker-execution-report.json', import.meta.url), 'utf8');
+  const backend = JSON.parse(serialized);
+  backend.analysis.findings[0].title = 'private target and panic prose';
+  backend.analysis.findings[0].summary = 'Bearer secret-token';
+  const { document } = setup(async () => response(JSON.stringify(backend)));
+  submit(document); await flush();
+  const findings = document.querySelector('[data-analysis-section="findings"]');
+  assert.match(findings.textContent, /Checker execution failed/);
+  assert.match(findings.textContent, /Checker capacity was unavailable/);
+  assert.doesNotMatch(findings.textContent, /private target|panic prose|secret-token|Bearer/i);
 });
 
 test('legacy report is ready but explicitly unsupported/inconclusive', async () => {

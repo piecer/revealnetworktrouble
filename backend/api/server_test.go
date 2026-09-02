@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -182,6 +183,110 @@ func TestCreateReport(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&report); err != nil || report.Status != diagnostic.StatusHealthy || report.Analysis == nil {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
+}
+
+type detailsChecker struct {
+	details map[string]any
+}
+
+func (detailsChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }
+func (checker detailsChecker) Check(_ context.Context, target diagnostic.Target) diagnostic.Result {
+	return diagnostic.Result{Kind: target.Kind, Address: target.Address, Status: diagnostic.StatusHealthy, Details: checker.details}
+}
+
+func fullReportHandler(t *testing.T, details map[string]any) http.Handler {
+	t.Helper()
+	handler, err := NewServerWithConfig(diagnostic.NewRunner(detailsChecker{details: details}), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", ServerConfig{
+		MaxConcurrentReports: 1,
+		Mode:                 ModeTrustedLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func assertReportError(t *testing.T, handler http.Handler, wantStatus int, wantCode string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, reportRequest(context.Background()))
+	if recorder.Code != wantStatus {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Error.Code != wantCode {
+		t.Fatalf("response=%+v err=%v body=%q", response, err, recorder.Body.String())
+	}
+	return recorder
+}
+
+func TestCreateReportMapsFullResponseBudgetAndSerializationErrorsToFixedSmallResponses(t *testing.T) {
+	cyclic := map[string]any{}
+	cyclic["self"] = cyclic
+	tests := []struct {
+		name     string
+		details  map[string]any
+		wantCode string
+	}{
+		{name: "string budget", details: map[string]any{"value": strings.Repeat("x", maxFullResponseStringBytes+1)}, wantCode: "full_response_too_large"},
+		{name: "cycle budget", details: cyclic, wantCode: "full_response_too_large"},
+		{name: "unsupported", details: map[string]any{"value": make(chan int)}, wantCode: "response_serialization_failed"},
+		{name: "non-finite", details: map[string]any{"value": math.Inf(1)}, wantCode: "response_serialization_failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := assertReportError(t, fullReportHandler(t, test.details), http.StatusInternalServerError, test.wantCode)
+			if recorder.Body.Len() > 256 {
+				t.Fatalf("error response retained large data: %d bytes", recorder.Body.Len())
+			}
+		})
+	}
+}
+
+func TestCreateReportRejectsFiftyOneMiBAmplificationOverRealHTTPWithoutAmplifiedAllocation(t *testing.T) {
+	shared := strings.Repeat("g", 256<<10)
+	geo := &diagnostic.GeoLocation{City: shared, Latitude: 1, Longitude: 2}
+	nodes := make([]diagnostic.TopologyNode, 204) // 204 shared copies encode to exactly 51 MiB before structural JSON.
+	for index := range nodes {
+		nodes[index] = diagnostic.TopologyNode{ID: "node", Status: "healthy", Geolocation: geo}
+	}
+	handler := fullReportHandler(t, map[string]any{"topology": diagnostic.Topology{Nodes: nodes}})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	response, err := http.Post(server.URL+"/api/v1/reports", "application/json", strings.NewReader(`{"targets":[{"kind":"dns","address":"example.test"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	runtime.ReadMemStats(&after)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusInternalServerError || len(body) > 256 {
+		t.Fatalf("status=%d response bytes=%d body=%q", response.StatusCode, len(body), body)
+	}
+	var decoded struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil || decoded.Error.Code != "full_response_too_large" {
+		t.Fatalf("response=%+v err=%v body=%q", decoded, err, body)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	if allocated > 32<<20 {
+		t.Fatalf("51 MiB logical response allocated %d bytes", allocated)
+	}
+	t.Logf("51 MiB logical response: response=%d bytes allocated=%d bytes", len(body), allocated)
 }
 
 type compactTransportChecker struct {
@@ -479,7 +584,7 @@ func BenchmarkMarshalCompactResponseMaximumGeoRollback(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for run := 0; run < b.N; run++ {
-		body, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) {
+		body, err := marshalCompactResponseForTest(report, func(value diagnostic.Report) ([]byte, error) {
 			totalCalls++
 			payload, marshalErr := json.Marshal(value)
 			totalMarshaledBytes += int64(len(payload))
@@ -531,12 +636,12 @@ func TestMaximumCompactHTTPResponseIsStrictlyBelowLimitWithExactLength(t *testin
 
 func TestCompactResponseBytesAreDeterministicAcrossOneHundredBuilds(t *testing.T) {
 	report := maximumGeoCompactReport()
-	first, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) { return json.Marshal(value) })
+	first, err := marshalCompactResponse(report)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for run := 1; run < 100; run++ {
-		next, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) { return json.Marshal(value) })
+		next, err := marshalCompactResponse(report)
 		if err != nil {
 			t.Fatalf("run %d: %v", run, err)
 		}
@@ -549,7 +654,7 @@ func TestCompactResponseBytesAreDeterministicAcrossOneHundredBuilds(t *testing.T
 func TestMarshalCompactResponseExactExclusiveBoundary(t *testing.T) {
 	report := compactResponseTestReport()
 	calls := 0
-	body, err := marshalCompactResponse(report, func(diagnostic.Report) ([]byte, error) {
+	body, err := marshalCompactResponseForTest(report, func(diagnostic.Report) ([]byte, error) {
 		calls++
 		return exactJSONPayload(t, diagnostic.CompactTopologyMaxResponseBytes-2), nil
 	})
@@ -567,7 +672,7 @@ func TestMarshalCompactResponseRollsBackAtOneMiBBoundaryAndKeepsValidStats(t *te
 	var lastNodeHasGeo []bool
 	var reasons [][]diagnostic.CompactTruncationReason
 	var final diagnostic.Report
-	body, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) {
+	body, err := marshalCompactResponseForTest(report, func(value diagnostic.Report) ([]byte, error) {
 		topology := value.CompactTopology
 		included = append(included, topology.Geo.Included)
 		last := topology.Nodes[len(topology.Nodes)-1]
@@ -743,13 +848,13 @@ func TestMarshalCompactResponseMaximumTransactionRollbackIsLogarithmicAndExact(t
 
 func TestMarshalCompactResponseRejectsIrreducibleBaseAndMarshalFailure(t *testing.T) {
 	base := diagnostic.Report{ID: "base", Results: []diagnostic.Result{{Kind: diagnostic.KindTraceroute}}}
-	_, err := marshalCompactResponse(base, func(diagnostic.Report) ([]byte, error) {
+	_, err := marshalCompactResponseForTest(base, func(diagnostic.Report) ([]byte, error) {
 		return exactJSONPayload(t, diagnostic.CompactTopologyMaxResponseBytes-1), nil
 	})
 	if !errors.Is(err, errCompactResponseTooLarge) {
 		t.Fatalf("irreducible error = %v", err)
 	}
-	_, err = marshalCompactResponse(base, func(diagnostic.Report) ([]byte, error) { return nil, io.ErrUnexpectedEOF })
+	_, err = marshalCompactResponseForTest(base, func(diagnostic.Report) ([]byte, error) { return nil, io.ErrUnexpectedEOF })
 	if !errors.Is(err, errResponseSerialization) {
 		t.Fatalf("serialization error = %v", err)
 	}
@@ -787,9 +892,386 @@ func TestRejectsUnknownField(t *testing.T) {
 	}
 }
 
+type countingChecker struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (checker *countingChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }
+func (checker *countingChecker) Check(_ context.Context, target diagnostic.Target) diagnostic.Result {
+	checker.mu.Lock()
+	checker.calls++
+	checker.mu.Unlock()
+	return diagnostic.Result{Kind: target.Kind, Address: target.Address, Status: diagnostic.StatusHealthy}
+}
+func (checker *countingChecker) callCount() int {
+	checker.mu.Lock()
+	defer checker.mu.Unlock()
+	return checker.calls
+}
+
+func TestCreateReportDistinguishesBodyLimitFromMalformedAndMultipleJSON(t *testing.T) {
+	checker := &countingChecker{}
+	handler, err := NewServerWithConfig(diagnostic.NewRunner(checker), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", ServerConfig{
+		MaxConcurrentReports: 1,
+		Mode:                 ModeTrustedLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	valid := `{"targets":[{"kind":"dns","address":"example.test"}]}`
+	tests := []struct {
+		name      string
+		body      string
+		status    int
+		errorCode string
+	}{
+		{name: "limit during first decode", body: `{"targets":[{"kind":"dns","address":"` + strings.Repeat("x", maxBodyBytes) + `"}]}`, status: http.StatusRequestEntityTooLarge, errorCode: "request_too_large"},
+		{name: "limit during surplus decode", body: valid + ` "` + strings.Repeat("x", maxBodyBytes) + `"`, status: http.StatusRequestEntityTooLarge, errorCode: "request_too_large"},
+		{name: "malformed", body: `{`, status: http.StatusBadRequest, errorCode: "invalid_json"},
+		{name: "multiple values", body: valid + ` {}`, status: http.StatusBadRequest, errorCode: "invalid_json"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := checker.callCount()
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(test.body)))
+			if recorder.Code != test.status {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var response struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if decodeErr := json.Unmarshal(recorder.Body.Bytes(), &response); decodeErr != nil || response.Error.Code != test.errorCode {
+				t.Fatalf("response=%+v decodeErr=%v body=%q", response, decodeErr, recorder.Body.String())
+			}
+			if got := checker.callCount(); got != before {
+				t.Fatalf("checker calls changed from %d to %d", before, got)
+			}
+		})
+	}
+
+	recovered := httptest.NewRecorder()
+	handler.ServeHTTP(recovered, httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(valid)))
+	if recovered.Code != http.StatusOK || checker.callCount() != 1 {
+		t.Fatalf("admission did not recover: status=%d calls=%d body=%s", recovered.Code, checker.callCount(), recovered.Body.String())
+	}
+}
+
 type blockingChecker struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+type barrierResponseWriter struct {
+	header        http.Header
+	started       chan struct{}
+	release       chan struct{}
+	startedOnce   sync.Once
+	mu            sync.Mutex
+	status        int
+	body          bytes.Buffer
+	writeCalls    int
+	deadline      time.Time
+	deadlineCalls int
+}
+
+func newBarrierResponseWriter() *barrierResponseWriter {
+	return &barrierResponseWriter{header: make(http.Header), started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (writer *barrierResponseWriter) Header() http.Header { return writer.header }
+func (writer *barrierResponseWriter) WriteHeader(status int) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.status == 0 {
+		writer.status = status
+	}
+}
+func (writer *barrierResponseWriter) Write(payload []byte) (int, error) {
+	writer.startedOnce.Do(func() { close(writer.started) })
+	<-writer.release
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	writer.writeCalls++
+	return writer.body.Write(payload)
+}
+func (writer *barrierResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	writer.deadlineCalls++
+	writer.deadline = deadline
+	return nil
+}
+func (writer *barrierResponseWriter) snapshot() (status, writes, deadlineCalls int, deadline time.Time, body string) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.status, writer.writeCalls, writer.deadlineCalls, writer.deadline, writer.body.String()
+}
+
+func TestBlockedReportWriteReleasesExecutionAdmissionAndWriteCapacityRecovers(t *testing.T) {
+	checker := &countingChecker{}
+	handler, err := NewServerWithConfig(diagnostic.NewRunner(checker), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", ServerConfig{
+		MaxConcurrentReports:        1,
+		MaxConcurrentResponseWrites: 1,
+		Mode:                        ModeTrustedLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocked := newBarrierResponseWriter()
+	firstDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(blocked, reportRequest(context.Background()))
+		close(firstDone)
+	}()
+	<-blocked.started
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, reportRequest(context.Background()))
+	if checker.callCount() != 2 {
+		t.Fatalf("blocked writer retained execution admission: checker calls=%d", checker.callCount())
+	}
+	if second.Code != http.StatusServiceUnavailable || second.Body.Len() > 256 {
+		t.Fatalf("second status=%d bytes=%d body=%s", second.Code, second.Body.Len(), second.Body.String())
+	}
+	var response struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &response); err != nil || response.Error.Code != "write_capacity_unavailable" {
+		t.Fatalf("second response=%+v err=%v body=%q", response, err, second.Body.String())
+	}
+
+	close(blocked.release)
+	<-firstDone
+	status, writes, deadlineCalls, deadline, _ := blocked.snapshot()
+	if status != http.StatusOK || writes != 1 || deadlineCalls != 1 {
+		t.Fatalf("first status=%d writes=%d deadline calls=%d", status, writes, deadlineCalls)
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > reportWriteTimeout {
+		t.Fatalf("write deadline remaining=%s timeout=%s", remaining, reportWriteTimeout)
+	}
+
+	recovered := httptest.NewRecorder()
+	handler.ServeHTTP(recovered, reportRequest(context.Background()))
+	if recovered.Code != http.StatusOK || checker.callCount() != 3 {
+		t.Fatalf("write capacity did not recover: status=%d calls=%d body=%s", recovered.Code, checker.callCount(), recovered.Body.String())
+	}
+}
+
+func TestResponseWriteCapacityConfigurationHasDefaultAndHardMaximum(t *testing.T) {
+	runner := diagnostic.NewRunner(successChecker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, config := range []ServerConfig{
+		{MaxConcurrentReports: 1, MaxConcurrentResponseWrites: -1, Mode: ModeTrustedLocal},
+		{MaxConcurrentReports: 1, MaxConcurrentResponseWrites: hardMaxConcurrentResponseWrites + 1, Mode: ModeTrustedLocal},
+	} {
+		if _, err := NewServerWithConfig(runner, logger, "test", config); err == nil {
+			t.Fatalf("response-write config %+v was accepted", config)
+		}
+	}
+	if _, err := NewServerWithConfig(runner, logger, "test", ServerConfig{MaxConcurrentReports: 2, Mode: ModeTrustedLocal}); err != nil {
+		t.Fatalf("default response-write capacity was rejected: %v", err)
+	}
+}
+
+func TestServerConcurrencyHardLimitsAccept16AndReject17(t *testing.T) {
+	runner := diagnostic.NewRunner(successChecker{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if MaxConcurrentReportsLimit != 16 || MaxConcurrentResponseWritesLimit > MaxConcurrentReportsLimit {
+		t.Fatalf("hard limits reports=%d writes=%d", MaxConcurrentReportsLimit, MaxConcurrentResponseWritesLimit)
+	}
+	if _, err := NewServerWithConfig(runner, logger, "test", ServerConfig{Mode: ModeTrustedLocal, MaxConcurrentReports: 16, MaxConcurrentResponseWrites: 16}); err != nil {
+		t.Fatalf("limits at 16 rejected: %v", err)
+	}
+	for _, config := range []ServerConfig{
+		{Mode: ModeTrustedLocal, MaxConcurrentReports: 17, MaxConcurrentResponseWrites: 1},
+		{Mode: ModeTrustedLocal, MaxConcurrentReports: 1, MaxConcurrentResponseWrites: 17},
+	} {
+		if _, err := NewServerWithConfig(runner, logger, "test", config); err == nil {
+			t.Fatalf("config above hard limit accepted: %+v", config)
+		}
+	}
+}
+
+type failingResponseWriter struct {
+	header         http.Header
+	status         int
+	writeCalls     int
+	actualPerWrite int
+	err            error
+	body           bytes.Buffer
+}
+
+func (writer *failingResponseWriter) Header() http.Header { return writer.header }
+func (writer *failingResponseWriter) WriteHeader(status int) {
+	if writer.status == 0 {
+		writer.status = status
+	}
+}
+func (writer *failingResponseWriter) Write(payload []byte) (int, error) {
+	writer.writeCalls++
+	actual := min(writer.actualPerWrite, len(payload))
+	_, _ = writer.body.Write(payload[:actual])
+	return actual, writer.err
+}
+
+func TestReportWriteFailureDoesNotAppendSecondErrorAndReleasesCapacity(t *testing.T) {
+	tests := []struct {
+		name   string
+		actual int
+	}{
+		{name: "zero", actual: 0},
+		{name: "partial", actual: 7},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			checker := &countingChecker{}
+			handler, err := NewServerWithConfig(diagnostic.NewRunner(checker), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", ServerConfig{
+				MaxConcurrentReports:        1,
+				MaxConcurrentResponseWrites: 1,
+				Mode:                        ModeTrustedLocal,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer := &failingResponseWriter{header: make(http.Header), actualPerWrite: test.actual, err: io.ErrClosedPipe}
+			handler.ServeHTTP(writer, reportRequest(context.Background()))
+			if writer.status != http.StatusOK || writer.writeCalls != 1 || writer.body.Len() != test.actual {
+				t.Fatalf("status=%d writes=%d actual=%d body=%q", writer.status, writer.writeCalls, writer.body.Len(), writer.body.String())
+			}
+			if bytes.Contains(writer.body.Bytes(), []byte(`"error"`)) {
+				t.Fatalf("write failure appended an error response: %q", writer.body.String())
+			}
+
+			recovered := httptest.NewRecorder()
+			handler.ServeHTTP(recovered, reportRequest(context.Background()))
+			if recovered.Code != http.StatusOK || checker.callCount() != 2 {
+				t.Fatalf("capacity did not recover: status=%d calls=%d body=%s", recovered.Code, checker.callCount(), recovered.Body.String())
+			}
+		})
+	}
+}
+
+func TestWriteJSONPayloadReportsAttemptedActualAndShortWrite(t *testing.T) {
+	writer := &failingResponseWriter{header: make(http.Header), actualPerWrite: 3}
+	attempted, actual, err := writeJSONPayload(writer, http.StatusOK, []byte("12345"))
+	if attempted != 5 || actual != 3 || !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("attempted=%d actual=%d err=%v", attempted, actual, err)
+	}
+}
+
+type panickingResponseWriter struct {
+	header           http.Header
+	panicWriteHeader bool
+	panicWrite       bool
+	panicDeadline    bool
+	status           int
+	writeCalls       int
+	body             bytes.Buffer
+}
+
+func (writer *panickingResponseWriter) Header() http.Header { return writer.header }
+func (writer *panickingResponseWriter) WriteHeader(status int) {
+	if writer.status == 0 {
+		writer.status = status
+	}
+	if writer.panicWriteHeader {
+		panic("WRITE_HEADER_PANIC_CANARY")
+	}
+}
+func (writer *panickingResponseWriter) Write(payload []byte) (int, error) {
+	writer.writeCalls++
+	if writer.panicWrite {
+		_, _ = writer.body.Write(payload[:min(7, len(payload))])
+		panic("WRITE_PANIC_CANARY")
+	}
+	return writer.body.Write(payload)
+}
+func (writer *panickingResponseWriter) SetWriteDeadline(time.Time) error {
+	if writer.panicDeadline {
+		panic("DEADLINE_PANIC_CANARY")
+	}
+	return nil
+}
+
+func TestWriteJSONPayloadRecoversWriterPanicsAsFixedSentinel(t *testing.T) {
+	tests := []struct {
+		name   string
+		writer *panickingResponseWriter
+	}{
+		{name: "WriteHeader", writer: &panickingResponseWriter{header: make(http.Header), panicWriteHeader: true}},
+		{name: "Write after hidden partial mutation", writer: &panickingResponseWriter{header: make(http.Header), panicWrite: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			attempted, actual, err := writeJSONPayload(test.writer, http.StatusCreated, []byte("123456789"))
+			if attempted != 9 || actual != 0 || !errors.Is(err, errResponseWritePanic) {
+				t.Fatalf("attempted=%d actual=%d err=%v", attempted, actual, err)
+			}
+			if strings.Contains(err.Error(), "CANARY") {
+				t.Fatalf("panic value escaped in error: %v", err)
+			}
+			if test.writer.status != http.StatusCreated {
+				t.Fatalf("committed status=%d", test.writer.status)
+			}
+		})
+	}
+}
+
+type countingDetailsChecker struct {
+	counter *countingChecker
+	details map[string]any
+}
+
+func (countingDetailsChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }
+func (checker countingDetailsChecker) Check(ctx context.Context, target diagnostic.Target) diagnostic.Result {
+	result := checker.counter.Check(ctx, target)
+	result.Details = checker.details
+	return result
+}
+
+func TestFullResponseBudgetErrorReleasesAdmissionBeforeErrorWrite(t *testing.T) {
+	checker := &countingChecker{}
+	oversized := strings.Repeat("x", maxFullResponseStringBytes+1)
+	handler, err := NewServerWithConfig(diagnostic.NewRunner(countingDetailsChecker{counter: checker, details: map[string]any{"value": oversized}}), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", ServerConfig{
+		MaxConcurrentReports:        1,
+		MaxConcurrentResponseWrites: 1,
+		Mode:                        ModeTrustedLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocked := newBarrierResponseWriter()
+	firstDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(blocked, reportRequest(context.Background()))
+		close(firstDone)
+	}()
+	<-blocked.started
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, reportRequest(context.Background()))
+	if second.Code != http.StatusInternalServerError || checker.callCount() != 2 {
+		t.Fatalf("error write retained admission: status=%d calls=%d body=%s", second.Code, checker.callCount(), second.Body.String())
+	}
+	var response struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &response); err != nil || response.Error.Code != "full_response_too_large" {
+		t.Fatalf("response=%+v err=%v body=%q", response, err, second.Body.String())
+	}
+	close(blocked.release)
+	<-firstDone
 }
 
 func (blockingChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }

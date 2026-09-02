@@ -208,6 +208,20 @@ function renderAnalysisWorkspace(doc, report) {
     [['사용 가능', analysis.coverage.available], ['누락', analysis.coverage.missing]].forEach(([label, values]) => {
       coverage.append(makeNode(doc, 'h4', label)); const list = makeNode(doc, 'ul'); values.forEach(value => list.append(makeNode(doc, 'li', value))); coverage.append(list);
     });
+    for (const enrichment of analysis.coverage.enrichment) {
+      coverage.append(makeNode(doc, 'h4', 'Enrichment'));
+      const summary = makeNode(doc, 'ul');
+      for (const value of [
+        `Source: ${enrichment.source}`,
+        `Cache hits: ${enrichment.cache_hits}`,
+        `Upstream fetches: ${enrichment.upstream_fetches}`,
+        `Maximum age: ${enrichment.max_age_ms} ms`
+      ]) summary.append(makeNode(doc, 'li', value));
+      for (const failure of enrichment.failures) {
+        summary.append(makeNode(doc, 'li', `${failure.kind}: ${failure.count} (${failure.retryable ? 'retryable' : 'not retryable'})`));
+      }
+      coverage.append(summary);
+    }
     [...analysis.coverage.provider_failures, ...analysis.coverage.limitations].forEach(issue => coverage.append(makeNode(doc, 'p', issue.reason)));
     root.append(coverage);
   }
@@ -669,10 +683,16 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     const payload = purpose === 'diagnostics'
       ? { targets: input.targets.map(({ kind, address, expected_status }) => ({ kind, address, ...(expected_status ? { expected_status } : {}) })), timeout_ms: input.timeout_ms }
       : { targets: input.addresses.map(address => ({ kind: 'traceroute', address, attempts: input.attempts })), timeout_ms: input.timeout_ms, topology_mode: 'compact' };
+    const startedAt = clock(); const total = clientTimeoutMS(payload);
     const request = { ownerId, signature, controller, reason: null, timer: null }; active.set(purpose, request);
-    lanes[purpose] = transitionRequest(lanes[purpose], { type: 'REQUEST_STARTED', ownerId, inputSignature: signature, startedAt: clock() }); renderState(purpose); doc.querySelector('#request-live').textContent = purpose === 'diagnostics' ? '진단을 시작했습니다.' : '경로 분석을 시작했습니다.';
+    lanes[purpose] = transitionRequest(lanes[purpose], { type: 'REQUEST_STARTED', ownerId, inputSignature: signature, startedAt }); renderState(purpose); doc.querySelector('#request-live').textContent = purpose === 'diagnostics' ? '진단을 시작했습니다.' : '경로 분석을 시작했습니다.';
     try {
-      request.timer = setTimer(() => { if (active.get(purpose) === request) { request.reason = 'timeout'; controller.abort('timeout'); } }, clientTimeoutMS(payload));
+      const remaining = Math.max(0, total - Math.max(0, clock() - startedAt));
+      if (remaining === 0) {
+        request.reason = 'timeout'; controller.abort('timeout');
+        throw { name: 'AbortError', reason: 'timeout' };
+      }
+      request.timer = setTimer(() => { if (active.get(purpose) === request) { request.reason = 'timeout'; controller.abort('timeout'); } }, remaining);
       const headers = { 'Content-Type': 'application/json' }; const token = input.authEnabled ? tokenFor(input.apiBaseURL) : '';
       if (token) { const url = new URL(input.apiBaseURL); if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)) throw { kind: 'http', code: 'insecure_auth', message: 'Bearer credential은 HTTPS API에만 전송할 수 있습니다.', retryable: false }; headers.Authorization = `Bearer ${token}`; }
       const response = await fetchImpl(`${input.apiBaseURL}/api/v1/reports`, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });

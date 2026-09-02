@@ -239,7 +239,58 @@ public final class ReportParser {
     private static Report.Coverage parseCoverage(JSONObject value,int resultCount) throws JSONException {
         List<String> available=stringArray(value,"available","report.analysis.coverage.available",ContractLimits.MAX_COVERAGE_ITEMS);
         List<String> missing=stringArray(value,"missing","report.analysis.coverage.missing",ContractLimits.MAX_COVERAGE_ITEMS);
-        return new Report.Coverage(available,missing,coverageIssues(value,"provider_failures",resultCount),coverageIssues(value,"limitations",resultCount));
+        List<Report.EnrichmentCoverage> enrichment=value.has("enrichment")
+                ? enrichment(value,"enrichment","report.analysis.coverage.enrichment") : Collections.emptyList();
+        return new Report.Coverage(available,missing,coverageIssues(value,"provider_failures",resultCount),coverageIssues(value,"limitations",resultCount),enrichment);
+    }
+
+    private static List<Report.EnrichmentCoverage> enrichment(JSONObject source,String key,String path) throws JSONException {
+        JSONArray entries=array(source,key,path,1);
+        List<Report.EnrichmentCoverage> result=new ArrayList<>();
+        for(int i=0;i<entries.length();i++){
+            String itemPath=path+"["+i+"]";
+            JSONObject item=object(entries.get(i),itemPath);
+            exactFields(item,Set.of("provider","source","cache_hits","upstream_fetches","max_age_ms","failures"),itemPath);
+            String provider=text(item,"provider",itemPath+".provider",true,64);
+            if(!provider.equals("geoip"))throw error(itemPath+".provider","unsupported value");
+            int cacheHits=(int)integer(item,"cache_hits",itemPath+".cache_hits",0,6200);
+            int upstreamFetches=(int)integer(item,"upstream_fetches",itemPath+".upstream_fetches",0,6200);
+            long total=(long)cacheHits+upstreamFetches;
+            if(total>6200)throw error(itemPath,"lookup count exceeds limit 6200");
+            JSONArray rawFailures=array(item,"failures",itemPath+".failures",8);
+            List<Report.EnrichmentFailure> failures=new ArrayList<>();
+            String previous="";
+            for(int j=0;j<rawFailures.length();j++){
+                String failurePath=itemPath+".failures["+j+"]";
+                JSONObject failure=object(rawFailures.get(j),failurePath);
+                exactFields(failure,Set.of("kind","count","retryable"),failurePath);
+                String kindText=text(failure,"kind",failurePath+".kind",true,64);
+                Report.EnrichmentFailureKind kind=enumValue(kindText,Report.EnrichmentFailureKind.class,failurePath+".kind");
+                if(kindText.compareTo(previous)<=0)throw error(itemPath+".failures","must contain unique kinds in canonical order");
+                previous=kindText;
+                int count=(int)integer(failure,"count",failurePath+".count",1,6200);
+                boolean retryable=booleanValue(failure,"retryable",failurePath+".retryable");
+                if(retryable!=enrichmentRetryable(kind))throw error(failurePath+".retryable","contradicts failure kind");
+                total+=count;
+                if(total>6200)throw error(itemPath,"lookup count exceeds limit 6200");
+                failures.add(new Report.EnrichmentFailure(kind,count,retryable));
+            }
+            Report.EnrichmentSource expected=cacheHits>0
+                    ? (upstreamFetches>0?Report.EnrichmentSource.MIXED:Report.EnrichmentSource.CACHE)
+                    : (upstreamFetches>0?Report.EnrichmentSource.UPSTREAM:Report.EnrichmentSource.NONE);
+            Report.EnrichmentSource parsedSource=enumValue(text(item,"source",itemPath+".source",true,64),Report.EnrichmentSource.class,itemPath+".source");
+            if(parsedSource!=expected)throw error(itemPath+".source","contradicts success counts");
+            long maxAgeMs=integer(item,"max_age_ms",itemPath+".max_age_ms",0,86_400_000);
+            result.add(new Report.EnrichmentCoverage(provider,parsedSource,cacheHits,upstreamFetches,maxAgeMs,failures));
+        }
+        return result;
+    }
+
+    private static boolean enrichmentRetryable(Report.EnrichmentFailureKind kind){
+        return switch(kind){
+            case BUSY, RATE_LIMITED, TIMEOUT, UNAVAILABLE -> true;
+            case CANCELLED, MALFORMED, NOT_FOUND, POLICY -> false;
+        };
     }
     private static List<Report.CoverageIssue> coverageIssues(JSONObject source,String key,int resultCount) throws JSONException {
         String base="report.analysis.coverage."+key;JSONArray array=array(source,key,base,ContractLimits.MAX_COVERAGE_ITEMS);List<Report.CoverageIssue> result=new ArrayList<>();
@@ -376,6 +427,10 @@ public final class ReportParser {
     private static CheckKind kind(String value,String path){try{return CheckKind.fromWire(value);}catch(IllegalArgumentException e){throw error(path,"unsupported value");}}
     private static <E extends Enum<E>> E enumValue(String value,Class<E> type,String path){for(E candidate:type.getEnumConstants())if(candidate.name().toLowerCase(Locale.ROOT).equals(value))return candidate;throw error(path,"unsupported value");}
     private static String unique(String id,Set<String> ids,String path){if(!ids.add(id))throw error(path,"IDs must be unique");return id;}
+    private static void exactFields(JSONObject value,Set<String> expected,String path){
+        if(value.length()!=expected.size())throw error(path,"expected exact fields");
+        Iterator<String> keys=value.keys();while(keys.hasNext())if(!expected.contains(keys.next()))throw error(path,"expected exact fields");
+    }
 
     private static Object required(JSONObject o,String key,String path) throws JSONException {if(!o.has(key)||o.isNull(key))throw error(path,"required");return o.get(key);}
     private static JSONObject object(Object value,String path){if(!(value instanceof JSONObject))throw error(path,"expected object");return (JSONObject)value;}

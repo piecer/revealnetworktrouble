@@ -2,7 +2,11 @@ package diagnostic
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -190,4 +194,282 @@ func TestRunnerAddsAnalysisUsingInjectedClock(t *testing.T) {
 	if report.Analysis == nil || report.Analysis.Verdict != VerdictAttention || len(report.Analysis.Findings) != 1 || report.Analysis.Findings[0].Code != FindingDNSResolutionFailed {
 		t.Fatalf("report analysis = %+v", report.Analysis)
 	}
+}
+
+func TestRunnerRecoversCheckerPanicInSubprocess(t *testing.T) {
+	if os.Getenv("CHECKNETWORK_PANIC_HELPER") == "1" {
+		supervisor, err := NewCheckerSupervisor(2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checker := checkerFunc{kind: KindDNS, fn: func(_ context.Context, target Target) Result {
+			if target.Address == "secret.example" {
+				panic("secret panic text")
+			}
+			return Result{Kind: KindDNS, Address: target.Address, Status: StatusHealthy}
+		}}
+		runner := NewRunnerWithSupervisor(supervisor, checker)
+		report, err := runner.RunWithID(context.Background(), "0123456789abcdef01234567", Request{Targets: []Target{{Kind: KindDNS, Address: "secret.example"}, {Kind: KindDNS, Address: "sibling.example"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := report.Results[0]
+		if result.ErrorCode != "checker_panic" || result.Address != "" || strings.Contains(result.Message, "secret") {
+			t.Fatalf("unsafe panic result: %+v", result)
+		}
+		if report.Results[1].Status != StatusHealthy {
+			t.Fatalf("sibling did not survive: %+v", report.Results[1])
+		}
+		followup, err := runner.Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "followup.example"}}})
+		if err != nil || followup.Results[0].Status != StatusHealthy {
+			t.Fatalf("follow-up did not survive: %+v err=%v", followup, err)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunnerRecoversCheckerPanicInSubprocess$")
+	cmd.Env = append(os.Environ(), "CHECKNETWORK_PANIC_HELPER=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("panic escaped worker boundary: %v\n%s", err, output)
+	}
+}
+
+func TestRunnerNoncooperativeDeadlineLateImmutabilityAndCapacityRecovery(t *testing.T) {
+	supervisor, err := NewCheckerSupervisor(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	checker := checkerFunc{kind: KindDNS, fn: func(context.Context, Target) Result {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return Result{Kind: KindDNS, Address: "late-mutated.example", Status: StatusHealthy}
+	}}
+	runner := NewRunnerWithSupervisor(supervisor, checker)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	before := time.Now()
+	report, err := runner.Run(ctx, Request{Targets: []Target{{Kind: KindDNS, Address: "blocked.example"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(before); elapsed > 200*time.Millisecond {
+		t.Fatalf("Run blocked for %s", elapsed)
+	}
+	<-started
+	if report.Results[0].ErrorCode != "cancelled" {
+		t.Fatalf("want cancellation priority: %+v", report.Results[0])
+	}
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 1 || snapshot.Stuck != 1 || snapshot.Capacity != 1 {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+	saturated, err := runner.Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "second.example"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saturated.Results[0].ErrorCode != "checker_capacity_unavailable" || calls.Load() != 1 {
+		t.Fatalf("saturation report=%+v calls=%d", saturated, calls.Load())
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for supervisor.Snapshot().Active != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if report.Results[0].ErrorCode != "cancelled" || report.Results[0].Address != "blocked.example" {
+		t.Fatalf("late mutation: %+v", report.Results[0])
+	}
+	third, err := runner.Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "third.example"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Results[0].Status != StatusHealthy || calls.Load() != 2 {
+		t.Fatalf("capacity did not recover: %+v calls=%d", third, calls.Load())
+	}
+}
+
+func TestRunnerNoncooperativeCheckerReturnsAtRequestBudgetWithTimeout(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	checker := checkerFunc{kind: KindDNS, fn: func(context.Context, Target) Result {
+		close(started)
+		<-release
+		return Result{Kind: KindDNS, Status: StatusHealthy}
+	}}
+	req := Request{TimeoutMS: int(MinTimeout.Milliseconds()), Targets: []Target{{Kind: KindDNS, Address: "deadline.example"}}}
+	before := time.Now()
+	report, err := NewRunnerWithSupervisor(supervisor, checker).Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	elapsed := time.Since(before)
+	if elapsed < RequestBudget(req)-100*time.Millisecond || elapsed > RequestBudget(req)+250*time.Millisecond {
+		t.Fatalf("elapsed=%s budget=%s", elapsed, RequestBudget(req))
+	}
+	if report.Results[0].ErrorCode != "timeout" {
+		t.Fatalf("deadline result=%+v", report.Results[0])
+	}
+	close(release)
+}
+
+func TestRunnerPreCancelledParentNeverAdmitsOrCallsChecker(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	var calls atomic.Int32
+	checker := checkerFunc{kind: KindDNS, fn: func(context.Context, Target) Result {
+		calls.Add(1)
+		return Result{Kind: KindDNS, Status: StatusHealthy}
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report, err := NewRunnerWithSupervisor(supervisor, checker).Run(ctx, Request{Targets: []Target{{Kind: KindDNS, Address: "cancelled.example"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := report.Results[0].ErrorCode; got != "cancelled" {
+		t.Fatalf("pre-cancelled result=%+v", report.Results[0])
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("checker calls=%d", calls.Load())
+	}
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 0 || snapshot.Stuck != 0 {
+		t.Fatalf("pre-cancelled run touched supervisor: %+v", snapshot)
+	}
+}
+
+func TestRunnerSimultaneousCompletionAndCancellationUsesCommittedCancellation(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	checker := checkerFunc{kind: KindDNS, fn: func(context.Context, Target) Result {
+		close(started)
+		<-release
+		// Commit cancellation immediately before returning a healthy result. The
+		// terminal arbiter must publish exactly one deterministic cancellation.
+		cancel()
+		return Result{Kind: KindDNS, Address: "must-not-win.example", Status: StatusHealthy}
+	}}
+	done := make(chan Report, 1)
+	go func() {
+		report, _ := NewRunnerWithSupervisor(supervisor, checker).Run(ctx, Request{Targets: []Target{{Kind: KindDNS, Address: "race.example"}}})
+		done <- report
+	}()
+	<-started
+	close(release)
+	report := <-done
+	if got := report.Results[0]; got.ErrorCode != "cancelled" || got.Address != "race.example" {
+		t.Fatalf("terminal result=%+v", got)
+	}
+}
+
+func TestRunnerRunWithIDValidatesAndPreservesOpaqueID(t *testing.T) {
+	runner := NewRunner(fakeChecker{kind: KindDNS, status: StatusHealthy})
+	req := Request{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}}
+	const id = "0123456789abcdef01234567"
+	report, err := runner.RunWithID(context.Background(), id, req)
+	if err != nil || report.ID != id {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	for _, invalid := range []string{"", "short", "0123456789ABCDEF01234567", "../../etc/passwd........"} {
+		if _, err := runner.RunWithID(context.Background(), invalid, req); err == nil {
+			t.Fatalf("accepted %q", invalid)
+		}
+	}
+}
+
+func TestCheckerSupervisorReleasesSlotBeforeCompletedRunReturns(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	checker := checkerFunc{kind: KindDNS, fn: func(context.Context, Target) Result {
+		return Result{Kind: KindDNS, Status: StatusHealthy}
+	}}
+	runner := NewRunnerWithSupervisor(supervisor, checker)
+	for i := 0; i < 100; i++ {
+		if _, err := runner.Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := supervisor.Snapshot().Active; got != 0 {
+			t.Fatalf("active=%d after completed Run", got)
+		}
+	}
+}
+
+func TestCheckerSupervisorDefaultAndHardMaximum(t *testing.T) {
+	defaultSupervisor := mustSupervisor(t, 0)
+	if got := defaultSupervisor.Snapshot().Capacity; got != DefaultCheckerCapacity {
+		t.Fatalf("default capacity=%d", got)
+	}
+	if _, err := NewCheckerSupervisor(MaxCheckerCapacity); err != nil {
+		t.Fatalf("hard maximum rejected: %v", err)
+	}
+	if _, err := NewCheckerSupervisor(MaxCheckerCapacity + 1); err == nil {
+		t.Fatal("capacity above hard maximum accepted")
+	}
+}
+
+func TestCheckerSupervisorShutdownIsBoundedAndReportsRemaining(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	started, release := make(chan struct{}), make(chan struct{})
+	checker := checkerFunc{kind: KindDNS, fn: func(context.Context, Target) Result {
+		close(started)
+		<-release
+		return Result{Kind: KindDNS, Status: StatusHealthy}
+	}}
+	runner := NewRunnerWithSupervisor(supervisor, checker)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _ = runner.Run(ctx, Request{Targets: []Target{{Kind: KindDNS, Address: "stuck.example"}}})
+	<-started
+	shutdownCtx, stop := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer stop()
+	if remaining := supervisor.Shutdown(shutdownCtx); remaining != 1 {
+		t.Fatalf("remaining=%d", remaining)
+	}
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 1 || snapshot.Stuck != 1 {
+		t.Fatalf("bounded shutdown snapshot=%+v", snapshot)
+	}
+	report, err := runner.Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "new.example"}}})
+	if err != nil || report.Results[0].ErrorCode != "checker_capacity_unavailable" {
+		t.Fatalf("post-shutdown report=%+v err=%v", report, err)
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for supervisor.Snapshot().Active != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 0 || snapshot.Stuck != 0 {
+		t.Fatalf("released shutdown worker did not recover: %+v", snapshot)
+	}
+}
+
+func TestCheckerSupervisorShutdownSynchronouslyMarksActiveLeasesStuck(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	lease := supervisor.acquire()
+	if lease == nil {
+		t.Fatal("active lease was not admitted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if remaining := supervisor.Shutdown(ctx); remaining != 1 {
+		t.Fatalf("remaining=%d", remaining)
+	}
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 1 || snapshot.Stuck != 1 {
+		t.Fatalf("shutdown returned before active lease became observably stuck: %+v", snapshot)
+	}
+	supervisor.release(lease)
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 0 || snapshot.Stuck != 0 {
+		t.Fatalf("released lease did not clear shutdown accounting: %+v", snapshot)
+	}
+}
+
+func mustSupervisor(t *testing.T, capacity int) *CheckerSupervisor {
+	t.Helper()
+	s, err := NewCheckerSupervisor(capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }

@@ -170,8 +170,11 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 		}
 	}
 	geoIPProviderFailures := 0
+	var geoIPEnrichment *EnrichmentCoverage
 	if c.GeoIP != nil {
-		geoIPProviderFailures = enrichTopologies(ctx, attempts, c.GeoIP)
+		coverage := enrichTopologiesWithCoverage(ctx, attempts, c.GeoIP)
+		geoIPProviderFailures = enrichmentFailureCount(coverage.Failures)
+		geoIPEnrichment = &coverage
 	}
 
 	result.Details = map[string]any{
@@ -186,6 +189,9 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 	}
 	if geoIPProviderFailures > 0 {
 		result.Details["geoip_provider_failures"] = geoIPProviderFailures
+	}
+	if geoIPEnrichment != nil {
+		result.Details["geoip_enrichment"] = *geoIPEnrichment
 	}
 	if representative != nil {
 		result.Details["topology"] = *representative
@@ -246,6 +252,10 @@ func summarizeTraceExecutionErrors(total, timedOut, cancelled int) string {
 }
 
 func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIPLookup) int {
+	return enrichmentFailureCount(enrichTopologiesWithCoverage(ctx, attempts, lookup).Failures)
+}
+
+func enrichTopologiesWithCoverage(ctx context.Context, attempts []TraceAttempt, lookup GeoIPLookup) EnrichmentCoverage {
 	type enrichment struct {
 		public   bool
 		metadata IPMetadata
@@ -271,7 +281,8 @@ func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIP
 	}
 	jobs := make(chan net.IP)
 	var mu sync.Mutex
-	providerFailures := 0
+	coverage := EnrichmentCoverage{Provider: "geoip", Source: EnrichmentSourceNone, Failures: []EnrichmentFailure{}}
+	failureCounts := make(map[GeoIPErrorKind]int)
 	var workers sync.WaitGroup
 	workerCount := min(6, len(addresses))
 	for range workerCount {
@@ -282,11 +293,20 @@ func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIP
 				metadata, err := lookup.Lookup(ctx, ip)
 				if err != nil {
 					mu.Lock()
-					providerFailures++
+					kind, _ := normalizedGeoIPFailure(err)
+					failureCounts[kind]++
 					mu.Unlock()
 					continue
 				}
 				mu.Lock()
+				if metadata.Source == GeoIPSourceCache {
+					coverage.CacheHits++
+				} else {
+					coverage.UpstreamFetches++
+				}
+				if age := boundedGeoIPAgeMS(metadata, time.Now().UTC()); age > coverage.MaxAgeMS {
+					coverage.MaxAgeMS = age
+				}
 				known := cache[ip.String()]
 				known.metadata = metadata
 				cache[ip.String()] = known
@@ -316,7 +336,84 @@ func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIP
 			node.ASN = known.metadata.ASN
 		}
 	}
-	return providerFailures
+	coverage.Source = enrichmentSource(coverage.CacheHits, coverage.UpstreamFetches)
+	for _, kind := range geoIPFailureKinds() {
+		if count := failureCounts[kind]; count > 0 {
+			coverage.Failures = append(coverage.Failures, EnrichmentFailure{Kind: kind, Count: count, Retryable: geoIPFailureRetryable(kind)})
+		}
+	}
+	return coverage
+}
+
+func enrichmentSource(cacheHits, upstreamFetches int) EnrichmentSource {
+	switch {
+	case cacheHits > 0 && upstreamFetches > 0:
+		return EnrichmentSourceMixed
+	case cacheHits > 0:
+		return EnrichmentSourceCache
+	case upstreamFetches > 0:
+		return EnrichmentSourceUpstream
+	default:
+		return EnrichmentSourceNone
+	}
+}
+
+func boundedGeoIPAgeMS(metadata IPMetadata, now time.Time) int64 {
+	if metadata.FetchedAt.IsZero() || now.Before(metadata.FetchedAt) {
+		return 0
+	}
+	age := now.Sub(metadata.FetchedAt)
+	limit := defaultGeoIPCacheTTL
+	if !metadata.ExpiresAt.IsZero() && metadata.ExpiresAt.After(metadata.FetchedAt) {
+		if ttl := metadata.ExpiresAt.Sub(metadata.FetchedAt); ttl < limit {
+			limit = ttl
+		}
+	}
+	if age > limit {
+		age = limit
+	}
+	if age <= 0 {
+		return 0
+	}
+	return age.Milliseconds()
+}
+
+func normalizedGeoIPFailure(err error) (GeoIPErrorKind, bool) {
+	var typed *GeoIPError
+	if errors.As(err, &typed) && typed != nil && validGeoIPErrorKind(typed.Kind) {
+		return typed.Kind, geoIPFailureRetryable(typed.Kind)
+	}
+	return GeoIPErrorUnavailable, true
+}
+
+func geoIPFailureKinds() []GeoIPErrorKind {
+	return []GeoIPErrorKind{GeoIPErrorBusy, GeoIPErrorCancelled, GeoIPErrorMalformed, GeoIPErrorNotFound, GeoIPErrorPolicy, GeoIPErrorRateLimited, GeoIPErrorTimeout, GeoIPErrorUnavailable}
+}
+
+func validGeoIPErrorKind(kind GeoIPErrorKind) bool {
+	for _, allowed := range geoIPFailureKinds() {
+		if kind == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func geoIPFailureRetryable(kind GeoIPErrorKind) bool {
+	switch kind {
+	case GeoIPErrorRateLimited, GeoIPErrorTimeout, GeoIPErrorUnavailable, GeoIPErrorBusy:
+		return true
+	default:
+		return false
+	}
+}
+
+func enrichmentFailureCount(failures []EnrichmentFailure) int {
+	total := 0
+	for _, failure := range failures {
+		total += failure.Count
+	}
+	return total
 }
 
 func traceDestination(address string) (string, error) {

@@ -38,7 +38,7 @@ public final class AnalysisPresentation {
         if(report.analysis().isPresent()){
             Report.Analysis a=report.analysis().orElseThrow();
             StringBuilder findings=new StringBuilder();
-            for(Report.Finding f:a.findings())findings.append(f.title()).append("\n").append(f.summary())
+            for(Report.Finding f:a.findings())findings.append(findingTitle(f)).append("\n").append(findingSummary(f))
                     .append("\nConfidence: ").append(title(f.confidence().name())).append("\n");
             if(findings.length()==0)findings.append("No findings");
             out.add(new Block("Findings",findings.toString().trim()));
@@ -56,6 +56,16 @@ public final class AnalysisPresentation {
             for(Report.CoverageIssue issue:c.providerFailures())coverage.append("\nProvider failure — ").append(issue.signal()).append(": ").append(issue.reason());
             for(Report.CoverageIssue issue:c.limitations())coverage.append("\nLimitation — ").append(issue.signal()).append(": ").append(issue.reason());
             out.add(new Block("Coverage and limitations",coverage.toString()));
+            for(Report.EnrichmentCoverage enrichment:c.enrichment()){
+                StringBuilder summary=new StringBuilder("Source: ").append(wire(enrichment.source().name()))
+                        .append("\nCache hits: ").append(enrichment.cacheHits())
+                        .append("\nUpstream fetches: ").append(enrichment.upstreamFetches())
+                        .append("\nMaximum age: ").append(enrichment.maxAgeMs()).append(" ms");
+                for(Report.EnrichmentFailure failure:enrichment.failures())summary.append("\n")
+                        .append(wire(failure.kind().name())).append(": ").append(failure.count())
+                        .append(failure.retryable()?" (retryable)":" (not retryable)");
+                out.add(new Block("Enrichment",summary.toString()));
+            }
         } else {
             out.add(new Block("Findings","Analysis unavailable (legacy report)"));
         }
@@ -96,6 +106,20 @@ public final class AnalysisPresentation {
         return out.text();
     }
     private static String emptyAsNone(String value){return value==null||value.isEmpty()?"none":value;}
+    private static String findingTitle(Report.Finding finding){
+        return switch(finding.code()){
+            case CHECKER_PANIC -> "Checker execution failed";
+            case CHECKER_CAPACITY_UNAVAILABLE -> "Checker capacity was unavailable";
+            default -> finding.title();
+        };
+    }
+    private static String findingSummary(Report.Finding finding){
+        return switch(finding.code()){
+            case CHECKER_PANIC -> "The checker stopped unexpectedly, so service health was not established.";
+            case CHECKER_CAPACITY_UNAVAILABLE -> "The bounded checker supervisor had no execution slot, so service health was not established.";
+            default -> finding.summary();
+        };
+    }
     private static final class BoundedText{
         private final int limit;private final StringBuilder value=new StringBuilder();private boolean truncated;
         BoundedText(int limit){this.limit=limit;}
@@ -110,5 +134,6 @@ public final class AnalysisPresentation {
     }
     private static String status(Report.Status s){return switch(s){case HEALTHY->"Healthy";case DEGRADED->"Degraded";case UNREACHABLE->"Unreachable";};}
     private static String verdict(Report.Verdict v){return switch(v){case HEALTHY->"Healthy";case ATTENTION->"Attention";case INCONCLUSIVE->"Inconclusive";};}
+    private static String wire(String value){return value.toLowerCase(Locale.ROOT);}
     private static String title(String value){String lower=value.toLowerCase(Locale.ROOT);return Character.toUpperCase(lower.charAt(0))+lower.substring(1);}
 }

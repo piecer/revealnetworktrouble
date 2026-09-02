@@ -148,6 +148,8 @@ const (
 	FindingInvalidTarget                 FindingCode = "invalid_target"
 	FindingExecutionTimeout              FindingCode = "execution_timeout"
 	FindingExecutionCancelled            FindingCode = "execution_cancelled"
+	FindingCheckerPanic                  FindingCode = "checker_panic"
+	FindingCheckerCapacityUnavailable    FindingCode = "checker_capacity_unavailable"
 	FindingTLSDowngrade                  FindingCode = "tls_downgrade"
 	FindingTLSCertificateExpired         FindingCode = "tls_certificate_expired"
 	FindingTLSCertificateExpiring        FindingCode = "tls_certificate_expiring"
@@ -244,11 +246,36 @@ type CoverageIssue struct {
 	Reason      string            `json:"reason"`
 }
 
+type EnrichmentSource string
+
+const (
+	EnrichmentSourceUpstream EnrichmentSource = "upstream"
+	EnrichmentSourceCache    EnrichmentSource = "cache"
+	EnrichmentSourceMixed    EnrichmentSource = "mixed"
+	EnrichmentSourceNone     EnrichmentSource = "none"
+)
+
+type EnrichmentFailure struct {
+	Kind      GeoIPErrorKind `json:"kind"`
+	Count     int            `json:"count"`
+	Retryable bool           `json:"retryable"`
+}
+
+type EnrichmentCoverage struct {
+	Provider        string              `json:"provider"`
+	Source          EnrichmentSource    `json:"source"`
+	CacheHits       int                 `json:"cache_hits"`
+	UpstreamFetches int                 `json:"upstream_fetches"`
+	MaxAgeMS        int64               `json:"max_age_ms"`
+	Failures        []EnrichmentFailure `json:"failures"`
+}
+
 type Coverage struct {
-	Available        []string        `json:"available"`
-	Missing          []string        `json:"missing"`
-	ProviderFailures []CoverageIssue `json:"provider_failures"`
-	Limitations      []CoverageIssue `json:"limitations"`
+	Available        []string             `json:"available"`
+	Missing          []string             `json:"missing"`
+	ProviderFailures []CoverageIssue      `json:"provider_failures"`
+	Limitations      []CoverageIssue      `json:"limitations"`
+	Enrichment       []EnrichmentCoverage `json:"enrichment,omitempty"`
 }
 
 type Analysis struct {

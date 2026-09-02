@@ -28,6 +28,8 @@
 
 `timeout_ms`는 100~30000이며 생략 시 5000이다. `kind`는 `dns`, `tcp`, `http`, `https`, `traceroute`, `ssh`, `smtp`, `submission`, `smtps`, `imap`, `imaps`, `pop3`, `pop3s` 중 하나다. 서비스 주소에 포트를 생략하면 표준 포트를 사용하며 `host:port`로 재정의할 수 있다. traceroute 대상은 `attempts`로 1~10회 반복 실행할 수 있으며, 생략하면 기본 5회 실행한다. `timeout_ms`는 각 반복 실행의 제한 시간으로 적용된다. 실행별 결과는 `details.attempts`에, 전체 횟수·도달·실패 집계는 `details.attempts_total`, `details.attempts_reached`, `details.attempts_failed`에 저장된다. 이전 클라이언트 호환을 위한 대표 경로는 `details.topology`에 유지한다. 각 토폴로지는 `nodes`, `links`, `reached`를 제공하며 노드/구간 상태는 `healthy`, `degraded`, `unknown`, `failure`로 구분한다. 공인 IP 노드에는 `public_ip: true`가 표시되고 식별에 성공하면 `geolocation`(도시·지역·국가·위도·경도)과 `asn`(번호·사업자)이 추가된다. GeoIP 조회 실패는 이 필드만 생략하며 진단 상태를 바꾸지 않는다. HTTPS와 암시적 TLS 메일 서비스는 TLS 버전, 암호 스위트, 인증서 제목과 만료 시각을 결과에 포함한다. 응답의 `status`는 `healthy`, `degraded`, `unreachable` 중 하나다.
 
+HTTP request body hard limit은 정확히 1 MiB이다. 이를 넘으면 `413 request_too_large`이며, surplus/malformed JSON은 `400 invalid_json`이다. server header parser limit은 64 KiB이다. Full response는 마지막 newline을 포함해 `<= 8 MiB`, compact response는 `< 1 MiB`이다.
+
 ### Compact topology 협상
 
 `topology_mode`를 생략하거나 `"full"`로 지정하면 legacy/raw 응답을 그대로 반환한다. `"compact"`는 traceroute-only 요청에서만 허용되며, 다른 문자열·빈 값은 `422 invalid_request`, JSON string이 아닌 값은 `400 invalid_json`이다.
@@ -45,6 +47,23 @@ Compact transport copy에서는 traceroute `details.attempts`와 대표 `details
 - `analysis.evidence[]`: 원본 result index/kind/address, 관측 signal/value, 기대값과 provenance
 - `analysis.actions[]`: 안전한 확인 단계, 기대 결과와 escalation 조건
 - `analysis.coverage`: 사용한 signal, 누락 signal, provider failure와 limitation
+
+GeoIP 집계는 `analysis.coverage.enrichment`에 additive하게 나타난다. provider별 최대 한 record이며 현재 정확한 schema는 다음과 같다.
+
+```json
+{
+  "provider": "geoip",
+  "source": "upstream|cache|mixed|none",
+  "cache_hits": 0,
+  "upstream_fetches": 0,
+  "max_age_ms": 0,
+  "failures": [
+    {"kind": "not_found|rate_limited|timeout|policy|malformed|unavailable|cancelled|busy", "count": 1, "retryable": true}
+  ]
+}
+```
+
+`retryable`은 failure kind에 의해 결정되고 counts/age는 topology 관측 수와 24시간 cache TTL 안에서 제한된다. schema에는 provider URL, IP/target, provider message, credential 또는 wall-clock fetch timestamp가 없다. 기존 `analysis.evidence[].provenance` enum은 바뀌지 않는다.
 
 분석 배열은 bounded consumer 계약이다. 현재 `Analyze`가 유효한 최대 20 results에서 만들 수 있는 상한은 HTTPS result당 certificate와 HTTP status finding을 함께 내는 경우의 findings/evidence/actions 각 40개다. coverage의 현재 계산 상한은 `available` 80, `missing` 60, `provider_failures` 20, `limitations` 100개다. Web과 Android는 향후 무제한 증가를 수용하지 않고 findings/evidence/actions를 각각 64개, coverage의 각 목록을 각각 128개에서 제한하며 초과 report 전체를 거부한다. 기존 8 MiB transport, 1,000,000 string characters, 32,768 containers 누적 제한도 그대로 적용된다.
 
@@ -65,9 +84,14 @@ Unix는 `traceroute -n -q 1 -w 2 -m 30`, Windows는 현재 attempt timeout을 mi
 운영 오류 계약:
 
 - `401 unauthorized`: public 모드 Bearer credential 누락/오류
+- `413 request_too_large`: 1 MiB request body 상한 초과
 - `429 rate_limited`: source IP 요청 상한 초과, `Retry-After` 포함
 - `503 server_busy`: 동시 report 실행 상한 초과, `Retry-After` 포함
+- `503 write_capacity_unavailable`: 실행이 끝난 bounded payload에 response-write slot을 즉시 확보하지 못함
 - `422 network_policy_blocked`: public 모드에서 허용되지 않은 주소 대역
+- `500 full_response_too_large`: full response를 8 MiB 이하 closed DTO로 만들 수 없음
 - `500 compact_response_too_large`: compact base response를 1 MiB 미만으로 축소할 수 없음
+
+`server_busy`는 report checker 실행 전에 fail-fast하고, checker pool 포화는 각 대상의 stable `checker_capacity_unavailable` 결과로 bounded completion한다. GeoIP queue 포화는 enrichment failure kind `busy`로 처리되며 본 진단 상태를 덮어쓰지 않는다. write capacity failure는 계산된 큰 body를 queue에 보존하지 않는다. client 취소/timeout은 이미 commit된 status를 재작성하지 않으며 partial/zero network write는 telemetry만 `write_failed_partial`/`write_failed_zero`로 바뀐다.
 
 HTTPS 검사는 redirect 전체가 HTTPS를 유지하고 최종 응답에 검증된 TLS 연결이 있어야 정상이다. downgrade는 결과의 `error_code: "tls_downgrade"`로 보고한다.

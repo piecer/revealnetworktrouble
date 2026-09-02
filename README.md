@@ -2,6 +2,8 @@
 
 Web UI는 진단과 토폴로지를 독립 request lane으로 실행하며 stale-response를 차단한다. topology는 compact-v1 응답(nodes≤500, links≤1,000, body<1 MiB)을 사용하고 active view를 100-element chunk로 점진 렌더링하며 document 1,200-element 경계를 검사한다. Bearer credential은 API base별 현재 탭에만 유지되고 보고서/export에는 포함되지 않는다.
 
+운영 경계는 동시 report 기본 4(설정 hard max 16), checker 기본 80(hard max 1,024), 프로세스 전체 GeoIP active 8/queued 64, GeoIP LRU 2,048개, 동시 response write 최대 16이다. request body는 1 MiB, header는 64 KiB, full response는 newline 포함 8 MiB 이하, compact response는 1 MiB 미만이다. 정상 Web/Android report deadline은 요청 시작부터 315초이며 Compose는 6분 graceful stop과 CPU/memory/PID 제한을 적용한다. 자세한 과부하 결과와 관측 필드는 [운영 문서](docs/OPERATIONS.md)에 있다.
+
 CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망, 특정 서비스 상태를 한 번에 검사하고 구조화된 리포트를 만드는 멀티플랫폼 애플리케이션입니다.
 
 신규 리포트는 단순 PASS/FAIL과 함께 원인 후보, 그 판단을 지지하는 관측 증거, 안전한 다음 확인 단계와 분석 한계를 구조화된 `analysis`로 제공한다. 분석 confidence는 장애 확률이 아니며 현재 수집한 telemetry의 근거 수준을 뜻한다.
@@ -38,6 +40,14 @@ python3 -m http.server 3000
 
 직접 실행 시 브라우저에서 `http://localhost:3000`을 열고 API 주소에 `http://localhost:8080`을 입력합니다. Docker Compose에서는 API 주소가 `http://localhost:9090`입니다.
 
+```bash
+docker compose up --build --wait
+curl --fail http://127.0.0.1:9090/api/v1/health
+curl --fail http://127.0.0.1:3000/
+```
+
+API runtime image는 UID/GID `65532:65532`로 실행되고 Web nginx는 `worker_processes 2`를 사용한다. Compose publish는 두 서비스 모두 host loopback으로 제한된다.
+
 ## 검증
 
 ```bash
@@ -52,8 +62,15 @@ make android-env
 make android-test
 make android-lint
 make android-assemble
+# Compose 정적 계약 및 이미지/health smoke (Docker 필요)
+docker compose config
+docker compose build api web
+docker compose up -d --wait
+docker compose down
 # Go/Web와 Android 전체 gate
 make ci
 ```
+
+JVM/Node/Go 자동화는 실물 Android 기기, TalkBack/Switch Access, OEM share sheet, 실제 Chrome/Firefox/Safari의 HTTP/2 deadline 동작을 대신하지 않는다. 이 물리 기기/브라우저 acceptance와 postcommit-only `make ci-clean-archive`는 별도 gate다.
 
 자세한 내용은 [구현 계획](docs/PLAN.md), [아키텍처](docs/ARCHITECTURE.md), [API 명세](docs/API.md), [테스트 기준](docs/TESTING.md)을 참고하세요.

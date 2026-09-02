@@ -60,6 +60,25 @@ const compactTopology = (overrides = {}) => ({
   ...overrides
 });
 
+const zeroResultStats = result_index => ({
+  result_index,
+  routes: { total: 0, displayed: 0, complete: 0, partial: 0, omitted: 0 },
+  node_observations: { total: 0, displayed: 0, omitted: 0 },
+  link_observations: { total: 0, displayed: 0, omitted: 0 }
+});
+
+const emptyCompactTopology = result_stats => compactTopology({
+  nodes: [], links: [], routes: [], result_stats,
+  stats: {
+    nodes: { total: 0, displayed: 0, omitted: 0 },
+    links: { total: 0, displayed: 0, omitted: 0 },
+    routes: { total: 0, displayed: 0, complete: 0, partial: 0, omitted: 0 },
+    node_observations: { total: 0, displayed: 0, omitted: 0 },
+    link_observations: { total: 0, displayed: 0, omitted: 0 }
+  },
+  geo: { eligible: 0, available: 0, included: 0, omitted: 0, unavailable: 0 }
+});
+
 function response(status, headers = {}) {
   const normalized = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
   return { status, ok: status >= 200 && status < 300, headers: { get: name => normalized.get(name.toLowerCase()) ?? null } };
@@ -103,6 +122,95 @@ test('normalizes the serialized maximum Go analysis and rejects every cap plus o
     while (values.length <= SCHEMA_LIMITS.coverage) values.push(name === 'available' || name === 'missing' ? `fixture-${values.length}` : structuredClone(issue));
     assert.throws(() => normalizeReport(report), new RegExp(`coverage\\.${name}.*limit`, 'i'));
   }
+});
+
+test('accepts backend-shaped enrichment fixtures and builds immutable deep copies', async () => {
+  const expected = {
+    upstream: ['upstream', 0, 2, 12, 0],
+    cache: ['cache', 3, 0, 60000, 0],
+    mixed: ['mixed', 2, 1, 42000, 0],
+    failures: ['none', 0, 0, 0, 8]
+  };
+  for (const [name, values] of Object.entries(expected)) {
+    const serialized = await readFile(new URL(`../testdata/enrichment-${name}-report.json`, import.meta.url), 'utf8');
+    const source = JSON.parse(serialized);
+    const normalized = normalizeReport(source).analysis.coverage.enrichment;
+    assert.equal(normalized.length, 1);
+    assert.deepEqual([
+      normalized[0].source, normalized[0].cache_hits, normalized[0].upstream_fetches,
+      normalized[0].max_age_ms, normalized[0].failures.length
+    ], values);
+    assert.ok(Object.isFrozen(normalized));
+    assert.ok(Object.isFrozen(normalized[0]));
+    assert.ok(Object.isFrozen(normalized[0].failures));
+    for (const failure of normalized[0].failures) assert.ok(Object.isFrozen(failure));
+    source.analysis.coverage.enrichment[0].source = 'none';
+    source.analysis.coverage.enrichment[0].failures.splice(0);
+    assert.equal(normalized[0].source, values[0]);
+    assert.equal(normalized[0].failures.length, values[4]);
+    assert.throws(() => { normalized[0].source = 'none'; }, TypeError);
+    assert.throws(() => { normalized[0].failures.push({}); }, TypeError);
+  }
+});
+
+test('accepts legacy coverage without enrichment and rejects every malformed enrichment shape', () => {
+  const baseCoverage = () => structuredClone(analysis().coverage);
+  assert.deepEqual(normalizeAnalysis(analysis()).coverage.enrichment, []);
+  const entry = (overrides = {}) => ({ provider: 'geoip', source: 'mixed', cache_hits: 1, upstream_fetches: 1, max_age_ms: 1, failures: [], ...overrides });
+  const reject = enrichment => assert.throws(
+    () => normalizeAnalysis(analysis({ coverage: { ...baseCoverage(), enrichment } })),
+    /analysis\.coverage\.enrichment|schema/i
+  );
+
+  for (const invalid of [null, {}, 'none', [entry(), entry()]]) reject(invalid);
+  for (const key of ['provider', 'source', 'cache_hits', 'upstream_fetches', 'max_age_ms', 'failures']) {
+    const missing = entry(); delete missing[key]; reject([missing]);
+    reject([{ ...entry(), [key]: null }]);
+  }
+  reject([{ ...entry(), extra: 'SECRET-URL-IP-TARGET-ERROR' }]);
+  reject([entry({ provider: 'ipwhois', target: undefined })]);
+  reject([entry({ source: 'future' })]);
+  for (const key of ['cache_hits', 'upstream_fetches', 'max_age_ms']) {
+    reject([entry({ [key]: -1 })]); reject([entry({ [key]: 1.5 })]); reject([entry({ [key]: '1' })]);
+  }
+  reject([entry({ max_age_ms: 86400001 })]);
+  reject([entry({ cache_hits: 6201, upstream_fetches: 0, source: 'cache' })]);
+  reject([entry({ cache_hits: 6200, upstream_fetches: 0, source: 'cache', failures: [{ kind: 'timeout', count: 1, retryable: true }] })]);
+  for (const contradictory of [
+    entry({ source: 'none' }),
+    entry({ source: 'cache' }),
+    entry({ source: 'upstream' }),
+    entry({ source: 'mixed', upstream_fetches: 0 })
+  ]) reject([contradictory]);
+
+  const failure = (kind, count = 1, retryable = ({ busy: true, cancelled: false, malformed: false, not_found: false, policy: false, rate_limited: true, timeout: true, unavailable: true })[kind]) => ({ kind, count, retryable });
+  reject([entry({ failures: Array.from({ length: 9 }, () => failure('timeout')) })]);
+  reject([entry({ failures: [failure('timeout'), failure('timeout')] })]);
+  reject([entry({ failures: [failure('timeout'), failure('rate_limited')] })]);
+  reject([entry({ failures: [failure('future')] })]);
+  reject([entry({ failures: [failure('timeout', 0)] })]);
+  reject([entry({ failures: [failure('timeout', 1, false)] })]);
+  reject([entry({ failures: [{ ...failure('timeout'), error: 'SECRET' }] })]);
+  reject([entry({ failures: [{ kind: 'timeout', count: 1 }] })]);
+  reject([entry({ failures: [{ kind: 'timeout', count: 1, retryable: null }] })]);
+});
+
+test('normalizes serialized Go checker execution findings into privacy-safe generic text', async () => {
+  const serialized = await readFile(new URL('../testdata/checker-execution-report.json', import.meta.url), 'utf8');
+  const report = normalizeReport(JSON.parse(serialized));
+  assert.deepEqual(report.analysis.findings.map(finding => [finding.code, finding.title, finding.summary]), [
+    ['checker_panic', 'Checker execution failed', 'The checker stopped unexpectedly, so service health was not established.'],
+    ['checker_capacity_unavailable', 'Checker capacity was unavailable', 'The bounded checker supervisor had no execution slot, so service health was not established.']
+  ]);
+
+  const hostile = JSON.parse(serialized);
+  hostile.analysis.findings[0].title = 'private target and panic prose';
+  hostile.analysis.findings[0].summary = 'Bearer secret-token';
+  const safe = normalizeReport(hostile).analysis.findings[0];
+  assert.equal(safe.title, 'Checker execution failed');
+  assert.equal(safe.summary, 'The checker stopped unexpectedly, so service health was not established.');
+  hostile.analysis.findings[0].code = 'checker_future_unknown';
+  assert.throws(() => normalizeReport(hostile), /findings.*code|unsupported/i);
 });
 
 test('request lane replaces owners and rejects stale completion/finalize', () => {
@@ -156,12 +264,13 @@ test('canonical inputs validate API URLs, normalize values, and signatures never
   assert.notEqual(sig1, inputSignature('diagnostics', diagnostics, 8));
 });
 
-test('client timeout follows server budget and is capped at 307 seconds', () => {
-  assert.equal(clientTimeoutMS({ targets: [{ kind: 'dns' }], timeout_ms: 5000 }), 12000);
-  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute' }], timeout_ms: 5000 }), 32000);
-  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 3 }], timeout_ms: 2000 }), 13000);
-  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 10 }], timeout_ms: 30000 }), 307000);
-  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 999 }], timeout_ms: 999999 }), 307000);
+test('client timeout is 15 seconds beyond the longest target and capped at 315 seconds', () => {
+  assert.equal(clientTimeoutMS({ targets: [{ kind: 'dns' }], timeout_ms: 5000 }), 20000);
+  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute' }], timeout_ms: 5000 }), 40000);
+  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 3 }], timeout_ms: 2000 }), 21000);
+  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 10 }], timeout_ms: 29999 }), 314990);
+  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 10 }], timeout_ms: 30000 }), 315000);
+  assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 999 }], timeout_ms: Number.MAX_SAFE_INTEGER }), 315000);
 });
 
 test('Retry-After parses delta seconds and HTTP dates', () => {
@@ -235,7 +344,7 @@ test('compact topology is optional and valid compact data is deeply copied into 
   assert.equal(absent.compact_topology, null);
 
   const source = compactTopology();
-  const normalized = normalizeReport(legacyReport({ compact_topology: source }));
+  const normalized = normalizeReport(legacyReport({ results: [result({ kind: 'traceroute' })], compact_topology: source }));
   assert.notStrictEqual(normalized.compact_topology, source);
   assert.notStrictEqual(normalized.compact_topology.nodes, source.nodes);
   assert.notStrictEqual(normalized.compact_topology.nodes[1].geolocation, source.nodes[1].geolocation);
@@ -256,6 +365,388 @@ test('present malformed compact topology rejects the report without legacy fallb
   const parsed = parseResponse(response(200), JSON.stringify(report), 0);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.error.code, 'invalid_response');
+});
+
+test('compact Geo metadata requires literal public_ip true for Geo and ASN', () => {
+  for (const publicIP of [undefined, false]) {
+    for (const metadata of [
+      { geolocation: { city: 'Seoul', region: '', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 } },
+      { asn: { number: 64500, organization: 'Example' } }
+    ]) {
+      const value = structuredClone(compactTopology());
+      const node = { ...value.nodes[1], ...metadata };
+      delete node.geolocation;
+      delete node.asn;
+      Object.assign(node, metadata);
+      if (publicIP === undefined) delete node.public_ip;
+      else node.public_ip = publicIP;
+      value.nodes[1] = node;
+      value.geo = { eligible: 0, available: 0, included: 0, omitted: 0, unavailable: 0 };
+      assert.throws(() => normalizeCompactTopology(value), /public_ip/i, `${publicIP}/${Object.keys(metadata)[0]}`);
+    }
+  }
+});
+
+test('compact Geo bundle accepts exactly 4096 ASCII bytes and rejects 4097', () => {
+  for (const [organizationLength, accepted] of [[4059, true], [4060, false]]) {
+    const value = structuredClone(compactTopology());
+    delete value.nodes[1].geolocation;
+    value.nodes[1].asn = { number: 1, organization: 'x'.repeat(organizationLength) };
+    if (accepted) assert.equal(normalizeCompactTopology(value).nodes[1].asn.organization.length, organizationLength);
+    else assert.throws(() => normalizeCompactTopology(value), /Geo bundle|byte limit/i);
+  }
+});
+
+test('compact Geo bundle counts multibyte Korean UTF-8 bytes at the exact boundary', () => {
+  for (const [organization, accepted] of [
+    ['한'.repeat(1353), true],
+    [`${'한'.repeat(1353)}x`, false]
+  ]) {
+    const value = structuredClone(compactTopology());
+    delete value.nodes[1].geolocation;
+    value.nodes[1].asn = { number: 1, organization };
+    if (accepted) assert.equal(normalizeCompactTopology(value).nodes[1].asn.organization, organization);
+    else assert.throws(() => normalizeCompactTopology(value), /Geo bundle|byte limit/i);
+  }
+});
+
+test('compact Geo bundle aggregates mixed geolocation and ASN fields', () => {
+  const exact = structuredClone(compactTopology());
+  exact.nodes[1].asn.organization = 'x'.repeat(3940);
+  assert.doesNotThrow(() => normalizeCompactTopology(exact));
+
+  const over = structuredClone(exact);
+  over.nodes[1].asn.organization += 'x';
+  assert.throws(() => normalizeCompactTopology(over), /Geo bundle|byte limit/i);
+});
+
+test('compact Geo budget is per included node and Geo counts remain aggregate', () => {
+  const value = structuredClone(compactTopology());
+  const extra = Array.from({ length: 40 }, (_, index) => ({
+    id: `geo${index}`, kind: 'ip', address: `198.51.100.${index + 1}`, status: 'healthy',
+    hop_min: 1, hop_max: 1, observations: 1, public_ip: true,
+    asn: { number: index + 1, organization: 'x'.repeat(4000) }
+  }));
+  value.nodes.push(...extra);
+  value.stats.nodes = { total: 42, displayed: 42, omitted: 0 };
+  value.geo = { eligible: 41, available: 41, included: 41, omitted: 0, unavailable: 0 };
+  const normalized = normalizeCompactTopology(value);
+  assert.equal(normalized.nodes.length, 42);
+  assert.deepEqual(normalized.geo, value.geo);
+});
+
+test('compact Geo byte validation rejects accessors without invoking canaries', () => {
+  for (const field of ['geolocation', 'asn']) {
+    const value = structuredClone(compactTopology());
+    let invoked = false;
+    Object.defineProperty(value.nodes[1][field], 'toJSON', {
+      get() { invoked = true; throw new Error('canary invoked'); }
+    });
+    assert.throws(() => normalizeCompactTopology(value), /accessor|schema/i);
+    assert.equal(invoked, false, field);
+  }
+});
+
+test('compact Geo bundle applies Go HTML escaping at the exact 4096 byte boundary', () => {
+  for (const html of ['<', '>', '&']) {
+    for (const [suffix, accepted] of [['xxx', true], ['xxxx', false]]) {
+      const value = structuredClone(compactTopology());
+      delete value.nodes[1].geolocation;
+      value.nodes[1].asn = { number: 1, organization: html.repeat(676) + suffix };
+      if (accepted) assert.doesNotThrow(() => normalizeCompactTopology(value), `${html} exact 4096`);
+      else assert.throws(() => normalizeCompactTopology(value), /Geo bundle|byte limit/i, `${html} 4097`);
+    }
+  }
+});
+
+test('compact Geo bundle applies Go U+2028 and U+2029 escaping at the exact boundary', () => {
+  for (const separator of ['\u2028', '\u2029']) {
+    for (const [suffix, accepted] of [['xxx', true], ['xxxx', false]]) {
+      const value = structuredClone(compactTopology());
+      delete value.nodes[1].geolocation;
+      value.nodes[1].asn = { number: 1, organization: separator.repeat(676) + suffix };
+      if (accepted) assert.doesNotThrow(() => normalizeCompactTopology(value));
+      else assert.throws(() => normalizeCompactTopology(value), /Geo bundle|byte limit/i);
+    }
+  }
+});
+
+test('compact Geo strings reject lone UTF-16 surrogates but accept valid scalar pairs', () => {
+  for (const malformed of ['\ud800', '\udfff', `ok\ud800x`, `ok\udfffx`]) {
+    const value = structuredClone(compactTopology());
+    value.nodes[1].asn.organization = malformed;
+    assert.throws(() => normalizeCompactTopology(value), /Geo bundle|surrogate|UTF-8|schema/i);
+  }
+  const valid = structuredClone(compactTopology());
+  valid.nodes[1].asn.organization = '😀';
+  assert.equal(normalizeCompactTopology(valid).nodes[1].asn.organization, '😀');
+});
+
+test('compact Geo bundle counts Go quote, backslash, and control escapes exactly', () => {
+  for (const escaped of ['"', '\\', '\b', '\t', '\n', '\f', '\r']) {
+    const exact = structuredClone(compactTopology());
+    delete exact.nodes[1].geolocation;
+    exact.nodes[1].asn = { number: 1, organization: escaped.repeat(2000) + 'x'.repeat(59) };
+    assert.doesNotThrow(() => normalizeCompactTopology(exact));
+    exact.nodes[1].asn.organization += 'x';
+    assert.throws(() => normalizeCompactTopology(exact), /Geo bundle|byte limit/i);
+  }
+  const genericControl = structuredClone(compactTopology());
+  delete genericControl.nodes[1].geolocation;
+  genericControl.nodes[1].asn = { number: 1, organization: '\u0001'.repeat(600) + 'x'.repeat(459) };
+  assert.doesNotThrow(() => normalizeCompactTopology(genericControl));
+  genericControl.nodes[1].asn.organization += 'x';
+  assert.throws(() => normalizeCompactTopology(genericControl), /Geo bundle|byte limit/i);
+});
+
+test('compact Geo strings enforce the Go 4096 raw UTF-8 byte ceiling', () => {
+  const atRawLimit = structuredClone(compactTopology());
+  delete atRawLimit.nodes[1].geolocation;
+  atRawLimit.nodes[1].asn = { number: 1, organization: 'é'.repeat(2048) };
+  assert.throws(() => normalizeCompactTopology(atRawLimit), /Geo bundle|byte limit/i);
+
+  const overRawLimit = structuredClone(atRawLimit);
+  overRawLimit.nodes[1].asn.organization += 'é';
+  assert.throws(() => normalizeCompactTopology(overRawLimit), /Geo string exceeds byte limit/i);
+});
+
+test('compact Geo counting invokes no inherited Object conversion hook', () => {
+  const names = ['toJSON', 'toString', 'valueOf', Symbol.toPrimitive];
+  const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(Object.prototype, name)]);
+  let invoked = 0;
+  try {
+    for (const name of names) {
+      Object.defineProperty(Object.prototype, name, {
+        configurable: true,
+        writable: true,
+        value() { invoked++; throw new Error('inherited conversion canary invoked'); }
+      });
+    }
+    assert.doesNotThrow(() => normalizeCompactTopology(compactTopology()));
+    assert.equal(invoked, 0);
+  } finally {
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(Object.prototype, name, descriptor);
+      else delete Object.prototype[name];
+    }
+  }
+});
+
+test('compact Geo counting invokes no own conversion hook', () => {
+  const value = structuredClone(compactTopology());
+  let invoked = 0;
+  const canary = () => { invoked++; throw new Error('own conversion canary invoked'); };
+  for (const bundle of [value.nodes[1].geolocation, value.nodes[1].asn]) {
+    for (const name of ['toJSON', 'toString', 'valueOf', Symbol.toPrimitive]) {
+      Object.defineProperty(bundle, name, { configurable: true, enumerable: true, value: canary });
+    }
+  }
+  assert.doesNotThrow(() => normalizeCompactTopology(value));
+  assert.equal(invoked, 0);
+});
+
+test('compact Geo normalization performs no inherited optional-field accessor lookup', () => {
+  const value = structuredClone(compactTopology());
+  delete value.nodes[1].latency_ms_avg;
+  delete value.nodes[1].geolocation.city;
+  delete value.nodes[1].asn.organization;
+  const names = ['latency_ms_avg', 'city', 'organization'];
+  const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(Object.prototype, name)]);
+  let invoked = 0;
+  try {
+    for (const name of names) {
+      Object.defineProperty(Object.prototype, name, {
+        configurable: true,
+        get() { invoked++; throw new Error('inherited accessor canary invoked'); }
+      });
+    }
+    assert.doesNotThrow(() => normalizeCompactTopology(value));
+    assert.equal(invoked, 0);
+  } finally {
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(Object.prototype, name, descriptor);
+      else delete Object.prototype[name];
+    }
+  }
+});
+
+test('compact Geo counting matches Go omitempty and number rendering fixtures', () => {
+  const cases = [
+    { geolocation: { city: '', region: '', country: '', country_code: '', latitude: -0, longitude: 1e-7 }, expectedPadding: 4039 },
+    { geolocation: { latitude: 1e-7, longitude: 1e-6 }, expectedPadding: 4033 },
+    { geolocation: { latitude: 37.5, longitude: 127 }, expectedPadding: 4038 },
+    { geolocation: { latitude: -90, longitude: 180 }, expectedPadding: 4039 },
+    { asn: { number: 0, organization: '' }, expectedPadding: 4070 },
+    { asn: { organization: '' }, expectedPadding: 4070 },
+    { asn: { number: 4294967295, organization: '' }, expectedPadding: 4050 }
+  ];
+  for (const fixture of cases) {
+    const exact = structuredClone(compactTopology());
+    delete exact.nodes[1].geolocation;
+    delete exact.nodes[1].asn;
+    Object.assign(exact.nodes[1], structuredClone(fixture));
+    delete exact.nodes[1].expectedPadding;
+    const target = exact.nodes[1].geolocation ?? exact.nodes[1].asn;
+    if (exact.nodes[1].geolocation) target.city = 'x'.repeat(fixture.expectedPadding);
+    else target.organization = 'x'.repeat(fixture.expectedPadding);
+    assert.doesNotThrow(() => normalizeCompactTopology(exact));
+    if (exact.nodes[1].geolocation) target.city += 'x';
+    else target.organization += 'x';
+    assert.throws(() => normalizeCompactTopology(exact), /Geo bundle|byte limit/i);
+  }
+});
+
+test('compact routes must reference traceroute results', () => {
+  assert.throws(() => normalizeReport(legacyReport({ compact_topology: compactTopology() })), /route|traceroute|result_index/i);
+});
+
+test('compact route result references reject every non-traceroute result kind', () => {
+  for (const kind of ['dns', 'tcp', 'http', 'https', 'ssh', 'smtp', 'submission', 'smtps', 'imap', 'imaps', 'pop3', 'pop3s']) {
+    const report = legacyReport({ results: [result({ kind })], compact_topology: compactTopology() });
+    assert.throws(() => normalizeReport(report), /route|traceroute|result_index/i, kind);
+  }
+  const report = legacyReport({ results: [result({ kind: 'traceroute' })], compact_topology: compactTopology() });
+  assert.equal(normalizeReport(report).compact_topology.routes[0].result_index, 0);
+});
+
+test('linked non-traceroute result stats must be entirely zero', () => {
+  const value = structuredClone(compactTopology());
+  value.links = [];
+  value.routes = [];
+  value.stats.links = { total: 0, displayed: 0, omitted: 0 };
+  value.stats.routes = { total: 1, displayed: 0, complete: 0, partial: 0, omitted: 1 };
+  value.stats.node_observations = { total: 1, displayed: 0, omitted: 1 };
+  value.stats.link_observations = { total: 0, displayed: 0, omitted: 0 };
+  value.result_stats[0] = {
+    result_index: 0,
+    routes: { total: 1, displayed: 0, complete: 0, partial: 0, omitted: 1 },
+    node_observations: { total: 1, displayed: 0, omitted: 1 },
+    link_observations: { total: 0, displayed: 0, omitted: 0 }
+  };
+  assert.equal(normalizeCompactTopology(value).result_stats[0].routes.omitted, 1);
+  assert.throws(
+    () => normalizeReport(legacyReport({ compact_topology: value })),
+    /result_stats|non-traceroute|zero/i
+  );
+});
+
+test('linked result stats reject every nonzero counter field for non-traceroute results', () => {
+  const scenarios = {
+    'routes.total': { field: 'routes', value: { total: 1, displayed: 0, complete: 0, partial: 0, omitted: 1 } },
+    'routes.displayed': { field: 'routes', value: { total: 1, displayed: 1, complete: 1, partial: 0, omitted: 0 } },
+    'routes.complete': { field: 'routes', value: { total: 1, displayed: 1, complete: 1, partial: 0, omitted: 0 } },
+    'routes.partial': { field: 'routes', value: { total: 1, displayed: 1, complete: 0, partial: 1, omitted: 0 } },
+    'routes.omitted': { field: 'routes', value: { total: 1, displayed: 0, complete: 0, partial: 0, omitted: 1 } },
+    'node_observations.total': { field: 'node_observations', value: { total: 1, displayed: 0, omitted: 1 } },
+    'node_observations.displayed': { field: 'node_observations', value: { total: 1, displayed: 1, omitted: 0 } },
+    'node_observations.omitted': { field: 'node_observations', value: { total: 1, displayed: 0, omitted: 1 } },
+    'link_observations.total': { field: 'link_observations', value: { total: 1, displayed: 0, omitted: 1 } },
+    'link_observations.displayed': { field: 'link_observations', value: { total: 1, displayed: 1, omitted: 0 } },
+    'link_observations.omitted': { field: 'link_observations', value: { total: 1, displayed: 0, omitted: 1 } }
+  };
+  for (const [counter, { field, value: nonzero }] of Object.entries(scenarios)) {
+    const topology = emptyCompactTopology([zeroResultStats(0)]);
+    topology.result_stats[0][field] = nonzero;
+    topology.stats[field] = structuredClone(nonzero);
+    assert.throws(
+      () => normalizeReport(legacyReport({ compact_topology: topology })),
+      /result_stats|non-traceroute|zero|displayed counts|route/i,
+      counter
+    );
+  }
+});
+
+test('linked zero result stats accept all 12 non-traceroute kinds as immutable copies', () => {
+  const kinds = ['dns', 'tcp', 'http', 'https', 'ssh', 'smtp', 'submission', 'smtps', 'imap', 'imaps', 'pop3', 'pop3s'];
+  for (const kind of kinds) {
+    const nonzero = emptyCompactTopology([zeroResultStats(0)]);
+    nonzero.stats.routes = { total: 1, displayed: 0, complete: 0, partial: 0, omitted: 1 };
+    nonzero.result_stats[0].routes = structuredClone(nonzero.stats.routes);
+    assert.throws(
+      () => normalizeReport(legacyReport({ results: [result({ kind })], compact_topology: nonzero })),
+      /result_stats|non-traceroute|zero/i,
+      kind
+    );
+  }
+  const results = kinds.map(kind => result({ kind }));
+  const topology = emptyCompactTopology(kinds.map((_, index) => zeroResultStats(index)));
+  const normalized = normalizeReport(legacyReport({
+    results,
+    summary: { total: kinds.length, passed: kinds.length, failed: 0 },
+    compact_topology: topology
+  }));
+  assert.deepEqual(normalized.compact_topology.result_stats, topology.result_stats);
+  topology.result_stats[0].routes.total = 99;
+  topology.result_stats.splice(1);
+  assert.equal(normalized.compact_topology.result_stats.length, kinds.length);
+  assert.equal(normalized.compact_topology.result_stats[0].routes.total, 0);
+});
+
+test('linked result stats require existing indexes while standalone parsing retains no-linkage behavior', () => {
+  const topology = emptyCompactTopology([zeroResultStats(1)]);
+  assert.equal(normalizeCompactTopology(topology).result_stats[0].result_index, 1);
+  assert.throws(
+    () => normalizeCompactTopology(topology, 'report.compact_topology', [result()]),
+    /result_stats|unknown result|result_index/i
+  );
+  assert.throws(() => normalizeCompactTopology(emptyCompactTopology(Array.from({ length: 21 }, (_, index) => zeroResultStats(index))), 'compact_topology'), /result_stats|limit/i);
+});
+
+test('compact route reached must agree with status', () => {
+  const value = structuredClone(compactTopology());
+  value.routes[0].reached = false;
+  assert.throws(() => normalizeCompactTopology(value), /route|reached|status/i);
+});
+
+test('compact route reached equals status not unreachable for every pair', () => {
+  for (const [status, reached, accepted] of [
+    ['healthy', true, true], ['healthy', false, false],
+    ['degraded', true, true], ['degraded', false, false],
+    ['unreachable', true, false], ['unreachable', false, true]
+  ]) {
+    const value = structuredClone(compactTopology());
+    Object.assign(value.routes[0], { status, reached });
+    if (accepted) assert.equal(normalizeCompactTopology(value).routes[0].reached, reached, `${status}/${reached}`);
+    else assert.throws(() => normalizeCompactTopology(value), /route|reached|status/i, `${status}/${reached}`);
+  }
+});
+
+test('compact routes reject consecutive duplicate node IDs', () => {
+  const value = structuredClone(compactTopology());
+  value.routes[0].node_ids = ['n000001', 'n000002', 'n000002'];
+  value.stats.node_observations = { total: 3, displayed: 3, omitted: 0 };
+  value.result_stats[0].node_observations = { total: 3, displayed: 3, omitted: 0 };
+  assert.throws(() => normalizeCompactTopology(value), /route|node_ids|consecutive|duplicate/i);
+});
+
+test('compact routes reject consecutive duplicates at start, middle, and end', () => {
+  for (const node_ids of [
+    ['n000001', 'n000001', 'n000002'],
+    ['n000001', 'n000002', 'n000002', 'n000001'],
+    ['n000001', 'n000002', 'n000001', 'n000001']
+  ]) {
+    const value = structuredClone(compactTopology());
+    value.links.push({ from: 'n000002', to: 'n000001', status: 'healthy', observations: 1 });
+    value.routes[0].node_ids = node_ids;
+    assert.throws(() => normalizeCompactTopology(value), /route|node_ids|consecutive|duplicate/i, node_ids.join(','));
+  }
+});
+
+test('compact routes preserve a producer-valid non-consecutive revisit', () => {
+  const value = structuredClone(compactTopology());
+  value.nodes[0].observations = 2;
+  value.links.push({ from: 'n000002', to: 'n000001', status: 'healthy', observations: 1 });
+  value.routes[0].node_ids = ['n000001', 'n000002', 'n000001'];
+  value.stats.links = { total: 2, displayed: 2, omitted: 0 };
+  value.stats.node_observations = { total: 3, displayed: 3, omitted: 0 };
+  value.stats.link_observations = { total: 2, displayed: 2, omitted: 0 };
+  value.result_stats[0].node_observations = { total: 3, displayed: 3, omitted: 0 };
+  value.result_stats[0].link_observations = { total: 2, displayed: 2, omitted: 0 };
+
+  const normalized = normalizeCompactTopology(value);
+  assert.deepEqual(normalized.routes[0].node_ids, ['n000001', 'n000002', 'n000001']);
+  value.routes[0].node_ids[0] = 'mutated';
+  assert.deepEqual(normalized.routes[0].node_ids, ['n000001', 'n000002', 'n000001']);
 });
 
 test('compact per-result displayed route kinds must match the route array', () => {
@@ -282,19 +773,7 @@ test('compact per-result displayed route kinds must match the route array', () =
   assert.throws(() => normalizeCompactTopology(value), /result_stats|route/i);
 });
 
-test('compact routes accept backend-collapsed consecutive canonical nodes', () => {
-  const value = structuredClone(compactTopology());
-  value.routes[0].node_ids = ['n000001', 'n000002', 'n000002'];
-  value.nodes[1].observations = 2;
-  value.stats.node_observations = { total: 3, displayed: 3, omitted: 0 };
-  value.result_stats[0].node_observations = { total: 3, displayed: 3, omitted: 0 };
-
-  const normalized = normalizeCompactTopology(value);
-  assert.deepEqual(normalized.routes[0].node_ids, ['n000001', 'n000002']);
-  assert.deepEqual(normalized.stats.node_observations, value.stats.node_observations);
-});
-
-test('compact route observation stats count emitted route entries independently of raw node observations', () => {
+test('compact routes preserve backend-collapsed canonical node observations', () => {
   const value = structuredClone(compactTopology());
   value.nodes[1].observations = 2;
   value.stats.node_observations = { total: 2, displayed: 2, omitted: 0 };

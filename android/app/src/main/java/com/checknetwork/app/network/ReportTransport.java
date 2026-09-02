@@ -32,8 +32,8 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Bounded synchronous report transport. A Call may be executed once and cancelled from another thread. */
 public final class ReportTransport {
     public static final int MAX_ERROR_BODY_BYTES = 64 * 1024;
-    public static final long DEADLINE_GRACE_MILLIS = 7_000L;
-    public static final long MAX_DEADLINE_MILLIS = 307_000L;
+    public static final long DEADLINE_GRACE_MILLIS = 15_000L;
+    public static final long MAX_DEADLINE_MILLIS = 315_000L;
 
     private static final ScheduledExecutorService DEFAULT_SCHEDULER = Executors.newSingleThreadScheduledExecutor(new DaemonFactory());
 
@@ -92,6 +92,22 @@ public final class ReportTransport {
         }
     }
 
+    /** Returns the unspent, capped deadline without extending it when a monotonic clock regresses. */
+    static long boundedDeadlineMillis(long startedNanos, long budgetMillis, long nowNanos) {
+        long boundedBudget = Math.max(0L, Math.min(MAX_DEADLINE_MILLIS, budgetMillis));
+        if (boundedBudget == 0L || nowNanos == startedNanos) return boundedBudget;
+        long elapsedNanos = nowNanos - startedNanos;
+        if (elapsedNanos < 0L) return nowNanos < startedNanos ? boundedBudget : 0L;
+        long budgetNanos = TimeUnit.MILLISECONDS.toNanos(boundedBudget);
+        if (elapsedNanos >= budgetNanos) return 0L;
+        long remainingNanos = budgetNanos - elapsedNanos;
+        return Math.min(boundedBudget, 1L + (remainingNanos - 1L) / 1_000_000L);
+    }
+
+    static int toSocketTimeoutMillis(long remainingMillis) {
+        return (int) Math.max(1L, Math.min(Math.min(MAX_DEADLINE_MILLIS, Integer.MAX_VALUE), remainingMillis));
+    }
+
     public final class Call {
         private enum Terminal { ACTIVE, SUCCESS, TIMEOUT, CANCELLED }
 
@@ -100,6 +116,7 @@ public final class ReportTransport {
         private final AtomicReference<HttpURLConnection> connection = new AtomicReference<>();
         private final AtomicBoolean disconnected = new AtomicBoolean();
         private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicReference<Long> remainingCeilingMillis = new AtomicReference<>(MAX_DEADLINE_MILLIS);
 
         private Call(ReportRequest request) { this.request = request; }
 
@@ -107,61 +124,59 @@ public final class ReportTransport {
 
         public Response execute() throws TransportException {
             if (!started.compareAndSet(false, true)) throw failure(TransportException.Kind.INVALID_RESPONSE);
+            long startedNanos = clock.nanoTime();
+            long budgetMillis = deadlineMillis(request);
             throwIfTerminal();
             byte[] requestBytes = request.toJson().getBytes(StandardCharsets.UTF_8);
             if (requestBytes.length > ContractLimits.MAX_TRANSPORT_BYTES) throw failure(TransportException.Kind.RESPONSE_TOO_LARGE);
             throwIfTerminal();
 
-            long budgetMillis = deadlineMillis(request);
-            long startedNanos = clock.nanoTime();
-            long budgetNanos;
-            try { budgetNanos = Math.multiplyExact(budgetMillis, 1_000_000L); }
-            catch (ArithmeticException overflow) { budgetNanos = Long.MAX_VALUE; }
-            final long absoluteBudgetNanos = budgetNanos;
             Scheduled deadline = null;
             try {
-                deadline = scheduler.schedule(() -> stop(Terminal.TIMEOUT), budgetMillis);
+                remainingDeadlineOrThrow(startedNanos, budgetMillis);
                 HttpURLConnection opened = connections.open(config.reportsEndpoint().toURL());
                 connection.set(opened);
                 if (terminal.get() != Terminal.ACTIVE) disconnectOnce();
-                throwIfStoppedOrExpired(startedNanos, absoluteBudgetNanos);
-                configure(opened, requestBytes.length);
+                long remainingMillis = remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                deadline = scheduler.schedule(() -> stop(Terminal.TIMEOUT), remainingMillis);
+                throwIfTerminal();
+                int socketTimeoutMillis = toSocketTimeoutMillis(remainingDeadlineOrThrow(startedNanos, budgetMillis));
+                configure(opened, requestBytes.length, socketTimeoutMillis);
                 try (OutputStream output = opened.getOutputStream()) { output.write(requestBytes); }
-                throwIfStoppedOrExpired(startedNanos, absoluteBudgetNanos);
+                throwIfStoppedOrExpired(startedNanos, budgetMillis);
 
                 int status = opened.getResponseCode();
-                throwIfStoppedOrExpired(startedNanos, absoluteBudgetNanos);
+                throwIfStoppedOrExpired(startedNanos, budgetMillis);
                 if (status < 200 || status >= 300) {
-                    String body = readErrorBody(opened, startedNanos, absoluteBudgetNanos);
+                    String body = readErrorBody(opened, startedNanos, budgetMillis);
                     String retryAfter;
                     try { retryAfter = opened.getHeaderField("Retry-After"); }
                     catch (RuntimeException ignored) { retryAfter = null; }
                     throw new TransportException(ApiError.parse(status, body, retryAfter, clock.now()));
                 }
-                byte[] responseBytes = readSuccessBody(opened, startedNanos, absoluteBudgetNanos);
+                byte[] responseBytes = readSuccessBody(opened, startedNanos, budgetMillis);
                 String raw = decodeUtf8(responseBytes);
                 final Report report;
                 try { report = ReportParser.parse(raw); }
                 catch (RuntimeException malformed) { throw failure(TransportException.Kind.INVALID_RESPONSE); }
-                throwIfStoppedOrExpired(startedNanos, absoluteBudgetNanos);
+                throwIfStoppedOrExpired(startedNanos, budgetMillis);
                 if (!terminal.compareAndSet(Terminal.ACTIVE, Terminal.SUCCESS)) throwIfTerminal();
                 return new Response(raw, report);
             } catch (TransportException expected) {
-                throw winnerOr(expected);
+                throw winnerOr(expected, startedNanos, budgetMillis);
             } catch (SocketTimeoutException timeout) {
-                throw winnerOr(failure(TransportException.Kind.TIMEOUT));
+                throw winnerOr(failure(TransportException.Kind.TIMEOUT), startedNanos, budgetMillis);
             } catch (IOException network) {
-                throw winnerOr(failure(TransportException.Kind.NETWORK));
+                throw winnerOr(failure(TransportException.Kind.NETWORK), startedNanos, budgetMillis);
             } finally {
                 safeCancelDeadline(deadline);
                 disconnectOnce();
             }
         }
 
-        private void configure(HttpURLConnection opened, int requestLength) throws IOException {
-            int perOperationTimeout = request.timeoutMs();
-            opened.setConnectTimeout(perOperationTimeout);
-            opened.setReadTimeout(perOperationTimeout);
+        private void configure(HttpURLConnection opened, int requestLength, int remainingMillis) throws IOException {
+            opened.setConnectTimeout(remainingMillis);
+            opened.setReadTimeout(remainingMillis);
             opened.setInstanceFollowRedirects(false);
             opened.setRequestMethod("POST");
             opened.setDoOutput(true);
@@ -221,10 +236,16 @@ public final class ReportTransport {
             return output.toByteArray();
         }
 
-        private void throwIfStoppedOrExpired(long start, long budget) throws TransportException {
-            long elapsed = clock.nanoTime() - start;
-            if (elapsed >= budget && terminal.compareAndSet(Terminal.ACTIVE, Terminal.TIMEOUT)) disconnectOnce();
+        private long remainingDeadlineOrThrow(long start, long budgetMillis) throws TransportException {
+            long measured = boundedDeadlineMillis(start, budgetMillis, clock.nanoTime());
+            long remaining = remainingCeilingMillis.updateAndGet(previous -> Math.min(previous, measured));
+            if (remaining == 0L && terminal.compareAndSet(Terminal.ACTIVE, Terminal.TIMEOUT)) disconnectOnce();
             throwIfTerminal();
+            return remaining;
+        }
+
+        private void throwIfStoppedOrExpired(long start, long budgetMillis) throws TransportException {
+            remainingDeadlineOrThrow(start, budgetMillis);
         }
 
         private void throwIfTerminal() throws TransportException {
@@ -233,7 +254,9 @@ public final class ReportTransport {
             if (state == Terminal.CANCELLED) throw failure(TransportException.Kind.CANCELLED);
         }
 
-        private TransportException winnerOr(TransportException fallback) {
+        private TransportException winnerOr(TransportException fallback, long start, long budgetMillis) {
+            long remaining = boundedDeadlineMillis(start, budgetMillis, clock.nanoTime());
+            if (remaining == 0L && terminal.compareAndSet(Terminal.ACTIVE, Terminal.TIMEOUT)) disconnectOnce();
             Terminal state = terminal.get();
             if (state == Terminal.TIMEOUT) return failure(TransportException.Kind.TIMEOUT);
             if (state == Terminal.CANCELLED) return failure(TransportException.Kind.CANCELLED);

@@ -1,6 +1,7 @@
 package com.checknetwork.app.core;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -15,13 +16,16 @@ public final class Report {
         EXECUTION_TIMEOUT, EXECUTION_CANCELLED, TLS_DOWNGRADE, TLS_CERTIFICATE_EXPIRED,
         TLS_CERTIFICATE_EXPIRING, TLS_HANDSHAKE_FAILED, TARGET_POLICY_BLOCKED,
         TRACEROUTE_UNREACHABLE, TRACEROUTE_PARTIAL_REACHABILITY, TRACEROUTE_PATH_DEGRADED,
-        TRACEROUTE_PATH_UNSTABLE, TRACEROUTE_EXECUTION_FAILED
+        TRACEROUTE_PATH_UNSTABLE, TRACEROUTE_EXECUTION_FAILED, CHECKER_PANIC,
+        CHECKER_CAPACITY_UNAVAILABLE
     }
     public enum Severity { CRITICAL, WARNING, INFO }
     public enum Category { NAME_RESOLUTION, CONNECTIVITY, APPLICATION, SECURITY, ROUTING, EXECUTION, INPUT }
     public enum Confidence { DIRECT, CORROBORATED, LIMITED }
     public enum Provenance { RESULT, DETAILS }
     public enum CoverageCode { MISSING_DETAILS, MALFORMED_DETAILS, UNSUPPORTED_DETAILS }
+    public enum EnrichmentSource { UPSTREAM, CACHE, MIXED, NONE }
+    public enum EnrichmentFailureKind { BUSY, CANCELLED, MALFORMED, NOT_FOUND, POLICY, RATE_LIMITED, TIMEOUT, UNAVAILABLE }
 
     private final String id;
     private final Status status;
@@ -119,14 +123,47 @@ public final class Report {
         public String signal(){return signal;} public String reason(){return reason;}
     }
 
+    public static final class EnrichmentFailure {
+        private final EnrichmentFailureKind kind;
+        private final int count;
+        private final boolean retryable;
+        EnrichmentFailure(EnrichmentFailureKind kind,int count,boolean retryable){
+            this.kind=kind;this.count=count;this.retryable=retryable;
+        }
+        public EnrichmentFailureKind kind(){return kind;}
+        public int count(){return count;}
+        public boolean retryable(){return retryable;}
+    }
+
+    public static final class EnrichmentCoverage {
+        private final String provider;
+        private final EnrichmentSource source;
+        private final int cacheHits,upstreamFetches;
+        private final long maxAgeMs;
+        private final List<EnrichmentFailure> failures;
+        EnrichmentCoverage(String provider,EnrichmentSource source,int cacheHits,int upstreamFetches,long maxAgeMs,List<EnrichmentFailure> failures){
+            this.provider=provider;this.source=source;this.cacheHits=cacheHits;this.upstreamFetches=upstreamFetches;this.maxAgeMs=maxAgeMs;
+            this.failures=Collections.unmodifiableList(new ArrayList<>(failures));
+        }
+        public String provider(){return provider;}
+        public EnrichmentSource source(){return source;}
+        public int cacheHits(){return cacheHits;}
+        public int upstreamFetches(){return upstreamFetches;}
+        public long maxAgeMs(){return maxAgeMs;}
+        public List<EnrichmentFailure> failures(){return failures;}
+    }
+
     public static final class Coverage {
         private final List<String> available,missing; private final List<CoverageIssue> providerFailures,limitations;
-        Coverage(List<String> available,List<String> missing,List<CoverageIssue> providerFailures,List<CoverageIssue> limitations){
+        private final List<EnrichmentCoverage> enrichment;
+        Coverage(List<String> available,List<String> missing,List<CoverageIssue> providerFailures,List<CoverageIssue> limitations,List<EnrichmentCoverage> enrichment){
             this.available=Collections.unmodifiableList(available);this.missing=Collections.unmodifiableList(missing);
             this.providerFailures=Collections.unmodifiableList(providerFailures);this.limitations=Collections.unmodifiableList(limitations);
+            this.enrichment=Collections.unmodifiableList(new ArrayList<>(enrichment));
         }
         public List<String> available(){return available;} public List<String> missing(){return missing;}
         public List<CoverageIssue> providerFailures(){return providerFailures;} public List<CoverageIssue> limitations(){return limitations;}
+        public List<EnrichmentCoverage> enrichment(){return enrichment;}
     }
 
     /** No graph API is exposed; callers receive only summary values and an immutable opaque copy. */

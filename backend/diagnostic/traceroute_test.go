@@ -2,14 +2,145 @@ package diagnostic
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+type geoIPLookupFunc func(context.Context, net.IP) (IPMetadata, error)
+
+func (fn geoIPLookupFunc) Lookup(ctx context.Context, ip net.IP) (IPMetadata, error) {
+	return fn(ctx, ip)
+}
+
+func TestTracerouteEmitsFreshUpstreamGeoIPEnrichmentCoverage(t *testing.T) {
+	now := time.Now().UTC()
+	checker := TracerouteChecker{
+		Command: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("traceroute to 8.8.8.8 (8.8.8.8), 30 hops max\n1  8.8.8.8  1.0 ms\n"), nil
+		},
+		GeoIP: geoIPLookupFunc(func(context.Context, net.IP) (IPMetadata, error) {
+			return IPMetadata{Source: GeoIPSourceUpstream, FetchedAt: now, ExpiresAt: now.Add(defaultGeoIPCacheTTL)}, nil
+		}),
+	}
+
+	result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "8.8.8.8", Attempts: 1})
+	coverage, ok := result.Details["geoip_enrichment"].(EnrichmentCoverage)
+	if !ok {
+		t.Fatalf("geoip_enrichment = %#v", result.Details["geoip_enrichment"])
+	}
+	want := EnrichmentCoverage{Provider: "geoip", Source: EnrichmentSourceUpstream, UpstreamFetches: 1, MaxAgeMS: coverage.MaxAgeMS, Failures: []EnrichmentFailure{}}
+	if !reflect.DeepEqual(coverage, want) {
+		t.Fatalf("coverage = %+v, want %+v", coverage, want)
+	}
+	if coverage.MaxAgeMS < 0 || coverage.MaxAgeMS > 100 {
+		t.Fatalf("fresh upstream max_age_ms = %d", coverage.MaxAgeMS)
+	}
+	if _, exists := result.Details["geoip_provider_failures"]; exists {
+		t.Fatalf("zero legacy provider failures emitted: %+v", result.Details)
+	}
+	encoded, err := json.Marshal(coverage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, canary := range []string{"8.8.8.8", "target", "error", "timestamp", "url"} {
+		if strings.Contains(strings.ToLower(string(encoded)), canary) {
+			t.Fatalf("privacy canary %q leaked in %s", canary, encoded)
+		}
+	}
+}
+
+func TestGeoIPEnrichmentCoverageAggregatesUniqueMixedLookupsAndTypedFailures(t *testing.T) {
+	now := time.Now().UTC()
+	attempts := []TraceAttempt{
+		{Topology: &Topology{Nodes: []TopologyNode{{Address: "8.8.8.8"}, {Address: "1.1.1.1"}, {Address: "9.9.9.9"}}}},
+		{Topology: &Topology{Nodes: []TopologyNode{{Address: "8.8.8.8"}, {Address: "208.67.222.222"}}}},
+	}
+	lookup := geoIPLookupFunc(func(_ context.Context, ip net.IP) (IPMetadata, error) {
+		switch ip.String() {
+		case "8.8.8.8":
+			fetched := now.Add(-72 * time.Hour)
+			return IPMetadata{Source: GeoIPSourceCache, FetchedAt: fetched, ExpiresAt: fetched.Add(time.Hour)}, nil
+		case "1.1.1.1":
+			return IPMetadata{Source: GeoIPSourceUpstream, FetchedAt: now.Add(time.Hour), ExpiresAt: now.Add(2 * time.Hour)}, nil
+		case "9.9.9.9":
+			return IPMetadata{}, &GeoIPError{Kind: GeoIPErrorTimeout, Retryable: true}
+		default:
+			return IPMetadata{}, errors.New("SECRET provider URL https://geo.invalid/208.67.222.222")
+		}
+	})
+
+	coverage := enrichTopologiesWithCoverage(context.Background(), attempts, lookup)
+	want := EnrichmentCoverage{
+		Provider: "geoip", Source: EnrichmentSourceMixed, CacheHits: 1, UpstreamFetches: 1,
+		MaxAgeMS: time.Hour.Milliseconds(),
+		Failures: []EnrichmentFailure{
+			{Kind: GeoIPErrorTimeout, Count: 1, Retryable: true},
+			{Kind: GeoIPErrorUnavailable, Count: 1, Retryable: true},
+		},
+	}
+	if !reflect.DeepEqual(coverage, want) {
+		t.Fatalf("coverage = %+v, want %+v", coverage, want)
+	}
+	if failures := enrichmentFailureCount(coverage.Failures); failures != 2 {
+		t.Fatalf("legacy failure count = %d, want 2", failures)
+	}
+	encoded, err := json.Marshal(coverage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, canary := range []string{"secret", "geo.invalid", "208.67.222.222", "fetched_at", "expires_at"} {
+		if strings.Contains(strings.ToLower(string(encoded)), canary) {
+			t.Fatalf("privacy canary %q leaked in %s", canary, encoded)
+		}
+	}
+}
+
+func TestGeoIPFailureKindsHaveFixedRetryabilityAndStableOrder(t *testing.T) {
+	want := []EnrichmentFailure{
+		{Kind: GeoIPErrorBusy, Count: 1, Retryable: true},
+		{Kind: GeoIPErrorCancelled, Count: 1, Retryable: false},
+		{Kind: GeoIPErrorMalformed, Count: 1, Retryable: false},
+		{Kind: GeoIPErrorNotFound, Count: 1, Retryable: false},
+		{Kind: GeoIPErrorPolicy, Count: 1, Retryable: false},
+		{Kind: GeoIPErrorRateLimited, Count: 1, Retryable: true},
+		{Kind: GeoIPErrorTimeout, Count: 1, Retryable: true},
+		{Kind: GeoIPErrorUnavailable, Count: 1, Retryable: true},
+	}
+	got := make([]EnrichmentFailure, 0, len(geoIPFailureKinds()))
+	for _, kind := range geoIPFailureKinds() {
+		normalizedKind, retryable := normalizedGeoIPFailure(&GeoIPError{Kind: kind, Retryable: !geoIPFailureRetryable(kind)})
+		got = append(got, EnrichmentFailure{Kind: normalizedKind, Count: 1, Retryable: retryable})
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fixed failures = %+v, want %+v", got, want)
+	}
+}
+
+func TestTraceroutePreservesLegacyGeoIPProviderFailureCount(t *testing.T) {
+	checker := TracerouteChecker{
+		Command: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("traceroute to 8.8.8.8 (8.8.8.8), 30 hops max\n1  8.8.8.8  1.0 ms\n"), nil
+		},
+		GeoIP: geoIPLookupFunc(func(context.Context, net.IP) (IPMetadata, error) {
+			return IPMetadata{}, errors.New("provider prose must not escape")
+		}),
+	}
+	result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "8.8.8.8", Attempts: 1})
+	if result.Details["geoip_provider_failures"] != 1 {
+		t.Fatalf("legacy failure count = %#v", result.Details["geoip_provider_failures"])
+	}
+	coverage := result.Details["geoip_enrichment"].(EnrichmentCoverage)
+	if coverage.Source != EnrichmentSourceNone || !reflect.DeepEqual(coverage.Failures, []EnrichmentFailure{{Kind: GeoIPErrorUnavailable, Count: 1, Retryable: true}}) {
+		t.Fatalf("coverage = %+v", coverage)
+	}
+}
 
 func TestParseTracerouteRejectsOutputOverByteLimit(t *testing.T) {
 	output := "traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  1.0 ms\n"

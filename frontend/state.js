@@ -31,6 +31,18 @@ const CONFIDENCES = new Set(['direct', 'corroborated', 'limited']);
 const CATEGORIES = new Set(['name_resolution', 'connectivity', 'application', 'security', 'routing', 'execution', 'input']);
 const PROVENANCES = new Set(['result', 'details']);
 const COVERAGE_CODES = new Set(['missing_details', 'malformed_details', 'unsupported_details']);
+const ENRICHMENT_SOURCES = new Set(['upstream', 'cache', 'mixed', 'none']);
+const ENRICHMENT_FAILURE_RETRYABLE = Object.freeze({
+  busy: true,
+  cancelled: false,
+  malformed: false,
+  not_found: false,
+  policy: false,
+  rate_limited: true,
+  timeout: true,
+  unavailable: true
+});
+const ENRICHMENT_FAILURE_KINDS = Object.freeze(Object.keys(ENRICHMENT_FAILURE_RETRYABLE));
 const TOPOLOGY_STATUSES = new Set(['healthy', 'degraded', 'unknown', 'failure']);
 const COMPACT_NODE_KINDS = new Set(['local', 'ip', 'hostname', 'unknown']);
 const COMPACT_TRUNCATION_REASONS = Object.freeze(['node_limit', 'link_limit', 'response_size', 'geo_metadata_limit']);
@@ -41,8 +53,19 @@ const FINDING_CODES = new Set([
   'execution_timeout', 'execution_cancelled', 'tls_downgrade', 'tls_certificate_expired',
   'tls_certificate_expiring', 'tls_handshake_failed', 'target_policy_blocked',
   'traceroute_unreachable', 'traceroute_partial_reachability', 'traceroute_path_degraded',
-  'traceroute_path_unstable', 'traceroute_execution_failed'
+  'traceroute_path_unstable', 'traceroute_execution_failed', 'checker_panic',
+  'checker_capacity_unavailable'
 ]);
+const FINDING_PRESENTATIONS = Object.freeze({
+  checker_panic: Object.freeze({
+    title: 'Checker execution failed',
+    summary: 'The checker stopped unexpectedly, so service health was not established.'
+  }),
+  checker_capacity_unavailable: Object.freeze({
+    title: 'Checker capacity was unavailable',
+    summary: 'The bounded checker supervisor had no execution slot, so service health was not established.'
+  })
+});
 const API_ERROR_CODES = new Set([
   'invalid_json', 'invalid_request', 'server_busy', 'internal_error',
   'network_policy_blocked', 'unauthorized', 'rate_limited'
@@ -241,7 +264,7 @@ function clientTimeoutMS(payload) {
     attempts = Math.min(10, Math.max(1, attempts));
     longest = Math.max(longest, timeout * attempts);
   }
-  return Math.min(307000, longest + 7000);
+  return Math.min(315000, longest + 15000);
 }
 
 function parseRetryAfter(value, nowMS = Date.now()) {
@@ -336,14 +359,64 @@ function normalizeCoverageIssue(value, path) {
   };
 }
 
+function exactFields(value, expected, path) {
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expected.length || expected.some(key => !Object.hasOwn(value, key)) || keys.some(key => typeof key !== 'string' || !expected.includes(key))) {
+    throw schemaError(path, 'expected exact fields');
+  }
+}
+
+function normalizeEnrichment(value, path = 'analysis.coverage.enrichment') {
+  const entries = array(value, path, 1);
+  const normalized = entries.map((entry, index) => {
+    const itemPath = `${path}[${index}]`;
+    const source = object(entry, itemPath);
+    exactFields(source, ['provider', 'source', 'cache_hits', 'upstream_fetches', 'max_age_ms', 'failures'], itemPath);
+    if (source.provider !== 'geoip') throw schemaError(`${itemPath}.provider`, 'unsupported value');
+    const cacheHits = integer(source.cache_hits, `${itemPath}.cache_hits`, 0, 6200);
+    const upstreamFetches = integer(source.upstream_fetches, `${itemPath}.upstream_fetches`, 0, 6200);
+    const failuresSource = array(source.failures, `${itemPath}.failures`, ENRICHMENT_FAILURE_KINDS.length);
+    let total = cacheHits + upstreamFetches;
+    if (total > 6200) throw schemaError(itemPath, 'lookup count exceeds limit 6200');
+    let previous = '';
+    const failures = failuresSource.map((entryValue, failureIndex) => {
+      const failurePath = `${itemPath}.failures[${failureIndex}]`;
+      const failure = object(entryValue, failurePath);
+      exactFields(failure, ['kind', 'count', 'retryable'], failurePath);
+      if (typeof failure.kind !== 'string' || !Object.hasOwn(ENRICHMENT_FAILURE_RETRYABLE, failure.kind)) throw schemaError(`${failurePath}.kind`, 'unsupported value');
+      if (failure.kind <= previous) throw schemaError(`${itemPath}.failures`, 'must contain unique kinds in canonical order');
+      previous = failure.kind;
+      const count = integer(failure.count, `${failurePath}.count`, 1, 6200);
+      const retryable = boolean(failure.retryable, `${failurePath}.retryable`);
+      if (retryable !== ENRICHMENT_FAILURE_RETRYABLE[failure.kind]) throw schemaError(`${failurePath}.retryable`, 'contradicts failure kind');
+      total += count;
+      if (total > 6200) throw schemaError(itemPath, 'lookup count exceeds limit 6200');
+      return Object.freeze({ kind: failure.kind, count, retryable });
+    });
+    const expectedSource = cacheHits > 0
+      ? (upstreamFetches > 0 ? 'mixed' : 'cache')
+      : (upstreamFetches > 0 ? 'upstream' : 'none');
+    const enrichmentSource = enumValue(source.source, ENRICHMENT_SOURCES, `${itemPath}.source`);
+    if (enrichmentSource !== expectedSource) throw schemaError(`${itemPath}.source`, 'contradicts success counts');
+    return Object.freeze({
+      provider: 'geoip', source: enrichmentSource, cache_hits: cacheHits, upstream_fetches: upstreamFetches,
+      max_age_ms: integer(source.max_age_ms, `${itemPath}.max_age_ms`, 0, 86400000), failures: Object.freeze(failures)
+    });
+  });
+  return Object.freeze(normalized);
+}
+
 function normalizeAnalysis(value) {
   const source = object(value, 'analysis');
   const findings = array(source.findings, 'analysis.findings', SCHEMA_LIMITS.findings).map((entry, index) => {
     const path = `analysis.findings[${index}]`; const item = object(entry, path);
+    const code = enumValue(item.code, FINDING_CODES, `${path}.code`);
+    const presentation = FINDING_PRESENTATIONS[code];
     return {
-      id: text(item.id, `${path}.id`), code: enumValue(item.code, FINDING_CODES, `${path}.code`),
+      id: text(item.id, `${path}.id`), code,
       severity: enumValue(item.severity, SEVERITIES, `${path}.severity`), category: enumValue(item.category, CATEGORIES, `${path}.category`),
-      title: text(item.title, `${path}.title`), summary: text(item.summary, `${path}.summary`),
+      title: presentation?.title ?? text(item.title, `${path}.title`),
+      summary: presentation?.summary ?? text(item.summary, `${path}.summary`),
       confidence: enumValue(item.confidence, CONFIDENCES, `${path}.confidence`),
       evidence_ids: normalizeStringArray(item.evidence_ids, `${path}.evidence_ids`, SCHEMA_LIMITS.evidence),
       action_ids: normalizeStringArray(item.action_ids, `${path}.action_ids`, SCHEMA_LIMITS.actions)
@@ -371,6 +444,9 @@ function normalizeAnalysis(value) {
     coverage: {
       available: normalizeStringArray(coverageSource.available, 'analysis.coverage.available'),
       missing: normalizeStringArray(coverageSource.missing, 'analysis.coverage.missing'),
+      enrichment: coverageSource.enrichment === undefined
+        ? Object.freeze([])
+        : normalizeEnrichment(coverageSource.enrichment),
       provider_failures: normalizeIssues('provider_failures'), limitations: normalizeIssues('limitations')
     }
   };
@@ -449,7 +525,72 @@ function normalizeCompactRouteCount(value, path) {
   return normalized;
 }
 
-function normalizeCompactTopology(value, path = 'compact_topology') {
+function ownValue(value, key) {
+  return Object.getOwnPropertyDescriptor(value, key)?.value;
+}
+
+function goJSONStringBytes(value, path) {
+  let encoded = 2;
+  let utf8 = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const low = index + 1 < value.length ? value.charCodeAt(index + 1) : 0;
+      if (low < 0xdc00 || low > 0xdfff) throw schemaError(path, 'malformed UTF-16 surrogate');
+      encoded += 4;
+      utf8 += 4;
+      index++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      throw schemaError(path, 'malformed UTF-16 surrogate');
+    } else {
+      utf8 += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
+      if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) encoded += 2;
+      else if (code < 0x20 || code === 0x3c || code === 0x3e || code === 0x26 || code === 0x2028 || code === 0x2029) encoded += 6;
+      else encoded += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
+    }
+    if (utf8 > COMPACT_LIMITS.maxGeoBundleBytes) throw schemaError(path, 'Geo string exceeds byte limit');
+  }
+  return encoded;
+}
+
+function goJSONNumberBytes(value) {
+  return (Object.is(value, -0) ? '-0' : String(value)).length;
+}
+
+function compactGeoBundleBytes(hasGeo, city, region, country, countryCode, latitude, longitude, hasASN, asnNumber, organization, path) {
+  let bytes = 0;
+  if (hasGeo) {
+    bytes += ',"geolocation":{'.length;
+    let first = true;
+    for (const [key, value, fieldPath] of [
+      ['city', city, `${path}.geolocation.city`],
+      ['region', region, `${path}.geolocation.region`],
+      ['country', country, `${path}.geolocation.country`],
+      ['country_code', countryCode, `${path}.geolocation.country_code`]
+    ]) {
+      if (value === '') continue;
+      bytes += (first ? 0 : 1) + key.length + 3 + goJSONStringBytes(value, fieldPath);
+      first = false;
+    }
+    bytes += (first ? 0 : 1) + 'latitude'.length + 3 + goJSONNumberBytes(latitude);
+    bytes += 1 + 'longitude'.length + 3 + goJSONNumberBytes(longitude) + 1;
+  }
+  if (hasASN) {
+    bytes += ',"asn":{'.length;
+    let first = true;
+    if (asnNumber !== 0) {
+      bytes += 'number'.length + 3 + goJSONNumberBytes(asnNumber);
+      first = false;
+    }
+    if (organization !== '') {
+      bytes += (first ? 0 : 1) + 'organization'.length + 3 + goJSONStringBytes(organization, `${path}.asn.organization`);
+    }
+    bytes++;
+  }
+  return bytes;
+}
+
+function normalizeCompactTopology(value, path = 'compact_topology', reportResults = null) {
   const source = object(value, path);
   if (source.schema !== 'compact-v1') throw schemaError(`${path}.schema`, 'unsupported value');
   if (source.selection !== 'fair-complete-prefix-v1') throw schemaError(`${path}.selection`, 'unsupported value');
@@ -478,20 +619,46 @@ function normalizeCompactTopology(value, path = 'compact_topology') {
       hop_max: integer(item.hop_max, `${itemPath}.hop_max`, 0, 255),
       observations: integer(item.observations, `${itemPath}.observations`, 1, SCHEMA_LIMITS.reportTopologyNodes)
     };
-    if (item.public_ip !== undefined) normalized.public_ip = boolean(item.public_ip, `${itemPath}.public_ip`);
+    const publicIP = ownValue(item, 'public_ip');
+    if (publicIP !== undefined) normalized.public_ip = boolean(publicIP, `${itemPath}.public_ip`);
     if (normalized.hop_min > normalized.hop_max) throw schemaError(itemPath, 'hop_min exceeds hop_max');
-    if (item.latency_ms_avg !== undefined) normalized.latency_ms_avg = finite(item.latency_ms_avg, `${itemPath}.latency_ms_avg`, 0, Number.MAX_SAFE_INTEGER);
-    if (item.geolocation !== undefined && item.geolocation !== null) {
-      const geo = object(item.geolocation, `${itemPath}.geolocation`);
-      normalized.geolocation = {
-        city: optionalText(geo.city, `${itemPath}.geolocation.city`), region: optionalText(geo.region, `${itemPath}.geolocation.region`),
-        country: optionalText(geo.country, `${itemPath}.geolocation.country`), country_code: optionalText(geo.country_code, `${itemPath}.geolocation.country_code`),
-        latitude: finite(geo.latitude, `${itemPath}.geolocation.latitude`, -90, 90), longitude: finite(geo.longitude, `${itemPath}.geolocation.longitude`, -180, 180)
-      };
+    const latency = ownValue(item, 'latency_ms_avg');
+    if (latency !== undefined) normalized.latency_ms_avg = finite(latency, `${itemPath}.latency_ms_avg`, 0, Number.MAX_SAFE_INTEGER);
+    const geolocationValue = ownValue(item, 'geolocation');
+    const asnValue = ownValue(item, 'asn');
+    const hasGeo = geolocationValue !== undefined && geolocationValue !== null;
+    const hasASN = asnValue !== undefined && asnValue !== null;
+    if ((hasGeo || hasASN) && normalized.public_ip !== true) throw schemaError(itemPath, 'Geo bundle requires public_ip true');
+    let city = '';
+    let region = '';
+    let country = '';
+    let countryCode = '';
+    let latitude = 0;
+    let longitude = 0;
+    let asnNumber = 0;
+    let organization = '';
+    if (hasGeo) {
+      const geo = object(geolocationValue, `${itemPath}.geolocation`);
+      city = optionalText(ownValue(geo, 'city'), `${itemPath}.geolocation.city`);
+      region = optionalText(ownValue(geo, 'region'), `${itemPath}.geolocation.region`);
+      country = optionalText(ownValue(geo, 'country'), `${itemPath}.geolocation.country`);
+      countryCode = optionalText(ownValue(geo, 'country_code'), `${itemPath}.geolocation.country_code`);
+      latitude = finite(ownValue(geo, 'latitude'), `${itemPath}.geolocation.latitude`, -90, 90);
+      longitude = finite(ownValue(geo, 'longitude'), `${itemPath}.geolocation.longitude`, -180, 180);
+      normalized.geolocation = { city, region, country, country_code: countryCode, latitude, longitude };
     }
-    if (item.asn !== undefined && item.asn !== null) {
-      const asn = object(item.asn, `${itemPath}.asn`);
-      normalized.asn = { number: integer(asn.number, `${itemPath}.asn.number`, 0, 4294967295), organization: optionalText(asn.organization, `${itemPath}.asn.organization`) };
+    if (hasASN) {
+      const asn = object(asnValue, `${itemPath}.asn`);
+      const rawASNNumber = ownValue(asn, 'number');
+      asnNumber = integer(rawASNNumber === undefined ? 0 : rawASNNumber, `${itemPath}.asn.number`, 0, 4294967295);
+      organization = optionalText(ownValue(asn, 'organization'), `${itemPath}.asn.organization`);
+      normalized.asn = { number: asnNumber, organization };
+    }
+    if (compactGeoBundleBytes(
+      hasGeo, city, region, country, countryCode, latitude, longitude,
+      hasASN, asnNumber, organization, itemPath
+    ) > limits.max_geo_bundle_bytes) {
+      throw schemaError(itemPath, 'Geo bundle exceeds byte limit');
     }
     return normalized;
   });
@@ -523,17 +690,25 @@ function normalizeCompactTopology(value, path = 'compact_topology') {
     const item = object(entry, itemPath);
     const rawNodeIDs = array(item.node_ids, `${itemPath}.node_ids`, 32).map((id, nodeIndex) => text(id, `${itemPath}.node_ids[${nodeIndex}]`));
     if (rawNodeIDs.length === 0 || rawNodeIDs.some(id => !nodeIDs.has(id))) throw schemaError(itemPath, 'route references an unknown node');
-    const node_ids = rawNodeIDs.filter((id, nodeIndex) => nodeIndex === 0 || id !== rawNodeIDs[nodeIndex - 1]);
-    for (let nodeIndex = 1; nodeIndex < node_ids.length; nodeIndex++) {
-      if (!linkKeys.has(`${node_ids[nodeIndex - 1]}\u0000${node_ids[nodeIndex]}`)) throw schemaError(itemPath, 'route edge has no matching directed link');
+    if (rawNodeIDs.some((id, nodeIndex) => nodeIndex > 0 && id === rawNodeIDs[nodeIndex - 1])) {
+      throw schemaError(`${itemPath}.node_ids`, 'consecutive node IDs must differ');
+    }
+    for (let nodeIndex = 1; nodeIndex < rawNodeIDs.length; nodeIndex++) {
+      if (!linkKeys.has(`${rawNodeIDs[nodeIndex - 1]}\u0000${rawNodeIDs[nodeIndex]}`)) throw schemaError(itemPath, 'route edge has no matching directed link');
     }
     const result_index = integer(item.result_index, `${itemPath}.result_index`, 0, SCHEMA_LIMITS.results - 1);
-    routeObservationCounts.push({ result_index, nodes: rawNodeIDs.length, links: Math.max(0, node_ids.length - 1) });
+    if (reportResults && (!reportResults[result_index] || reportResults[result_index].kind !== 'traceroute')) {
+      throw schemaError(`${itemPath}.result_index`, 'route requires a traceroute result');
+    }
+    const status = enumValue(item.status, STATUSES, `${itemPath}.status`);
+    const reached = boolean(item.reached, `${itemPath}.reached`);
+    if (reached !== (status !== 'unreachable')) throw schemaError(itemPath, 'reached contradicts status');
+    routeObservationCounts.push({ result_index, nodes: rawNodeIDs.length, links: Math.max(0, rawNodeIDs.length - 1) });
     return {
       result_index,
       attempt: integer(item.attempt, `${itemPath}.attempt`, 1, 10),
-      status: enumValue(item.status, STATUSES, `${itemPath}.status`),
-      reached: boolean(item.reached, `${itemPath}.reached`), complete: boolean(item.complete, `${itemPath}.complete`), node_ids
+      status,
+      reached, complete: boolean(item.complete, `${itemPath}.complete`), node_ids: rawNodeIDs
     };
   });
 
@@ -561,6 +736,19 @@ function normalizeCompactTopology(value, path = 'compact_topology') {
     };
   });
   if (new Set(result_stats.map(item => item.result_index)).size !== result_stats.length) throw schemaError(`${path}.result_stats`, 'result indexes must be unique');
+  if (reportResults) {
+    for (const item of result_stats) {
+      const result = reportResults[item.result_index];
+      if (!result) throw schemaError(`${path}.result_stats`, 'references unknown result');
+      if (result.kind !== 'traceroute' && [
+        ...Object.values(item.routes),
+        ...Object.values(item.node_observations),
+        ...Object.values(item.link_observations)
+      ].some(count => count !== 0)) {
+        throw schemaError(`${path}.result_stats`, 'non-traceroute counts must be zero');
+      }
+    }
+  }
   const sum = (field, subfield) => result_stats.reduce((total, item) => total + item[field][subfield], 0);
   for (const field of ['routes', 'node_observations', 'link_observations']) {
     for (const subfield of field === 'routes' ? ['total', 'displayed', 'complete', 'partial', 'omitted'] : ['total', 'displayed', 'omitted']) {
@@ -715,7 +903,7 @@ function normalizeReport(value) {
   const expectedStatus = summary.failed === 0 ? 'healthy' : (hasDegraded || summary.passed > 0 ? 'degraded' : 'unreachable');
   if (status !== expectedStatus) throw schemaError('report.status', 'contradicts result statuses');
   const normalizedAnalysis = source.analysis === undefined || source.analysis === null ? null : normalizeAnalysis(source.analysis);
-  const compactTopology = source.compact_topology === undefined ? null : normalizeCompactTopology(source.compact_topology, 'report.compact_topology');
+  const compactTopology = source.compact_topology === undefined ? null : normalizeCompactTopology(source.compact_topology, 'report.compact_topology', results);
   if (compactTopology) {
     if (compactTopology.result_stats.length !== results.length || compactTopology.result_stats.some((item, index) => item.result_index !== index)) {
       throw schemaError('report.compact_topology.result_stats', 'must contain one ordered entry per result');

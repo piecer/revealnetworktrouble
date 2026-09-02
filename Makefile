@@ -1,9 +1,14 @@
-.PHONY: test test-race vet web-test web-test-syntax run build \
-	android-wrapper-verify android-env android-test android-lint android-assemble android-check ci
+.PHONY: test test-race vet frontend-deps web-test web-test-syntax run build \
+	android-wrapper-verify android-env android-test android-lint android-assemble android-check \
+	ci-inner ci ci-clean-archive
 
 test:
 	go test ./...
 	$(MAKE) web-test
+
+frontend-deps:
+	npm --prefix frontend ci
+	@printf 'CI_OK: frontend-deps\n'
 
 web-test:
 	npm --prefix frontend test
@@ -42,11 +47,12 @@ android-lint: android-wrapper-verify android-env
 android-assemble: android-wrapper-verify android-env
 	cd android && ./gradlew --no-daemon --console=plain :app:assembleDebug :app:assembleRelease
 
-android-check: android-wrapper-verify android-env
-	$(MAKE) android-test
-	$(MAKE) android-lint
-	$(MAKE) android-assemble
+android-check: android-test android-lint android-assemble
 
-ci:
-	$(MAKE) test
-	$(MAKE) android-check
+ci-inner: frontend-deps
+	./scripts/ci-inner.sh
+
+ci: ci-inner
+
+ci-clean-archive:
+	./scripts/ci-clean-archive.sh "$$(git rev-parse HEAD)"

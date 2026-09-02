@@ -8,6 +8,10 @@ import com.checknetwork.app.core.ReportParser;
 import com.checknetwork.app.core.ReportRequest;
 import java.util.List;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
@@ -90,6 +94,43 @@ public final class DiagnosticsPresentationTest {
         String body=blocks.get(blocks.size()-1).body();
         assertTrue(body.contains("Compact topology: 1 nodes, 0 links, 1 routes; truncated: no"));
         assertTrue(body.contains("Geo observations:"));assertTrue(body.contains("eligible: 0"));assertTrue(body.contains("included: 0"));
+    }
+
+    @Test public void enrichmentRendersFixedPrivacySafeBlockAfterCoverageBeforeResults() throws Exception {
+        Path fixture = Paths.get(System.getProperty("user.dir"), "..", "..", "testdata", "enrichment-failures-report.json").normalize();
+        assertTrue("missing Go-produced fixture at " + fixture, Files.isRegularFile(fixture));
+        Report report = ReportParser.parse(new String(Files.readAllBytes(fixture), StandardCharsets.UTF_8));
+        List<AnalysisPresentation.Block> blocks = AnalysisPresentation.from(report).blocks();
+        assertTrue(index(blocks, "Coverage and limitations") < index(blocks, "Enrichment"));
+        assertTrue(index(blocks, "Enrichment") < index(blocks, "Result summary"));
+        String body = blocks.get(index(blocks, "Enrichment")).body();
+        assertTrue(body.contains("Source: none"));
+        assertTrue(body.contains("Cache hits: 0"));
+        assertTrue(body.contains("Upstream fetches: 0"));
+        assertTrue(body.contains("Maximum age: 0 ms"));
+        assertTrue(body.contains("busy: 1 (retryable)"));
+        assertTrue(body.contains("cancelled: 2 (not retryable)"));
+        assertFalse(body.toLowerCase().contains("provider"));
+        assertFalse(body.toLowerCase().contains("geoip"));
+        assertFalse(body.contains("URL-CANARY"));
+        assertFalse(body.contains("IP-CANARY"));
+        assertFalse(body.contains("TARGET-CANARY"));
+    }
+
+    @Test public void checkerExecutionFindingsRenderOnlyGenericPrivacySafeText() throws Exception {
+        Path fixture = Paths.get(System.getProperty("user.dir"), "..", "..", "testdata", "checker-execution-report.json").normalize();
+        JSONObject hostile = new JSONObject(new String(Files.readAllBytes(fixture), StandardCharsets.UTF_8));
+        hostile.getJSONObject("analysis").getJSONArray("findings").getJSONObject(0)
+                .put("title", "TITLE-CANARY-private-target").put("summary", "SUMMARY-CANARY-Bearer-secret");
+        hostile.getJSONObject("analysis").getJSONArray("findings").getJSONObject(1)
+                .put("title", "CAPACITY-TITLE-CANARY").put("summary", "CAPACITY-SUMMARY-CANARY");
+        Report report = ReportParser.parse(hostile.toString());
+        String rendered = AnalysisPresentation.from(report).blocks().toString();
+        assertTrue(rendered.contains("Checker execution failed"));
+        assertTrue(rendered.contains("Checker capacity was unavailable"));
+        assertTrue(rendered.contains("The checker stopped unexpectedly, so service health was not established."));
+        assertTrue(rendered.contains("The bounded checker supervisor had no execution slot, so service health was not established."));
+        assertFalse(rendered.contains("CANARY"));
     }
 
     private static int index(List<AnalysisPresentation.Block> blocks,String heading){

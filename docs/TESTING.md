@@ -18,6 +18,8 @@ make android-assemble       # debug + minified release
 git diff --check
 ```
 
+`make ci-inner`는 fresh gate로 `npm ci`, uncached Go tests, Web tests/syntax, Go race/vet/build, Android wrapper/env/debug+release tests/lint/assemble를 한 번씩 수행한다. `make ci`는 이를 직접 호출하며 재귀 archive를 만들지 않는다. `make ci-clean-archive`는 **commit 후 clean exact HEAD SHA에서만** 실행하는 외부 acceptance다. 현재 uncommitted tree에서 실행하면 의도적으로 실패하므로 commit 전에 실행하지 않는다.
+
 프런트엔드는 ESM과 Node 내장 test runner를 사용하고 `jsdom`은 `30.0.1`로 lockfile에 고정한다. state/model/renderer/DOM tests가 schema, planning, progressive ownership과 실제 DOM event를 실행한다.
 
 ## 테스트 계층
@@ -42,6 +44,17 @@ git diff --check
 - Web 접근성/반응형: concise live/alert/busy, native import, roving topology focus, Canvas accessible list, caption/scope 표, fullscreen focus, 320/375/400 reflow, reduced motion
 - Android JVM/Robolectric: request/report/error/state contracts, debug/release network policy, lifecycle/resource/accessibility contracts. `assert-android-test-results.sh`가 debug/release 각각 0 tests를 실패로 처리한다.
 - Android build: Gradle Wrapper checksum, JDK/SDK 환경, debug/release lint와 assemble을 독립 gate로 실행한다.
+- 운영 config: report 16 accepted/17 rejected를 `loadRuntimeConfig`에서 확인하고 checker 1/1,024 accepted 및 1,025 rejected를 독립 확인한다. `H=5s`, `B=30s`, `E=301s`, `R=5s`, `D=5s`와 HTTP/1 식(35/336/346초), 64 KiB header를 exact field로 검증한다.
+- 배포 contract: Compose 6분 stop, CPU/memory/PID, 두 healthcheck/API-health dependency, nginx worker 2, API non-root image를 source contract와 `docker compose config`로 검증한다. Docker daemon이 있으면 API/Web image build와 health smoke도 수행한다.
+- CI script contract: POSIX `sh -n`, no recursive archive, no `eval`, exact 40-char lowercase SHA/current clean HEAD, trap cleanup, archive preexisting generated directory rejection, Go JSON/Node TAP/Android XML machine count를 검증한다.
 - 수동: Windows/macOS/Linux에서 실행, 브라우저 UI, 실제 DNS/TCP/HTTPS 대상
 
 외부 인터넷 대상은 수동·스테이징 시험에서만 사용한다. 자동 테스트는 로컬 리스너와 테스트 서버로 결정적이어야 한다.
+
+## 아직 자동 gate가 대신하지 않는 acceptance
+
+- physical Android device/emulator instrumentation, TalkBack/Switch Access, OEM share sheet/cache lifecycle
+- 실제 Chrome/Firefox/Safari viewport·screen-reader·HTTP/2 reverse-proxy deadline probe
+- hosted full CI와 postcommit exact-SHA `make ci-clean-archive`
+
+따라서 JVM/jsdom/contract test 통과를 물리 기기/브라우저 검증으로 보고하지 않는다.

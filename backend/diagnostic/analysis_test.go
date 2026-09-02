@@ -15,7 +15,7 @@ import (
 var analysisTestNow = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 const (
-	maxConsumerAnalysisItems  = 64
+	maxConsumerAnalysisItems = 64
 	maxConsumerCoverageItems = 128
 )
 
@@ -66,8 +66,12 @@ func TestMaximumAnalysisProducerCardinalityFitsBoundedConsumers(t *testing.T) {
 	}
 	fixturePath := filepath.Join("..", "..", "testdata", "maximum-analysis-report.json")
 	if os.Getenv("UPDATE_ANALYSIS_FIXTURE") == "1" {
-		if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil { t.Fatal(err) }
-		if err := os.WriteFile(fixturePath, append(encoded, '\n'), 0o644); err != nil { t.Fatal(err) }
+		if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fixturePath, append(encoded, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	want, err := os.ReadFile(fixturePath)
 	if err != nil {
@@ -532,4 +536,109 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestAnalyzeRunnerExecutionLimitationsUseStableFindings(t *testing.T) {
+	tests := []struct {
+		code string
+		want FindingCode
+	}{
+		{"checker_panic", FindingCheckerPanic},
+		{"checker_capacity_unavailable", FindingCheckerCapacityUnavailable},
+	}
+	for _, tt := range tests {
+		analysis := Analyze([]Result{{Kind: KindDNS, Status: StatusUnreachable, ErrorCode: tt.code}}, analysisTestNow)
+		if len(analysis.Findings) != 1 || analysis.Findings[0].Code != tt.want {
+			t.Fatalf("Analyze(%q)=%+v", tt.code, analysis)
+		}
+		for _, limitation := range analysis.Coverage.Limitations {
+			if strings.Contains(limitation.Reason, "unknown") {
+				t.Fatalf("stable code rendered unknown: %+v", limitation)
+			}
+		}
+	}
+}
+
+func TestAnalyzeAggregatesStrictGeoIPEnrichmentCoverage(t *testing.T) {
+	results := []Result{
+		{Kind: KindTraceroute, Status: StatusHealthy, Details: map[string]any{
+			"attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0,
+			"geoip_provider_failures": 1,
+			"geoip_enrichment": EnrichmentCoverage{
+				Provider: "geoip", Source: EnrichmentSourceUpstream, UpstreamFetches: 1, MaxAgeMS: 10,
+				Failures: []EnrichmentFailure{{Kind: GeoIPErrorTimeout, Count: 1, Retryable: true}},
+			},
+		}},
+		{Kind: KindTraceroute, Status: StatusHealthy, Details: map[string]any{
+			"attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0,
+			"geoip_provider_failures": 2,
+			"geoip_enrichment": mustLegacyJSONValue(t, EnrichmentCoverage{
+				Provider: "geoip", Source: EnrichmentSourceCache, CacheHits: 2, MaxAgeMS: 100,
+				Failures: []EnrichmentFailure{{Kind: GeoIPErrorUnavailable, Count: 2, Retryable: true}},
+			}),
+		}},
+	}
+	analysis := Analyze(results, analysisTestNow)
+	want := []EnrichmentCoverage{{
+		Provider: "geoip", Source: EnrichmentSourceMixed, CacheHits: 2, UpstreamFetches: 1, MaxAgeMS: 100,
+		Failures: []EnrichmentFailure{
+			{Kind: GeoIPErrorTimeout, Count: 1, Retryable: true},
+			{Kind: GeoIPErrorUnavailable, Count: 2, Retryable: true},
+		},
+	}}
+	if !reflect.DeepEqual(analysis.Coverage.Enrichment, want) {
+		t.Fatalf("enrichment = %+v, want %+v", analysis.Coverage.Enrichment, want)
+	}
+	if len(analysis.Coverage.ProviderFailures) != 2 {
+		t.Fatalf("legacy provider failures changed: %+v", analysis.Coverage.ProviderFailures)
+	}
+}
+
+func TestAnalyzeRejectsMalformedOrContradictoryGeoIPEnrichmentAsLimitation(t *testing.T) {
+	cases := []any{
+		map[string]any{"provider": "geoip", "source": "cache", "cache_hits": 0.0, "upstream_fetches": 1.0, "max_age_ms": 0.0, "failures": []any{}},
+		map[string]any{"provider": "geoip", "source": "none", "cache_hits": 0.0, "upstream_fetches": 0.0, "max_age_ms": 0.0, "failures": []any{}, "target": "SECRET-TARGET"},
+		map[string]any{"provider": "geoip", "source": "none", "cache_hits": 0.0, "upstream_fetches": 0.0, "max_age_ms": 0.0, "failures": []any{map[string]any{"kind": "timeout", "count": 1.0, "retryable": false}}},
+		map[string]any{"provider": "geoip", "source": "none", "cache_hits": 0.0, "upstream_fetches": 0.0, "max_age_ms": 0.0, "failures": []any{map[string]any{"kind": "timeout", "count": 2.0, "retryable": true}}},
+	}
+	for index, detail := range cases {
+		result := Result{Kind: KindTraceroute, Status: StatusHealthy, Details: map[string]any{
+			"attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0,
+			"geoip_provider_failures": 1, "geoip_enrichment": detail,
+		}}
+		analysis := Analyze([]Result{result}, analysisTestNow)
+		if len(analysis.Coverage.Enrichment) != 0 || !coverageHasSignal(analysis.Coverage.Limitations, "geoip_enrichment") {
+			t.Fatalf("case %d accepted malformed enrichment: %+v", index, analysis.Coverage)
+		}
+		encoded, err := json.Marshal(analysis)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(bytes.ToLower(encoded), []byte("secret-target")) {
+			t.Fatalf("malformed privacy canary reflected: %s", encoded)
+		}
+	}
+}
+
+func TestAnalyzeGeoIPEnrichmentAggregateIsBoundedAndLegacyJSONUnchanged(t *testing.T) {
+	legacy := Coverage{Available: []string{}, Missing: []string{}, ProviderFailures: []CoverageIssue{}, Limitations: []CoverageIssue{}}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"available":[],"missing":[],"provider_failures":[],"limitations":[]}` {
+		t.Fatalf("legacy coverage JSON changed: %s", encoded)
+	}
+
+	results := make([]Result, MaxTargets)
+	for index := range results {
+		results[index] = Result{Kind: KindTraceroute, Status: StatusHealthy, Details: map[string]any{
+			"attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0,
+			"geoip_enrichment": EnrichmentCoverage{Provider: "geoip", Source: EnrichmentSourceUpstream, UpstreamFetches: 1, Failures: []EnrichmentFailure{}},
+		}}
+	}
+	analysis := Analyze(results, analysisTestNow)
+	if len(analysis.Coverage.Enrichment) != 1 || analysis.Coverage.Enrichment[0].UpstreamFetches != MaxTargets || len(analysis.Coverage.Enrichment[0].Failures) > len(geoIPFailureKinds()) {
+		t.Fatalf("unbounded or incorrect aggregate: %+v", analysis.Coverage.Enrichment)
+	}
 }

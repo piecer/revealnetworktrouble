@@ -10,7 +10,10 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -50,9 +53,9 @@ public final class ReportTransportTest {
         assertEquals("application/json", connection.headers.get("Accept"));
         assertEquals("Bearer top-secret", connection.headers.get("Authorization"));
         assertArrayEquals(request().toJson().getBytes(StandardCharsets.UTF_8), connection.output.toByteArray());
-        assertEquals(1_000, connection.connectTimeout);
-        assertEquals(1_000, connection.readTimeout);
-        assertEquals(8_000L, scheduler.delayMillis);
+        assertEquals(16_000, connection.connectTimeout);
+        assertEquals(16_000, connection.readTimeout);
+        assertEquals(16_000L, scheduler.delayMillis);
         assertEquals(VALID, response.rawJson());
         assertEquals("r1", response.report().id());
         assertTrue(scheduler.ticket.cancelled);
@@ -64,6 +67,47 @@ public final class ReportTransportTest {
         transport("http://localhost:8080", "top-secret", connection, new FakeClock(), new FakeScheduler())
                 .newCall(request()).execute();
         assertFalse(connection.headers.containsKey("Authorization"));
+    }
+
+    @Test public void delayedLocalResponseHeadersUseAggregateDeadlineInsteadOfTargetTimeout() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            ExecutorService serverExecutor = Executors.newSingleThreadExecutor();
+            Future<?> served = serverExecutor.submit(() -> {
+                try (java.net.Socket socket = server.accept()) {
+                    InputStream input = socket.getInputStream();
+                    String headers = readHttpHeaders(input);
+                    int contentLength = httpContentLength(headers);
+                    for (int remaining = contentLength; remaining > 0; ) {
+                        int count = input.read(new byte[Math.min(remaining, 4_096)]);
+                        if (count < 0) throw new IOException("request ended before its declared body");
+                        remaining -= count;
+                    }
+                    Thread.sleep(1_250L); // Deliberately later than the request's 1,000 ms target timeout.
+                    byte[] body = bytes(VALID);
+                    OutputStream output = socket.getOutputStream();
+                    output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                            + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    output.write(body);
+                    output.flush();
+                } catch (Exception failure) {
+                    throw new RuntimeException(failure);
+                }
+            });
+            try {
+                ApiConnectionConfig config = ApiConnectionConfig.create(
+                        "http://" + InetAddress.getLoopbackAddress().getHostAddress() + ":" + server.getLocalPort(), true, null);
+                long started = System.nanoTime();
+                ReportTransport.Response response = new ReportTransport(config).newCall(request()).execute();
+                long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+                assertEquals("r1", response.report().id());
+                assertTrue("response must arrive after the old per-target read timeout", elapsedMillis >= 1_000L);
+                served.get(2, TimeUnit.SECONDS);
+            } finally {
+                server.close();
+                serverExecutor.shutdownNow();
+            }
+        }
     }
 
     @Test public void contentLengthRejectsBeforeReadingAndExactEightMiBIsAccepted() throws Exception {
@@ -131,11 +175,145 @@ public final class ReportTransportTest {
     @Test public void deadlineUsesMaxTracerouteAttemptsGraceAndDocumentedCap() {
         ReportRequest tenAttempts = ReportRequest.builder().timeoutMs(30_000)
                 .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "example.test").attempts(10).build()).build();
+        assertEquals(15_000L, ReportTransport.DEADLINE_GRACE_MILLIS);
+        assertEquals(315_000L, ReportTransport.MAX_DEADLINE_MILLIS);
         assertEquals(ReportTransport.MAX_DEADLINE_MILLIS, ReportTransport.deadlineMillis(tenAttempts));
         ReportRequest defaults = ReportRequest.builder().timeoutMs(2_000)
                 .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "example.test").build())
                 .addTarget(TargetInput.of(CheckKind.DNS, "other.test")).build();
-        assertEquals(17_000L, ReportTransport.deadlineMillis(defaults));
+        assertEquals(25_000L, ReportTransport.deadlineMillis(defaults));
+        ReportRequest multipleAttempts = ReportRequest.builder().timeoutMs(1_000)
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "first.test").attempts(3).build())
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "second.test").attempts(7).build()).build();
+        assertEquals(22_000L, ReportTransport.deadlineMillis(multipleAttempts));
+        ReportRequest nearMaximum = ReportRequest.builder().timeoutMs(29_999)
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "example.test").attempts(10).build()).build();
+        assertEquals(314_990L, ReportTransport.deadlineMillis(nearMaximum));
+        assertEquals(ReportTransport.MAX_DEADLINE_MILLIS,
+                ReportTransport.boundedDeadlineMillis(7L, Long.MAX_VALUE, 7L));
+        assertEquals(314_999L,
+                ReportTransport.boundedDeadlineMillis(0L, 315_000L, TimeUnit.MILLISECONDS.toNanos(1L)));
+        assertEquals(0L, ReportTransport.boundedDeadlineMillis(
+                0L, 315_000L, TimeUnit.MILLISECONDS.toNanos(315_000L)));
+        assertEquals(315_000L, ReportTransport.boundedDeadlineMillis(10L, 315_000L, 9L));
+        assertEquals(0L,
+                ReportTransport.boundedDeadlineMillis(Long.MIN_VALUE, 315_000L, Long.MAX_VALUE));
+        assertEquals(1L, ReportTransport.boundedDeadlineMillis(
+                Long.MAX_VALUE - 500_000L, 2L, Long.MIN_VALUE + 499_999L));
+        assertEquals(1L, ReportTransport.boundedDeadlineMillis(0L, 1L, 1L));
+        assertEquals(1, ReportTransport.toSocketTimeoutMillis(1L));
+        assertEquals(1, ReportTransport.toSocketTimeoutMillis(0L));
+        assertEquals(315_000, ReportTransport.toSocketTimeoutMillis(315_000L));
+        assertEquals(315_000, ReportTransport.toSocketTimeoutMillis(Long.MAX_VALUE));
+    }
+
+    @Test public void exactRemainingBudgetConfiguresBothConnectAndReadTimeouts() throws Exception {
+        ReportRequest maximum = ReportRequest.builder().timeoutMs(30_000)
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "example.test").attempts(10).build()).build();
+        FakeConnection exact = new FakeConnection(200, bytes(VALID));
+        transport("https://api.example.test", null, exact, new FakeClock(), new FakeScheduler())
+                .newCall(maximum).execute();
+        assertEquals(315_000, exact.connectTimeout);
+        assertEquals(315_000, exact.readTimeout);
+
+        FakeClock elapsedClock = new FakeClock();
+        FakeConnection elapsed = new FakeConnection(200, bytes(VALID));
+        ReportTransport elapsedTransport = new ReportTransport(
+                ApiConnectionConfig.create("https://api.example.test", false, null),
+                url -> { elapsedClock.nanos = TimeUnit.MILLISECONDS.toNanos(1L); return elapsed; },
+                elapsedClock, new FakeScheduler());
+        elapsedTransport.newCall(maximum).execute();
+        assertEquals(314_999, elapsed.connectTimeout);
+        assertEquals(314_999, elapsed.readTimeout);
+    }
+
+    @Test public void elapsedSetupAndClockRegressionCannotExtendSocketTimeouts() throws Exception {
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        SequenceClock clock = new SequenceClock(0L,
+                TimeUnit.MILLISECONDS.toNanos(5_000L),
+                TimeUnit.MILLISECONDS.toNanos(4_000L));
+        FakeScheduler scheduler = new FakeScheduler();
+
+        assertEquals("r1", transport("https://api.example.test", null, connection, clock, scheduler)
+                .newCall(request()).execute().report().id());
+
+        assertEquals(11_000L, scheduler.delayMillis);
+        assertEquals(11_000, connection.connectTimeout);
+        assertEquals(11_000, connection.readTimeout);
+    }
+
+    @Test public void schedulerElapsedTimeIsSubtractedBeforeSocketConfiguration() throws Exception {
+        FakeClock clock = new FakeClock();
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        ReportTransport.Scheduler scheduler = (task, delayMillis) -> {
+            clock.nanos = TimeUnit.MILLISECONDS.toNanos(1_000L);
+            return () -> { };
+        };
+
+        assertEquals("r1", transport("https://api.example.test", null, connection, clock, scheduler)
+                .newCall(request()).execute().report().id());
+
+        assertEquals(15_000, connection.connectTimeout);
+        assertEquals(15_000, connection.readTimeout);
+    }
+
+    @Test public void exactDeadlineBoundaryIsMeasuredFromExecuteStart() throws Exception {
+        ReportRequest maximum = ReportRequest.builder().timeoutMs(30_000)
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "example.test").attempts(10).build()).build();
+
+        FakeClock beforeClock = new FakeClock();
+        FakeConnection before = new BoundaryConnection(200, bytes(VALID), beforeClock, 314_999L);
+        assertEquals("r1", transport("https://api.example.test", null, before, beforeClock, new FakeScheduler())
+                .newCall(maximum).execute().report().id());
+
+        FakeClock atClock = new FakeClock();
+        FakeConnection at = new BoundaryConnection(200, bytes(VALID), atClock, 315_000L);
+        TransportException timeout = assertThrows(TransportException.class,
+                () -> transport("https://api.example.test", null, at, atClock, new FakeScheduler()).newCall(maximum).execute());
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+    }
+
+    @Test public void setupTimeReducesScheduledDelayAndExpiryStopsBeforeNetworkProgress() throws Exception {
+        FakeClock delayedClock = new FakeClock();
+        FakeConnection delayed = new FakeConnection(200, bytes(VALID));
+        FakeScheduler delayedScheduler = new FakeScheduler();
+        ReportTransport delayedTransport = new ReportTransport(
+                ApiConnectionConfig.create("https://api.example.test", false, null),
+                url -> { delayedClock.nanos = TimeUnit.MILLISECONDS.toNanos(5_000L); return delayed; },
+                delayedClock, delayedScheduler);
+        assertEquals("r1", delayedTransport.newCall(request()).execute().report().id());
+        assertEquals(11_000L, delayedScheduler.delayMillis);
+        assertEquals(11_000, delayed.connectTimeout);
+        assertEquals(11_000, delayed.readTimeout);
+
+        FakeClock expiredClock = new FakeClock();
+        FakeConnection expired = new FakeConnection(200, bytes(VALID));
+        FakeScheduler expiredScheduler = new FakeScheduler();
+        ReportTransport expiredTransport = new ReportTransport(
+                ApiConnectionConfig.create("https://api.example.test", false, null),
+                url -> { expiredClock.nanos = TimeUnit.MILLISECONDS.toNanos(16_000L); return expired; },
+                expiredClock, expiredScheduler);
+        TransportException timeout = assertThrows(TransportException.class,
+                () -> expiredTransport.newCall(request()).execute());
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertNull(expiredScheduler.task);
+        assertNull(expired.method);
+        assertEquals(0, expired.output.size());
+        assertEquals(1, expired.disconnects);
+    }
+
+    @Test public void exactExpiryBeforeConnectionOpenSkipsNetworkEntirely() throws Exception {
+        SequenceClock clock = new SequenceClock(0L, TimeUnit.MILLISECONDS.toNanos(16_000L));
+        int[] opens = {0};
+        ReportTransport transport = new ReportTransport(
+                ApiConnectionConfig.create("https://api.example.test", false, null),
+                url -> { opens[0]++; throw new AssertionError("expired call must not open a connection"); },
+                clock, new FakeScheduler());
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall(request())::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(0, opens[0]);
     }
 
     @Test public void classifiesNetworkSocketTimeoutMalformedSuccessAndStructuredErrorsWithoutProse() throws Exception {
@@ -271,12 +449,45 @@ public final class ReportTransportTest {
         for (int i = prefix.length; i < size; i++) result[i] = ' ';
         return result;
     }
+
+    private static String readHttpHeaders(InputStream input) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        int matched = 0;
+        while (matched < 4) {
+            int value = input.read();
+            if (value < 0) throw new IOException("request ended before headers");
+            bytes.write(value);
+            int expected = switch (matched) { case 0, 2 -> '\r'; default -> '\n'; };
+            matched = value == expected ? matched + 1 : (value == '\r' ? 1 : 0);
+            if (bytes.size() > 64 * 1024) throw new IOException("request headers too large");
+        }
+        return bytes.toString(StandardCharsets.US_ASCII);
+    }
+
+    private static int httpContentLength(String headers) throws IOException {
+        for (String line : headers.split("\\r\\n")) {
+            if (line.regionMatches(true, 0, "Content-Length:", 0, "Content-Length:".length())) {
+                return Integer.parseInt(line.substring("Content-Length:".length()).trim());
+            }
+        }
+        throw new IOException("missing Content-Length");
+    }
+
     private static byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }
 
     private static class FakeClock implements ReportTransport.Clock {
         long nanos;
         @Override public long nanoTime() { return nanos; }
         @Override public Instant now() { return Instant.EPOCH; }
+    }
+    private static final class SequenceClock extends FakeClock {
+        private final long[] values;
+        private int index;
+        SequenceClock(long... values) { this.values = values; }
+        @Override public long nanoTime() {
+            if (index < values.length) nanos = values[index++];
+            return nanos;
+        }
     }
     private static final class HookClock extends FakeClock {
         final int triggerCall; final Runnable hook; int calls;
@@ -329,6 +540,18 @@ public final class ReportTransportTest {
         @Override public void disconnect() { disconnects++; if (disconnectFailure != null) throw disconnectFailure; }
         @Override public boolean usingProxy() { return false; }
         @Override public void connect() {}
+    }
+
+    private static final class BoundaryConnection extends FakeConnection {
+        private final FakeClock clock;
+        private final long boundaryMillis;
+        BoundaryConnection(int status, byte[] body, FakeClock clock, long boundaryMillis) throws Exception {
+            super(status, body); this.clock = clock; this.boundaryMillis = boundaryMillis;
+        }
+        @Override public int getResponseCode() {
+            clock.nanos = TimeUnit.MILLISECONDS.toNanos(boundaryMillis);
+            return status;
+        }
     }
 
     private static final class BlockingConnection extends FakeConnection {

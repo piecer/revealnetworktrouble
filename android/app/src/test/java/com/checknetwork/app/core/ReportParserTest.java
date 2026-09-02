@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Map;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -23,9 +24,98 @@ public final class ReportParserTest {
     }
 
     private static String maximumGoAnalysisFixture() throws Exception {
-        Path fixture = Path.of(System.getProperty("user.dir"), "..", "..", "testdata", "maximum-analysis-report.json").normalize();
+        Path fixture = Paths.get(System.getProperty("user.dir"), "..", "..", "testdata", "maximum-analysis-report.json").normalize();
         assertTrue("missing Go-produced fixture at " + fixture, Files.isRegularFile(fixture));
         return new String(Files.readAllBytes(fixture), StandardCharsets.UTF_8);
+    }
+
+    private static String checkerExecutionGoFixture() throws Exception {
+        Path fixture = Paths.get(System.getProperty("user.dir"), "..", "..", "testdata", "checker-execution-report.json").normalize();
+        assertTrue("missing Go-produced fixture at " + fixture, Files.isRegularFile(fixture));
+        return new String(Files.readAllBytes(fixture), StandardCharsets.UTF_8);
+    }
+
+    private static String enrichmentGoFixture(String name) throws Exception {
+        Path fixture = Paths.get(System.getProperty("user.dir"), "..", "..", "testdata", "enrichment-" + name + "-report.json").normalize();
+        assertTrue("missing Go-produced fixture at " + fixture, Files.isRegularFile(fixture));
+        return new String(Files.readAllBytes(fixture), StandardCharsets.UTF_8);
+    }
+
+    private static JSONObject enrichmentEntry(JSONObject report) throws Exception {
+        return report.getJSONObject("analysis").getJSONObject("coverage").getJSONArray("enrichment").getJSONObject(0);
+    }
+
+    private static void rejectsEnrichment(Object enrichment) throws Exception {
+        JSONObject report = new JSONObject(enrichmentGoFixture("upstream"));
+        report.getJSONObject("analysis").getJSONObject("coverage").put("enrichment", enrichment);
+        assertThrows(ReportParseException.class, () -> ReportParser.parse(report.toString()));
+    }
+
+    @Test public void parsesBackendShapedEnrichmentFixturesIntoImmutableValues() throws Exception {
+        String[] names = {"upstream", "cache", "mixed", "failures"};
+        Report.EnrichmentSource[] sources = {Report.EnrichmentSource.UPSTREAM, Report.EnrichmentSource.CACHE, Report.EnrichmentSource.MIXED, Report.EnrichmentSource.NONE};
+        int[][] values = {{0, 2, 12, 0}, {3, 0, 60000, 0}, {2, 1, 42000, 0}, {0, 0, 0, 8}};
+        for (int i = 0; i < names.length; i++) {
+            Report.Coverage coverage = ReportParser.parse(enrichmentGoFixture(names[i])).analysis().orElseThrow().coverage();
+            assertEquals(1, coverage.enrichment().size());
+            Report.EnrichmentCoverage entry = coverage.enrichment().get(0);
+            assertEquals("geoip", entry.provider());
+            assertEquals(sources[i], entry.source());
+            assertEquals(values[i][0], entry.cacheHits());
+            assertEquals(values[i][1], entry.upstreamFetches());
+            assertEquals(values[i][2], entry.maxAgeMs());
+            assertEquals(values[i][3], entry.failures().size());
+            assertThrows(UnsupportedOperationException.class, () -> coverage.enrichment().clear());
+            assertThrows(UnsupportedOperationException.class, () -> entry.failures().clear());
+        }
+        assertTrue(ReportParser.parse(fixture("https-downgrade-report.json")).analysis().orElseThrow().coverage().enrichment().isEmpty());
+    }
+
+    @Test public void rejectsMalformedContradictoryAndOverBudgetEnrichment() throws Exception {
+        for (Object wrong : new Object[]{JSONObject.NULL, new JSONObject(), "none", new JSONArray().put(new JSONObject()).put(new JSONObject())}) rejectsEnrichment(wrong);
+        JSONObject validReport = new JSONObject(enrichmentGoFixture("upstream"));
+        JSONObject valid = enrichmentEntry(validReport);
+        for (String key : new String[]{"provider", "source", "cache_hits", "upstream_fetches", "max_age_ms", "failures"}) {
+            JSONObject missing = new JSONObject(valid.toString()); missing.remove(key); rejectsEnrichment(new JSONArray().put(missing));
+            JSONObject nil = new JSONObject(valid.toString()).put(key, JSONObject.NULL); rejectsEnrichment(new JSONArray().put(nil));
+        }
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("url", "URL-CANARY").put("ip", "IP-CANARY").put("target", "TARGET-CANARY").put("error", "ERROR-CANARY")));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("provider", "PROVIDER-CANARY")));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("source", "future")));
+        for (String key : new String[]{"cache_hits", "upstream_fetches", "max_age_ms"}) {
+            rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put(key, -1)));
+            rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put(key, 1.5)));
+            rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put(key, "1")));
+        }
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("max_age_ms", 86400001)));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("upstream_fetches", 6201)));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("upstream_fetches", 6200)
+                .put("failures", new JSONArray().put(new JSONObject().put("kind", "timeout").put("count", 1).put("retryable", true)))));
+        for (String source : new String[]{"none", "cache", "mixed"}) rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("source", source)));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("source", "upstream").put("cache_hits", 1)));
+
+        JSONObject timeout = new JSONObject().put("kind", "timeout").put("count", 1).put("retryable", true);
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("failures", new JSONArray().put(timeout).put(new JSONObject(timeout.toString())))));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("failures", new JSONArray()
+                .put(timeout).put(new JSONObject().put("kind", "rate_limited").put("count", 1).put("retryable", true)))));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("failures", new JSONArray().put(new JSONObject(timeout.toString()).put("count", 0)))));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("failures", new JSONArray().put(new JSONObject(timeout.toString()).put("retryable", false)))));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("failures", new JSONArray().put(new JSONObject(timeout.toString()).put("detail", "ERROR-CANARY")))));
+        rejectsEnrichment(new JSONArray().put(new JSONObject(valid.toString()).put("failures", new JSONArray().put(new JSONObject().put("kind", "timeout").put("count", 1)))));
+    }
+
+    @Test public void enforcesEveryFailureKindAndExactRetryability() throws Exception {
+        String[] kinds = {"busy", "cancelled", "malformed", "not_found", "policy", "rate_limited", "timeout", "unavailable"};
+        boolean[] retryable = {true, false, false, false, false, true, true, true};
+        for (int i = 0; i < kinds.length; i++) {
+            JSONObject report = new JSONObject(enrichmentGoFixture("failures"));
+            JSONObject entry = enrichmentEntry(report);
+            entry.put("failures", new JSONArray().put(new JSONObject().put("kind", kinds[i]).put("count", 1).put("retryable", retryable[i])));
+            Report.EnrichmentCoverage parsed = ReportParser.parse(report.toString()).analysis().orElseThrow().coverage().enrichment().get(0);
+            assertEquals(Report.EnrichmentFailureKind.valueOf(kinds[i].toUpperCase()), parsed.failures().get(0).kind());
+            entry.getJSONArray("failures").getJSONObject(0).put("retryable", !retryable[i]);
+            assertThrows(ReportParseException.class, () -> ReportParser.parse(report.toString()));
+        }
     }
 
     @Test public void parsesHttpsDowngradeAndCompactTracerouteFixtures() throws Exception {
@@ -72,6 +162,22 @@ public final class ReportParserTest {
             }
             assertThrows(name, ReportParseException.class, () -> ReportParser.parse(report.toString()));
         }
+    }
+
+    @Test public void parsesExactGoCheckerExecutionCodesPreservesTextAndRejectsUnknownCode() throws Exception {
+        String serialized = checkerExecutionGoFixture();
+        Report parsed = ReportParser.parse(serialized);
+        assertEquals(Report.FindingCode.CHECKER_PANIC, parsed.analysis().orElseThrow().findings().get(0).code());
+        assertEquals(Report.FindingCode.CHECKER_CAPACITY_UNAVAILABLE, parsed.analysis().orElseThrow().findings().get(1).code());
+
+        JSONObject hostile = new JSONObject(serialized);
+        JSONObject panic = hostile.getJSONObject("analysis").getJSONArray("findings").getJSONObject(0);
+        panic.put("title", "private target and panic prose").put("summary", "Bearer secret-token");
+        Report.Finding parsedCanary = ReportParser.parse(hostile.toString()).analysis().orElseThrow().findings().get(0);
+        assertEquals("private target and panic prose", parsedCanary.title());
+        assertEquals("Bearer secret-token", parsedCanary.summary());
+        panic.put("code", "checker_future_unknown");
+        assertThrows(ReportParseException.class, () -> ReportParser.parse(hostile.toString()));
     }
 
     @Test public void rejectsMalformedCompactNodeAndSummaryTypes() throws Exception {

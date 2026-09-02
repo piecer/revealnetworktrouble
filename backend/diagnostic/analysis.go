@@ -73,7 +73,7 @@ func onlyInconclusiveFindings(findings []Finding) bool {
 		return false
 	}
 	for _, finding := range findings {
-		if finding.Code != FindingExecutionCancelled {
+		if finding.Code != FindingExecutionCancelled && finding.Code != FindingCheckerCapacityUnavailable {
 			return false
 		}
 	}
@@ -120,6 +120,18 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 	}
 
 	switch fact.errorCode {
+	case "checker_panic":
+		b.add(fact, FindingCheckerPanic, SeverityWarning, CategoryExecution,
+			"Checker execution failed", "The checker stopped unexpectedly, so service health was not established.", ConfidenceDirect,
+			"error_code", fact.errorCode, "completed checker execution", ProvenanceResult,
+			"Repeat the failed check", "Repeat the bounded check and verify the checker runtime remains available.", "The repeated checker completes with an observation.", "Escalate to the runtime owner if the checker repeatedly stops unexpectedly.")
+		return
+	case "checker_capacity_unavailable":
+		b.add(fact, FindingCheckerCapacityUnavailable, SeverityInfo, CategoryExecution,
+			"Checker capacity was unavailable", "The bounded checker supervisor had no execution slot, so service health was not established.", ConfidenceDirect,
+			"error_code", fact.errorCode, "available checker execution capacity", ProvenanceResult,
+			"Retry after capacity is available", "Repeat the check after existing checker work has completed.", "The repeated check is admitted and completes with an observation.", "Escalate to the runtime owner if checker capacity remains unavailable.")
+		return
 	case "network_policy_blocked":
 		b.add(fact, FindingTargetPolicyBlocked, SeverityWarning, CategoryInput,
 			"Target is blocked by deployment policy", "The public deployment policy rejected the target before a network connection was attempted.", ConfidenceDirect,
@@ -408,8 +420,17 @@ func normalizeResults(results []Result, coverage *Coverage) []normalizedResultFa
 			}
 		}
 		if result.Kind == KindTraceroute {
-			if failures, ok := integerDetail(result.Details, "geoip_provider_failures"); ok && failures > 0 {
-				coverage.ProviderFailures = append(coverage.ProviderFailures, CoverageIssue{Code: CoverageMissingDetails, ResultIndex: index, Kind: result.Kind, Signal: "geoip", Reason: fmt.Sprintf("%d GeoIP enrichment lookups failed", failures)})
+			legacyGeoIPFailures, legacyGeoIPFailuresOK := integerDetail(result.Details, "geoip_provider_failures")
+			if legacyGeoIPFailuresOK && legacyGeoIPFailures > 0 {
+				coverage.ProviderFailures = append(coverage.ProviderFailures, CoverageIssue{Code: CoverageMissingDetails, ResultIndex: index, Kind: result.Kind, Signal: "geoip", Reason: fmt.Sprintf("%d GeoIP enrichment lookups failed", legacyGeoIPFailures)})
+			}
+			if enrichmentValue, exists := result.Details["geoip_enrichment"]; exists {
+				enrichment, ok := normalizedEnrichmentCoverage(enrichmentValue, legacyGeoIPFailures, legacyGeoIPFailuresOK)
+				if ok && index < MaxTargets && mergeEnrichmentCoverage(coverage, enrichment) {
+					coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.geoip_enrichment", index))
+				} else {
+					coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "geoip_enrichment", Reason: "GeoIP enrichment coverage was malformed, contradictory, or exceeded its bound"})
+				}
 			}
 			total, totalOK := integerDetail(result.Details, "attempts_total")
 			reached, reachedOK := integerDetail(result.Details, "attempts_reached")
@@ -504,6 +525,155 @@ func normalizeResults(results []Result, coverage *Coverage) []normalizedResultFa
 	return facts
 }
 
+const maxGeoIPLookupsPerResult = MaxTraceAttempts * (MaxTraceHops + 1)
+
+func normalizedEnrichmentCoverage(value any, legacyFailures int, legacyFailuresOK bool) (EnrichmentCoverage, bool) {
+	var normalized EnrichmentCoverage
+	switch detail := value.(type) {
+	case EnrichmentCoverage:
+		normalized = detail
+	case *EnrichmentCoverage:
+		if detail == nil {
+			return EnrichmentCoverage{}, false
+		}
+		normalized = *detail
+	case map[string]any:
+		if !hasOnlyKeys(detail, "provider", "source", "cache_hits", "upstream_fetches", "max_age_ms", "failures") {
+			return EnrichmentCoverage{}, false
+		}
+		provider, providerOK := detail["provider"].(string)
+		sourceText, sourceOK := detail["source"].(string)
+		cacheHits, cacheOK := integerDetail(detail, "cache_hits")
+		upstreamFetches, upstreamOK := integerDetail(detail, "upstream_fetches")
+		maxAge, ageOK := integerDetail(detail, "max_age_ms")
+		failures, failuresOK := normalizedEnrichmentFailures(detail["failures"])
+		if !providerOK || !sourceOK || !cacheOK || !upstreamOK || !ageOK || !failuresOK {
+			return EnrichmentCoverage{}, false
+		}
+		normalized = EnrichmentCoverage{Provider: provider, Source: EnrichmentSource(sourceText), CacheHits: cacheHits, UpstreamFetches: upstreamFetches, MaxAgeMS: int64(maxAge), Failures: failures}
+	default:
+		return EnrichmentCoverage{}, false
+	}
+
+	if normalized.Failures == nil {
+		return EnrichmentCoverage{}, false
+	}
+	failures, ok := normalizedEnrichmentFailures(normalized.Failures)
+	if !ok {
+		return EnrichmentCoverage{}, false
+	}
+	normalized.Failures = failures
+	failureCount := enrichmentFailureCount(failures)
+	lookupCount := normalized.CacheHits + normalized.UpstreamFetches + failureCount
+	if normalized.Provider != "geoip" || normalized.CacheHits < 0 || normalized.UpstreamFetches < 0 || normalized.MaxAgeMS < 0 || normalized.MaxAgeMS > defaultGeoIPCacheTTL.Milliseconds() || lookupCount < 0 || lookupCount > maxGeoIPLookupsPerResult {
+		return EnrichmentCoverage{}, false
+	}
+	if normalized.Source != enrichmentSource(normalized.CacheHits, normalized.UpstreamFetches) {
+		return EnrichmentCoverage{}, false
+	}
+	if legacyFailuresOK && legacyFailures >= 0 && legacyFailures != failureCount {
+		return EnrichmentCoverage{}, false
+	}
+	return normalized, true
+}
+
+func normalizedEnrichmentFailures(value any) ([]EnrichmentFailure, bool) {
+	var failures []EnrichmentFailure
+	switch values := value.(type) {
+	case []EnrichmentFailure:
+		if values == nil {
+			return nil, false
+		}
+		failures = make([]EnrichmentFailure, len(values))
+		copy(failures, values)
+	case []any:
+		if values == nil || len(values) > len(geoIPFailureKinds()) {
+			return nil, false
+		}
+		failures = make([]EnrichmentFailure, 0, len(values))
+		for _, value := range values {
+			object, ok := value.(map[string]any)
+			if !ok || !hasOnlyKeys(object, "kind", "count", "retryable") {
+				return nil, false
+			}
+			kind, kindOK := object["kind"].(string)
+			count, countOK := integerDetail(object, "count")
+			retryable, retryableOK := object["retryable"].(bool)
+			if !kindOK || !countOK || !retryableOK {
+				return nil, false
+			}
+			failures = append(failures, EnrichmentFailure{Kind: GeoIPErrorKind(kind), Count: count, Retryable: retryable})
+		}
+	default:
+		return nil, false
+	}
+	if len(failures) > len(geoIPFailureKinds()) {
+		return nil, false
+	}
+	seen := make(map[GeoIPErrorKind]struct{}, len(failures))
+	for _, failure := range failures {
+		if !validGeoIPErrorKind(failure.Kind) || failure.Count <= 0 || failure.Count > maxGeoIPLookupsPerResult || failure.Retryable != geoIPFailureRetryable(failure.Kind) {
+			return nil, false
+		}
+		if _, exists := seen[failure.Kind]; exists {
+			return nil, false
+		}
+		seen[failure.Kind] = struct{}{}
+	}
+	sort.Slice(failures, func(i, j int) bool { return failures[i].Kind < failures[j].Kind })
+	return failures, true
+}
+
+func hasOnlyKeys(object map[string]any, keys ...string) bool {
+	if len(object) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, exists := object[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeEnrichmentCoverage(coverage *Coverage, addition EnrichmentCoverage) bool {
+	if len(coverage.Enrichment) == 0 {
+		failures := make([]EnrichmentFailure, len(addition.Failures))
+		copy(failures, addition.Failures)
+		addition.Failures = failures
+		coverage.Enrichment = []EnrichmentCoverage{addition}
+		return true
+	}
+	aggregate := coverage.Enrichment[0]
+	aggregateLimit := MaxTargets * maxGeoIPLookupsPerResult
+	if aggregate.CacheHits > aggregateLimit-addition.CacheHits || aggregate.UpstreamFetches > aggregateLimit-addition.UpstreamFetches {
+		return false
+	}
+	aggregate.CacheHits += addition.CacheHits
+	aggregate.UpstreamFetches += addition.UpstreamFetches
+	if addition.MaxAgeMS > aggregate.MaxAgeMS {
+		aggregate.MaxAgeMS = addition.MaxAgeMS
+	}
+	counts := make(map[GeoIPErrorKind]int, len(geoIPFailureKinds()))
+	for _, group := range [][]EnrichmentFailure{aggregate.Failures, addition.Failures} {
+		for _, failure := range group {
+			if counts[failure.Kind] > aggregateLimit-failure.Count {
+				return false
+			}
+			counts[failure.Kind] += failure.Count
+		}
+	}
+	aggregate.Failures = aggregate.Failures[:0]
+	for _, kind := range geoIPFailureKinds() {
+		if count := counts[kind]; count > 0 {
+			aggregate.Failures = append(aggregate.Failures, EnrichmentFailure{Kind: kind, Count: count, Retryable: geoIPFailureRetryable(kind)})
+		}
+	}
+	aggregate.Source = enrichmentSource(aggregate.CacheHits, aggregate.UpstreamFetches)
+	coverage.Enrichment[0] = aggregate
+	return true
+}
+
 func supportedKind(kind Kind) bool {
 	switch kind {
 	case KindDNS, KindTCP, KindHTTP, KindHTTPS, KindTraceroute, KindSSH, KindSMTP, KindSubmission, KindSMTPS, KindIMAP, KindIMAPS, KindPOP3, KindPOP3S:
@@ -564,7 +734,7 @@ func validErrorCode(fact normalizedResultFacts) bool {
 		return fact.kind == KindTraceroute && fact.status == StatusDegraded && fact.hasTraceCounters
 	}
 	switch fact.errorCode {
-	case "network_policy_blocked", "invalid_url", "invalid_address", "timeout", "cancelled", "connection_failed":
+	case "network_policy_blocked", "invalid_url", "invalid_address", "timeout", "cancelled", "connection_failed", "checker_panic", "checker_capacity_unavailable":
 		return true
 	case "tls_downgrade", "unexpected_status":
 		return fact.kind == KindHTTP || fact.kind == KindHTTPS
