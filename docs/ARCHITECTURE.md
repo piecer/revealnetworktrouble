@@ -16,6 +16,10 @@ Web / Mobile / CLI
   DNS    TCP   HTTP(S)   Services   <- 교체 가능한 Checker
 ```
 
+Traceroute command/parser는 Unix `traceroute`와 Windows `tracert.exe` adapter를 분리한다. compact 요청에서는 Runner가 raw results 전체로 `analysis`를 먼저 만든 다음 deterministic compact graph를 생성한다. API transport는 raw report를 mutate하지 않는 copy에서 attempts와 대표 topology만 제거하고 final JSON을 header 이전에 marshal한다. Geo suffix와 route transaction을 단조 이진 탐색으로 축소해 1 MiB 미만을 보장한다.
+
+Web은 strict compact schema, compact-first/legacy-bounded model, owner-safe progressive coordinator로 분리된다. topology/Geo/labels 중 active view만 dynamic DOM을 소유한다. topology item은 실제 element 하나, Geo path는 Canvas semantic data, labels는 bounded page로 materialize하며 commit 직전에 실제 document/chunk element 수를 검사한다. 앱 state와 listener는 `createApp` instance에 귀속되고 `destroy()`가 request, timer, scheduler, Canvas와 listener를 정리한다.
+
 `internal/api`는 HTTP 전송만 담당하고, `diagnostic` 패키지는 프로토콜이나 UI를 알지 못한다. 새 프론트엔드는 API만 사용하며, 새 검사 방식은 `Checker` 인터페이스 구현으로 추가한다.
 
 진단 checker가 만든 `Result`는 먼저 typed normalized facts로 변환한 뒤 결정적 analysis 규칙에 입력된다. 분석은 backend의 자유 형식 오류 message를 파싱하지 않고 stable `error_code`와 구조화된 details만 사용한다. `confidence`는 원인 확률이 아니라 finding 문장을 지지하는 evidence의 직접성이고, 관측 불가·malformed·legacy 데이터는 별도 coverage limitation으로 보존한다.
@@ -29,6 +33,7 @@ Web / Mobile / CLI
 - 한 검사 실패가 다른 검사를 중단시키지 않는다.
 - 테스트는 외부 인터넷, 특정 DNS 설정, 관리자 권한에 의존하지 않는다.
 - 로그에 요청 본문, 자격 증명, 전체 URL 쿼리를 남기지 않는다.
+- compact response는 nodes 500, links 1,000, body 1 MiB 미만이고 Web commit은 chunk 100, document 1,200 elements를 넘지 않는다.
 
 ## 보안 기준
 

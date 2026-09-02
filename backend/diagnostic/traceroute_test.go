@@ -3,16 +3,249 @@ package diagnostic
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestTracerouteBuildsHealthyTopology(t *testing.T) {
-	checker := TracerouteChecker{Command: func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name != "traceroute" || !reflect.DeepEqual(args, []string{"-n", "-q", "1", "-w", "2", "-m", "30", "example.test"}) {
-			t.Fatalf("command = %s %v", name, args)
+func TestParseTracerouteRejectsOutputOverByteLimit(t *testing.T) {
+	output := "traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  1.0 ms\n"
+	output += strings.Repeat("x", MaxTraceOutputBytes+1-len(output))
+
+	_, err := parseTraceroute(output, "example.test")
+	if !errors.Is(err, ErrTraceOutputLimit) {
+		t.Fatalf("error = %v, want %v", err, ErrTraceOutputLimit)
+	}
+}
+
+func TestParseTracerouteRejectsCommandHopOverLimit(t *testing.T) {
+	output := "traceroute to example.test (203.0.113.8), 30 hops max\n31  203.0.113.8  1.0 ms\n"
+
+	_, err := parseTraceroute(output, "example.test")
+	if !errors.Is(err, ErrTraceHopLimit) {
+		t.Fatalf("error = %v, want %v", err, ErrTraceHopLimit)
+	}
+}
+
+func TestParseTracerouteRejectsNonPositiveAndNonIncreasingHops(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		hops string
+	}{
+		{name: "negative", hops: "-1  192.0.2.1  1.0 ms"},
+		{name: "zero", hops: "0  192.0.2.1  1.0 ms"},
+		{name: "duplicate", hops: "1  192.0.2.1  1.0 ms\n1  192.0.2.2  2.0 ms"},
+		{name: "decreasing", hops: "2  192.0.2.1  1.0 ms\n1  192.0.2.2  2.0 ms"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			output := "traceroute to example.test (203.0.113.8), 30 hops max\n" + tt.hops
+			_, err := parseTraceroute(output, "example.test")
+			if !errors.Is(err, ErrTraceHopSequence) {
+				t.Fatalf("error = %v, want %v", err, ErrTraceHopSequence)
+			}
+		})
+	}
+}
+
+func TestParseTracerouteAllowsSkippedStrictlyIncreasingHops(t *testing.T) {
+	output := "traceroute to example.test (203.0.113.8), 30 hops max\n1  192.0.2.1  1.0 ms\n3  192.0.2.3  3.0 ms\n30  *\n"
+	topology, err := parseTraceroute(output, "example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]int, 0, len(topology.Nodes))
+	for _, node := range topology.Nodes {
+		got = append(got, node.Hop)
+	}
+	want := []int{0, 1, 3, 30, 31}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hops = %v, want %v", got, want)
+	}
+}
+
+func TestParseTracerouteExactHopRangeCapsNodesAndLinksIncludingSyntheticDestination(t *testing.T) {
+	var output strings.Builder
+	output.WriteString("traceroute to example.test (203.0.113.8), 30 hops max\n")
+	for hop := 1; hop <= MaxTraceHops; hop++ {
+		fmt.Fprintf(&output, "%d  *\n", hop)
+	}
+	topology, err := parseTraceroute(output.String(), "example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(topology.Nodes), MaxTraceHops+2; got != want {
+		t.Fatalf("nodes = %d, want %d", got, want)
+	}
+	if got, want := len(topology.Links), MaxTraceHops+1; got != want {
+		t.Fatalf("links = %d, want %d", got, want)
+	}
+	if topology.Nodes[1].Hop != 1 || topology.Nodes[MaxTraceHops].Hop != MaxTraceHops || topology.Nodes[MaxTraceHops+1].Hop != MaxTraceHops+1 {
+		t.Fatalf("unexpected boundary hops: %+v", topology.Nodes)
+	}
+}
+
+func TestParseTracerouteKeepsSyntheticDestinationAfterValidHopThirty(t *testing.T) {
+	output := "traceroute to example.test (203.0.113.8), 30 hops max\n30  *\n"
+
+	topology, err := parseTraceroute(output, "example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := topology.Nodes[len(topology.Nodes)-1]
+	if topology.Reached || last.Hop != MaxTraceHops+1 || last.Address != "example.test" || last.Status != "failure" {
+		t.Fatalf("unexpected synthetic destination: %+v", topology)
+	}
+}
+
+func TestParseTracerouteRejectsMalformedAndNonFiniteLatency(t *testing.T) {
+	for _, latency := range []string{"1e999", "NaN", "Inf", "+Inf", "-Inf", "not-a-number"} {
+		t.Run(latency, func(t *testing.T) {
+			output := "traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  " + latency + " ms\n"
+			topology, err := parseTraceroute(output, "example.test")
+			if !errors.Is(err, ErrTraceLatency) {
+				t.Fatalf("error = %v, want %v", err, ErrTraceLatency)
+			}
+			for _, node := range topology.Nodes {
+				if node.Status == "healthy" && node.Hop > 0 {
+					t.Fatalf("malformed latency produced healthy node: %+v", node)
+				}
+			}
+		})
+	}
+}
+
+func TestParseTracerouteParsesWindowsThreeProbeRowsUsingMinimumLatency(t *testing.T) {
+	output := `
+Tracing route to example.test [203.0.113.8]
+Over a maximum of 30 hops:
+
+  1    <1 ms     3 ms     *        192.0.2.1
+  2     *        *        *        Request timed out.
+  3    11 ms     9 ms    10 ms     203.0.113.8
+
+Trace complete.
+`
+	topology, err := parseTraceroute(output, "example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !topology.Reached || len(topology.Nodes) != 4 || len(topology.Links) != 3 {
+		t.Fatalf("Windows topology = %+v", topology)
+	}
+	if node := topology.Nodes[1]; node.Address != "192.0.2.1" || node.Status != "healthy" || node.LatencyMS != 1 {
+		t.Fatalf("first Windows hop = %+v", node)
+	}
+	if node := topology.Nodes[2]; node.Address != "" || node.Status != "unknown" {
+		t.Fatalf("timed-out Windows hop = %+v", node)
+	}
+	if node := topology.Nodes[3]; node.Address != "203.0.113.8" || node.LatencyMS != 9 {
+		t.Fatalf("destination Windows hop = %+v", node)
+	}
+}
+
+func TestParseTracerouteWindowsDirectAddressRetainsSyntheticDestination(t *testing.T) {
+	output := "Tracing route to 203.0.113.8\nOver a maximum of 30 hops:\n  1     1 ms     *     2 ms     192.0.2.1\n 30     *        *        *        Request timed out.\n"
+	topology, err := parseTraceroute(output, "203.0.113.8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topology.Reached || len(topology.Nodes) != 4 || topology.Nodes[len(topology.Nodes)-1].Hop != 31 || topology.Nodes[len(topology.Nodes)-1].Status != "failure" {
+		t.Fatalf("Windows unreached topology = %+v", topology)
+	}
+}
+
+func TestParseTraceroutePreservesSubMillisecondLatencySyntax(t *testing.T) {
+	output := "traceroute to example.test (203.0.113.8), 30 hops max\n1  192.0.2.1  <1 ms\n2  203.0.113.8  1.0 ms\n"
+	topology, err := parseTraceroute(output, "example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topology.Nodes[1].Status != "healthy" || topology.Nodes[1].LatencyMS != 1 {
+		t.Fatalf("sub-millisecond node = %+v", topology.Nodes[1])
+	}
+}
+
+func TestParseTracerouteFindsHeaderAfterWarningAndReachesDestination(t *testing.T) {
+	output := "traceroute: warning: multiple addresses found\n" +
+		"traceroute to example.test (203.0.113.8), 30 hops max\n" +
+		"1  192.0.2.1  1.0 ms\n" +
+		"2  203.0.113.8  2.0 ms\n"
+
+	topology, err := parseTraceroute(output, "example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !topology.Reached || len(topology.Nodes) != 3 || topology.Nodes[2].Address != "203.0.113.8" {
+		t.Fatalf("warning-prefixed topology = %+v", topology)
+	}
+}
+
+func TestParseTracerouteRejectsHopOutputWithoutHeader(t *testing.T) {
+	output := "traceroute: warning: header unavailable\n1  203.0.113.8  1.0 ms\n"
+	if _, err := parseTraceroute(output, "example.test"); err == nil {
+		t.Fatal("hop output without a traceroute header was accepted")
+	}
+}
+
+func TestParseTracerouteRejectsNegativeAndExcessiveFiniteLatency(t *testing.T) {
+	for _, latency := range []string{"-0.01", "30000.01", "1.7976931348623157e308"} {
+		t.Run(latency, func(t *testing.T) {
+			output := "traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  " + latency + " ms\n"
+			_, err := parseTraceroute(output, "example.test")
+			if !errors.Is(err, ErrTraceLatency) {
+				t.Fatalf("error = %v, want %v", err, ErrTraceLatency)
+			}
+		})
+	}
+}
+
+func TestClassifyTopologyNeverProducesNonFiniteLatencyDelta(t *testing.T) {
+	topology := Topology{Nodes: []TopologyNode{
+		{ID: "hop-0", Hop: 0, Status: "healthy"},
+		{ID: "hop-1", Hop: 1, Status: "healthy", LatencyMS: 1.7976931348623157e308},
+		{ID: "hop-2", Hop: 2, Status: "healthy", LatencyMS: -1.7976931348623157e308},
+	}}
+
+	classifyTopology(&topology)
+	for _, link := range topology.Links {
+		if math.IsNaN(link.LatencyDeltaMS) || math.IsInf(link.LatencyDeltaMS, 0) {
+			t.Fatalf("non-finite classified link: %+v", link)
 		}
+	}
+}
+
+func TestTracerouteMalformedLatencyCannotBecomeHealthy(t *testing.T) {
+	checker := TracerouteChecker{Command: func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("traceroute to example.test (203.0.113.8), 30 hops max\n1  203.0.113.8  1e999 ms\n"), nil
+	}}
+	result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 1})
+	if result.Status == StatusHealthy || result.ErrorCode != "traceroute_failed" {
+		t.Fatalf("malformed latency became healthy: %+v", result)
+	}
+}
+
+func TestTraceroutePassesPlatformCommandSpecToInjectedCommand(t *testing.T) {
+	const timeout = 1750 * time.Millisecond
+	wantName, wantArgs := traceCommandSpec(timeout, "example.test")
+	calls := 0
+	checker := TracerouteChecker{Command: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		if name != wantName || !reflect.DeepEqual(args, wantArgs) {
+			t.Fatalf("command = %s %v, want %s %v", name, args, wantName, wantArgs)
+		}
+		return []byte("traceroute to example.test (203.0.113.8), 30 hops max\n 1  203.0.113.8  21.4 ms\n"), nil
+	}}
+	result := checker.Check(withAttemptTimeout(context.Background(), timeout), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 1})
+	if calls != 1 || result.Status != StatusHealthy {
+		t.Fatalf("calls=%d result=%+v", calls, result)
+	}
+}
+
+func TestTracerouteBuildsHealthyTopology(t *testing.T) {
+	checker := TracerouteChecker{Command: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 		return []byte("traceroute to example.test (203.0.113.8), 30 hops max\n 1  192.0.2.1  2.1 ms\n 2  203.0.113.8  21.4 ms\n"), nil
 	}}
 	result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.test"})
@@ -163,6 +396,7 @@ func TestTracerouteUnparseableCommandErrorsKeepStableCodes(t *testing.T) {
 	}{
 		{name: "deadline", err: context.DeadlineExceeded, code: "timeout"},
 		{name: "cancelled", err: context.Canceled, code: "cancelled"},
+		{name: "output limit", err: ErrTraceOutputLimit, code: "traceroute_failed"},
 		{name: "exit", err: errors.New("exit status 1"), code: "traceroute_failed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

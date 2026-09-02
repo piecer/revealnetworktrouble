@@ -1,5 +1,4 @@
 FROM nginx:1.27-alpine
-COPY . /usr/share/nginx/html
-COPY docker-entrypoint.d/40-runtime-config.sh /docker-entrypoint.d/40-runtime-config.sh
-RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh
+RUN rm -rf /usr/share/nginx/html/*
+COPY index.html styles.css app.js state.js topology-model.js topology-renderer.js /usr/share/nginx/html/
 EXPOSE 80

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,6 +24,14 @@ const (
 	defaultMaxConcurrentReports = 4
 	defaultMaxRateLimitClients  = 4096
 )
+
+var (
+	errCompactResponseTooLarge = errors.New("compact response too large")
+	errResponseSerialization   = errors.New("response serialization failed")
+)
+
+type compactReportMarshaler func(diagnostic.Report) ([]byte, error)
+type compactTopologyBuilder func(diagnostic.Report, int, bool) diagnostic.CompactTopologyBuildResult
 
 type DeploymentMode string
 
@@ -130,8 +139,18 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) checks(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kinds":  []string{"dns", "tcp", "http", "https", "traceroute", "ssh", "smtp", "submission", "smtps", "imap", "imaps", "pop3", "pop3s"},
-		"limits": map[string]any{"max_targets": diagnostic.MaxTargets, "max_traceroute_attempts": diagnostic.MaxTraceAttempts, "timeout_ms_min": diagnostic.MinTimeout.Milliseconds(), "timeout_ms_max": diagnostic.MaxTimeout.Milliseconds()},
+		"kinds":          []string{"dns", "tcp", "http", "https", "traceroute", "ssh", "smtp", "submission", "smtps", "imap", "imaps", "pop3", "pop3s"},
+		"topology_modes": []string{"full", "compact"},
+		"limits": map[string]any{
+			"max_targets":                      diagnostic.MaxTargets,
+			"max_traceroute_attempts":          diagnostic.MaxTraceAttempts,
+			"timeout_ms_min":                   diagnostic.MinTimeout.Milliseconds(),
+			"timeout_ms_max":                   diagnostic.MaxTimeout.Milliseconds(),
+			"compact_topology_nodes":           diagnostic.CompactTopologyMaxNodes,
+			"compact_topology_links":           diagnostic.CompactTopologyMaxLinks,
+			"compact_response_bytes_exclusive": diagnostic.CompactTopologyMaxResponseBytes,
+			"compact_geo_bundle_bytes":         diagnostic.CompactTopologyMaxGeoBundleBytes,
+		},
 	})
 }
 
@@ -175,6 +194,21 @@ func (s *Server) createReport(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+	if req.TopologyMode == diagnostic.TopologyModeCompact {
+		payload, marshalErr := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) {
+			return json.Marshal(value)
+		})
+		if marshalErr != nil {
+			if errors.Is(marshalErr, errCompactResponseTooLarge) {
+				writeError(w, http.StatusInternalServerError, "compact_response_too_large", "compact report response exceeds the size limit")
+			} else {
+				writeError(w, http.StatusInternalServerError, "response_serialization_failed", "report response could not be serialized")
+			}
+			return
+		}
+		writeJSONPayload(w, http.StatusOK, payload)
+		return
 	}
 	writeJSON(w, http.StatusOK, report)
 }
@@ -252,11 +286,147 @@ func (s *Server) originAllowed(origin string) bool {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		status = http.StatusInternalServerError
+		payload = []byte(`{"error":{"code":"response_serialization_failed","message":"report response could not be serialized"}}`)
+	}
+	payload = append(payload, '\n')
+	writeJSONPayload(w, status, payload)
+}
+
+func writeJSONPayload(w http.ResponseWriter, status int, payload []byte) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(payload)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+func marshalCompactResponse(report diagnostic.Report, marshal compactReportMarshaler) ([]byte, error) {
+	return marshalCompactResponseWithBuilder(report, marshal, diagnostic.BuildCompactTopologyWithOptions)
+}
+
+func marshalCompactResponseWithBuilder(report diagnostic.Report, marshal compactReportMarshaler, buildTopology compactTopologyBuilder) ([]byte, error) {
+	build, cached := report.CachedCompactTopologyBuild()
+	if !cached {
+		build = buildTopology(report, -1, true)
+	}
+	initial := diagnostic.CloneCompactTopology(build.Topology)
+	acceptedTransactions := build.AcceptedTransactions
+
+	marshalTopology := func(topology *diagnostic.CompactTopology, responseLimited, geoLimited bool) ([]byte, bool, error) {
+		setCompactTruncationReasons(topology, responseLimited, geoLimited)
+		payload, err := marshal(diagnostic.BuildCompactReport(report, topology))
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: %v", errResponseSerialization, err)
+		}
+		payload = append(payload, '\n')
+		return payload, len(payload) < diagnostic.CompactTopologyMaxResponseBytes, nil
+	}
+
+	payload, fits, err := marshalTopology(initial, false, false)
+	if err != nil {
+		return nil, err
+	}
+	if fits {
+		return payload, nil
+	}
+
+	geoBundles := compactGeoBundleCount(initial)
+	low, high := 1, geoBundles
+	var bestGeoPayload []byte
+	for low <= high {
+		removed := low + (high-low)/2
+		candidate := compactTopologyWithoutLastGeoBundles(initial, removed)
+		candidatePayload, candidateFits, marshalErr := marshalTopology(candidate, true, true)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		if candidateFits {
+			bestGeoPayload = candidatePayload
+			high = removed - 1
+		} else {
+			low = removed + 1
+		}
+	}
+	if bestGeoPayload != nil {
+		return bestGeoPayload, nil
+	}
+
+	// The all-Geo-removed full selection was either probed above and remained
+	// oversized, or no Geo was present. Find the greatest accepted transaction
+	// count whose rebuilt no-Geo response fits.
+	low, high = 0, acceptedTransactions-1
+	var bestTransactionPayload []byte
+	for low <= high {
+		transactionLimit := low + (high-low)/2
+		candidateBuild := buildTopology(report, transactionLimit, false)
+		candidate := diagnostic.CloneCompactTopology(candidateBuild.Topology)
+		candidatePayload, candidateFits, marshalErr := marshalTopology(candidate, true, geoBundles > 0)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		if candidateFits {
+			bestTransactionPayload = candidatePayload
+			low = transactionLimit + 1
+		} else {
+			high = transactionLimit - 1
+		}
+	}
+	if bestTransactionPayload != nil {
+		return bestTransactionPayload, nil
+	}
+	return nil, errCompactResponseTooLarge
+}
+
+func compactGeoBundleCount(topology *diagnostic.CompactTopology) int {
+	count := 0
+	for _, node := range topology.Nodes {
+		if node.Geolocation != nil || node.ASN != nil {
+			count++
+		}
+	}
+	return count
+}
+
+func compactTopologyWithoutLastGeoBundles(source *diagnostic.CompactTopology, removed int) *diagnostic.CompactTopology {
+	candidate := diagnostic.CloneCompactTopology(source)
+	for index := len(candidate.Nodes) - 1; index >= 0 && removed > 0; index-- {
+		node := &candidate.Nodes[index]
+		if node.Geolocation == nil && node.ASN == nil {
+			continue
+		}
+		node.Geolocation = nil
+		node.ASN = nil
+		candidate.Geo.Included--
+		candidate.Geo.Omitted++
+		removed--
+	}
+	return candidate
+}
+
+func setCompactTruncationReasons(topology *diagnostic.CompactTopology, responseLimited, geoLimited bool) {
+	present := make(map[diagnostic.CompactTruncationReason]bool, len(topology.TruncationReasons)+2)
+	for _, reason := range topology.TruncationReasons {
+		present[reason] = true
+	}
+	present[diagnostic.CompactTruncationResponseSize] = present[diagnostic.CompactTruncationResponseSize] || responseLimited
+	present[diagnostic.CompactTruncationGeoLimit] = present[diagnostic.CompactTruncationGeoLimit] || geoLimited
+	ordered := []diagnostic.CompactTruncationReason{
+		diagnostic.CompactTruncationNodeLimit,
+		diagnostic.CompactTruncationLinkLimit,
+		diagnostic.CompactTruncationResponseSize,
+		diagnostic.CompactTruncationGeoLimit,
+	}
+	topology.TruncationReasons = topology.TruncationReasons[:0]
+	for _, reason := range ordered {
+		if present[reason] {
+			topology.TruncationReasons = append(topology.TruncationReasons, reason)
+		}
+	}
+	topology.Truncated = len(topology.TruncationReasons) > 0
 }

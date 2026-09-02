@@ -6,7 +6,8 @@ import {
   createRequestLane, canonicalDiagnosticsInput, canonicalTopologyInput, inputSignature,
   transitionRequest, ownsRequest, clientTimeoutMS, parseRetryAfter,
   normalizeRequestError, parseResponse,
-  normalizeReport, normalizeAnalysis, normalizeResult, normalizeTopology
+  normalizeReport, normalizeAnalysis, normalizeResult, normalizeTopology,
+  normalizeCompactTopology
 } from './state.js';
 
 const started = '2026-09-01T12:00:00Z';
@@ -24,6 +25,37 @@ const analysis = (overrides = {}) => ({
   evidence: [{ id: 'e-1', result_index: 0, kind: 'dns', address: 'example.test', signal: 'error_code', observed: 'connection_failed', expected: 'successful DNS resolution', provenance: 'result' }],
   actions: [{ id: 'a-1', title: 'Check DNS', step: 'Resolve again', expected_result: 'An address', escalation_condition: 'Still no answer' }],
   coverage: { available: ['results[0].status'], missing: [], provider_failures: [], limitations: [] },
+  ...overrides
+});
+
+const compactTopology = (overrides = {}) => ({
+  schema: 'compact-v1',
+  selection: 'fair-complete-prefix-v1',
+  limits: { nodes: 500, links: 1000, max_response_bytes_exclusive: 1048576, max_geo_bundle_bytes: 4096 },
+  nodes: [
+    { id: 'n000001', kind: 'local', address: 'local', status: 'healthy', hop_min: 0, hop_max: 0, observations: 1 },
+    { id: 'n000002', kind: 'ip', address: '192.0.2.1', status: 'degraded', hop_min: 1, hop_max: 2, latency_ms_avg: 2.5, observations: 1, public_ip: true,
+      geolocation: { city: 'Seoul', region: 'Seoul', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 },
+      asn: { number: 64500, organization: 'Example' } }
+  ],
+  links: [{ from: 'n000001', to: 'n000002', status: 'degraded', observations: 1 }],
+  routes: [{ result_index: 0, attempt: 1, status: 'healthy', reached: true, complete: true, node_ids: ['n000001', 'n000002'] }],
+  stats: {
+    nodes: { total: 2, displayed: 2, omitted: 0 },
+    links: { total: 1, displayed: 1, omitted: 0 },
+    routes: { total: 1, displayed: 1, complete: 1, partial: 0, omitted: 0 },
+    node_observations: { total: 2, displayed: 2, omitted: 0 },
+    link_observations: { total: 1, displayed: 1, omitted: 0 }
+  },
+  result_stats: [{
+    result_index: 0,
+    routes: { total: 1, displayed: 1, complete: 1, partial: 0, omitted: 0 },
+    node_observations: { total: 2, displayed: 2, omitted: 0 },
+    link_observations: { total: 1, displayed: 1, omitted: 0 }
+  }],
+  geo: { eligible: 1, available: 1, included: 1, omitted: 0, unavailable: 0 },
+  truncated: false,
+  truncation_reasons: [],
   ...overrides
 });
 
@@ -162,6 +194,190 @@ test('legacy reports without analysis are accepted while malformed schema is rej
   assert.throws(() => normalizeAnalysis(analysis({ actions: [{ ...analysis().actions[0], title: 'x'.repeat(SCHEMA_LIMITS.string + 1) }] })));
   assert.throws(() => normalizeAnalysis(analysis({ coverage: { ...analysis().coverage, available: Array(SCHEMA_LIMITS.coverage + 1).fill('x') } })));
   assert.throws(() => normalizeTopology({ reached: true, nodes: [{ id: 'x', hop: 1, status: 'evil' }], links: [] }));
+});
+
+test('compact topology is optional and valid compact data is deeply copied into inert plain data', () => {
+  const absent = normalizeReport(legacyReport());
+  assert.equal(absent.compact_topology, null);
+
+  const source = compactTopology();
+  const normalized = normalizeReport(legacyReport({ compact_topology: source }));
+  assert.notStrictEqual(normalized.compact_topology, source);
+  assert.notStrictEqual(normalized.compact_topology.nodes, source.nodes);
+  assert.notStrictEqual(normalized.compact_topology.nodes[1].geolocation, source.nodes[1].geolocation);
+  assert.deepEqual(normalized.compact_topology, source);
+  source.nodes[1].geolocation.city = 'mutated';
+  source.routes[0].node_ids[0] = 'mutated';
+  assert.equal(normalized.compact_topology.nodes[1].geolocation.city, 'Seoul');
+  assert.equal(normalized.compact_topology.routes[0].node_ids[0], 'n000001');
+  assert.equal(Object.getPrototypeOf(normalized.compact_topology), Object.prototype);
+  assert.equal(Object.getPrototypeOf(normalized.compact_topology.nodes), Array.prototype);
+});
+
+test('present malformed compact topology rejects the report without legacy fallback', () => {
+  const malformed = compactTopology({ schema: 'compact-v2' });
+  const report = legacyReport({ compact_topology: malformed });
+  assert.throws(() => normalizeReport(report), /compact_topology|schema/i);
+  assert.throws(() => normalizeReport(legacyReport({ compact_topology: null })), /compact_topology|schema/i);
+  const parsed = parseResponse(response(200), JSON.stringify(report), 0);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error.code, 'invalid_response');
+});
+
+test('compact per-result displayed route kinds must match the route array', () => {
+  const value = compactTopology({
+    nodes: [
+      { id: 'n000001', kind: 'local', address: 'local', status: 'healthy', hop_min: 0, hop_max: 0, observations: 2 },
+      { id: 'n000002', kind: 'ip', address: '192.0.2.1', status: 'degraded', hop_min: 1, hop_max: 2, latency_ms_avg: 2.5, observations: 1, public_ip: true,
+        geolocation: { city: 'Seoul', region: 'Seoul', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 }, asn: { number: 64500, organization: 'Example' } }
+    ],
+    routes: [
+      { result_index: 0, attempt: 1, status: 'healthy', reached: true, complete: true, node_ids: ['n000001', 'n000002'] },
+      { result_index: 1, attempt: 1, status: 'degraded', reached: false, complete: false, node_ids: ['n000001'] }
+    ],
+    stats: {
+      nodes: { total: 2, displayed: 2, omitted: 0 }, links: { total: 1, displayed: 1, omitted: 0 },
+      routes: { total: 2, displayed: 2, complete: 1, partial: 1, omitted: 0 },
+      node_observations: { total: 3, displayed: 3, omitted: 0 }, link_observations: { total: 1, displayed: 1, omitted: 0 }
+    },
+    result_stats: [
+      { result_index: 0, routes: { total: 1, displayed: 1, complete: 0, partial: 1, omitted: 0 }, node_observations: { total: 3, displayed: 3, omitted: 0 }, link_observations: { total: 1, displayed: 1, omitted: 0 } },
+      { result_index: 1, routes: { total: 1, displayed: 1, complete: 1, partial: 0, omitted: 0 }, node_observations: { total: 0, displayed: 0, omitted: 0 }, link_observations: { total: 0, displayed: 0, omitted: 0 } }
+    ]
+  });
+  assert.throws(() => normalizeCompactTopology(value), /result_stats|route/i);
+});
+
+test('compact routes accept backend-collapsed consecutive canonical nodes', () => {
+  const value = structuredClone(compactTopology());
+  value.routes[0].node_ids = ['n000001', 'n000002', 'n000002'];
+  value.nodes[1].observations = 2;
+  value.stats.node_observations = { total: 3, displayed: 3, omitted: 0 };
+  value.result_stats[0].node_observations = { total: 3, displayed: 3, omitted: 0 };
+
+  const normalized = normalizeCompactTopology(value);
+  assert.deepEqual(normalized.routes[0].node_ids, ['n000001', 'n000002']);
+  assert.deepEqual(normalized.stats.node_observations, value.stats.node_observations);
+});
+
+test('compact route observation stats count emitted route entries independently of raw node observations', () => {
+  const value = structuredClone(compactTopology());
+  value.nodes[1].observations = 2;
+  value.stats.node_observations = { total: 2, displayed: 2, omitted: 0 };
+  value.result_stats[0].node_observations = { total: 2, displayed: 2, omitted: 0 };
+
+  const normalized = normalizeCompactTopology(value);
+  assert.equal(normalized.routes[0].node_ids.length, 2);
+  assert.equal(normalized.nodes.reduce((sum, node) => sum + node.observations, 0), 3);
+  assert.equal(normalized.stats.node_observations.displayed, 2);
+});
+
+test('compact schema accepts the exact backend 30-hop unreached route ceiling', () => {
+  const value = structuredClone(compactTopology());
+  value.nodes = Array.from({ length: 32 }, (_, index) => ({
+    id: `n${String(index + 1).padStart(6, '0')}`,
+    kind: index === 0 ? 'local' : index === 31 ? 'hostname' : 'unknown',
+    address: index === 0 ? 'local' : index === 31 ? 'target.example' : '',
+    status: index === 0 ? 'healthy' : index === 31 ? 'failure' : 'unknown',
+    hop_min: index === 31 ? 30 : index,
+    hop_max: index === 31 ? 30 : index,
+    observations: 1
+  }));
+  value.links = value.nodes.slice(1).map((node, index) => ({
+    from: value.nodes[index].id, to: node.id, status: node.status, observations: 1
+  }));
+  value.routes = [{ result_index: 0, attempt: 1, status: 'unreachable', reached: false, complete: true, node_ids: value.nodes.map(node => node.id) }];
+  value.stats = {
+    nodes: { total: 32, displayed: 32, omitted: 0 }, links: { total: 31, displayed: 31, omitted: 0 },
+    routes: { total: 1, displayed: 1, complete: 1, partial: 0, omitted: 0 },
+    node_observations: { total: 32, displayed: 32, omitted: 0 }, link_observations: { total: 31, displayed: 31, omitted: 0 }
+  };
+  value.result_stats = [{ result_index: 0, routes: value.stats.routes, node_observations: value.stats.node_observations, link_observations: value.stats.link_observations }];
+  value.geo = { eligible: 0, available: 0, included: 0, omitted: 0, unavailable: 0 };
+
+  assert.equal(normalizeCompactTopology(value).routes[0].node_ids.length, 32);
+});
+
+test('compact links are unique directed non-self edges and routes use real edges', () => {
+  const self = structuredClone(compactTopology());
+  self.links[0].to = self.links[0].from;
+  assert.throws(() => normalizeCompactTopology(self), /self|link/i);
+
+  const duplicate = structuredClone(compactTopology());
+  duplicate.links.push(structuredClone(duplicate.links[0]));
+  duplicate.stats.links = { total: 2, displayed: 2, omitted: 0 };
+  duplicate.stats.link_observations = { total: 2, displayed: 2, omitted: 0 };
+  duplicate.result_stats[0].link_observations = { total: 2, displayed: 2, omitted: 0 };
+  assert.throws(() => normalizeCompactTopology(duplicate), /duplicate|unique|link/i);
+
+  const missing = structuredClone(compactTopology());
+  missing.links = [];
+  missing.stats.links = { total: 0, displayed: 0, omitted: 0 };
+  missing.stats.link_observations = { total: 1, displayed: 0, omitted: 1 };
+  assert.throws(() => normalizeCompactTopology(missing), /route|link|edge/i);
+
+});
+
+test('compact result observation displays are derived from each route prefix', () => {
+  const wrongNodes = structuredClone(compactTopology());
+  wrongNodes.result_stats[0].node_observations = { total: 2, displayed: 1, omitted: 1 };
+  assert.throws(() => normalizeCompactTopology(wrongNodes), /result_stats|observation/i);
+
+  const wrongLinks = structuredClone(compactTopology());
+  wrongLinks.result_stats[0].link_observations = { total: 1, displayed: 0, omitted: 1 };
+  assert.throws(() => normalizeCompactTopology(wrongLinks), /result_stats|observation/i);
+});
+
+test('compact duplicate attempt numbers retain backend occurrence order', () => {
+  const value = structuredClone(compactTopology());
+  value.routes.push({ ...structuredClone(value.routes[0]), complete: false, node_ids: ['n000001'] });
+  value.nodes[0].observations = 2;
+  value.stats.routes = { total: 2, displayed: 2, complete: 1, partial: 1, omitted: 0 };
+  value.stats.node_observations = { total: 3, displayed: 3, omitted: 0 };
+  value.result_stats[0].routes = { total: 2, displayed: 2, complete: 1, partial: 1, omitted: 0 };
+  value.result_stats[0].node_observations = { total: 3, displayed: 3, omitted: 0 };
+  const normalized = normalizeCompactTopology(value);
+  assert.equal(normalized.routes.length, 2);
+  assert.deepEqual(normalized.routes.map(route => [route.result_index, route.attempt]), [[0, 1], [0, 1]]);
+});
+
+test('compact truncation reasons accept backend rollback response order', () => {
+  const value = compactTopology({ truncated: true, truncation_reasons: ['response_size', 'geo_metadata_limit'] });
+  assert.deepEqual(normalizeCompactTopology(value).truncation_reasons, ['response_size', 'geo_metadata_limit']);
+});
+
+test('compact schema rejects caps, identity, references, numeric, enum, reason, count, and Geo violations', () => {
+  const invalid = [];
+  const mutate = callback => { const value = structuredClone(compactTopology()); callback(value); invalid.push(value); };
+  mutate(value => { value.selection = 'first-come'; });
+  mutate(value => { value.nodes = Array.from({ length: 501 }, (_, index) => ({ id: `n${index}`, kind: 'ip', address: `${index}`, status: 'healthy', hop_min: 1, hop_max: 1, observations: 1 })); });
+  mutate(value => { value.links = Array.from({ length: 1001 }, () => ({ from: 'n000001', to: 'n000002', status: 'healthy', observations: 1 })); });
+  mutate(value => { value.nodes[1].id = value.nodes[0].id; });
+  mutate(value => { value.nodes[1].latency_ms_avg = Number.NaN; });
+  mutate(value => { value.nodes[1].kind = 'router'; });
+  mutate(value => { value.links[0].status = 'unreachable'; });
+  mutate(value => { value.links[0].to = 'missing'; });
+  mutate(value => { value.routes[0].node_ids = ['missing']; });
+  mutate(value => { value.stats.nodes.total = 3; });
+  mutate(value => { value.stats.nodes.displayed = 1; value.stats.nodes.omitted = 1; });
+  mutate(value => { value.geo.included = 0; value.geo.omitted = 1; });
+  mutate(value => { value.truncated = true; value.truncation_reasons = ['response_size', 'node_limit']; });
+  mutate(value => { value.truncated = true; value.truncation_reasons = ['node_limit', 'node_limit']; });
+  for (const value of invalid) assert.throws(() => normalizeCompactTopology(value), /schema|compact|limit|count|reference|unique|Geo|reason/i);
+});
+
+test('compact schema preserves required empty arrays and rejects accessors without invoking them', () => {
+  const empty = compactTopology({
+    nodes: [], links: [], routes: [],
+    stats: { nodes: { total: 0, displayed: 0, omitted: 0 }, links: { total: 0, displayed: 0, omitted: 0 }, routes: { total: 0, displayed: 0, complete: 0, partial: 0, omitted: 0 }, node_observations: { total: 0, displayed: 0, omitted: 0 }, link_observations: { total: 0, displayed: 0, omitted: 0 } },
+    result_stats: [], geo: { eligible: 0, available: 0, included: 0, omitted: 0, unavailable: 0 }
+  });
+  const normalized = normalizeCompactTopology(empty);
+  assert.deepEqual([normalized.nodes, normalized.links, normalized.routes, normalized.result_stats, normalized.truncation_reasons], [[], [], [], [], []]);
+  let invoked = false;
+  Object.defineProperty(empty, 'nodes', { get() { invoked = true; return []; } });
+  assert.throws(() => normalizeCompactTopology(empty), /accessor|schema/i);
+  assert.equal(invoked, false);
 });
 
 test('accessor-like and prototype keys are not preserved by normalization', () => {

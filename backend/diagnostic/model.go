@@ -1,6 +1,12 @@
 package diagnostic
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"time"
+)
 
 type Kind string
 
@@ -35,9 +41,49 @@ type Target struct {
 	Attempts       int    `json:"attempts,omitempty"`
 }
 
+type TopologyMode string
+
+const (
+	TopologyModeFull    TopologyMode = "full"
+	TopologyModeCompact TopologyMode = "compact"
+)
+
 type Request struct {
-	Targets   []Target `json:"targets"`
-	TimeoutMS int      `json:"timeout_ms,omitempty"`
+	Targets      []Target     `json:"targets"`
+	TimeoutMS    int          `json:"timeout_ms,omitempty"`
+	TopologyMode TopologyMode `json:"topology_mode,omitempty"`
+
+	topologyModeSet bool
+}
+
+// UnmarshalJSON preserves topology_mode presence so an explicitly empty value
+// can be rejected while an omitted value retains the legacy full behavior.
+func (r *Request) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Targets      []Target        `json:"targets"`
+		TimeoutMS    int             `json:"timeout_ms,omitempty"`
+		TopologyMode json.RawMessage `json:"topology_mode"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("request must contain one JSON object")
+	}
+	*r = Request{Targets: wire.Targets, TimeoutMS: wire.TimeoutMS}
+	if wire.TopologyMode == nil {
+		return nil
+	}
+	r.topologyModeSet = true
+	if bytes.Equal(wire.TopologyMode, []byte("null")) {
+		return fmt.Errorf("topology_mode must be a string")
+	}
+	if err := json.Unmarshal(wire.TopologyMode, &r.TopologyMode); err != nil {
+		return fmt.Errorf("topology_mode must be a string: %w", err)
+	}
+	return nil
 }
 
 type Result struct {
@@ -52,13 +98,31 @@ type Result struct {
 }
 
 type Report struct {
-	ID         string    `json:"id"`
-	Status     Status    `json:"status"`
-	StartedAt  time.Time `json:"started_at"`
-	DurationMS int64     `json:"duration_ms"`
-	Summary    Summary   `json:"summary"`
-	Results    []Result  `json:"results"`
-	Analysis   *Analysis `json:"analysis,omitempty"`
+	ID              string           `json:"id"`
+	Status          Status           `json:"status"`
+	StartedAt       time.Time        `json:"started_at"`
+	DurationMS      int64            `json:"duration_ms"`
+	Summary         Summary          `json:"summary"`
+	Results         []Result         `json:"results"`
+	Analysis        *Analysis        `json:"analysis,omitempty"`
+	CompactTopology *CompactTopology `json:"compact_topology,omitempty"`
+	compactBuild    *CompactTopologyBuildResult
+}
+
+// SetCompactTopologyBuild caches the compact projection and its non-transport
+// selection metadata on a report. The metadata is intentionally not JSON.
+func (r *Report) SetCompactTopologyBuild(build CompactTopologyBuildResult) {
+	r.CompactTopology = build.Topology
+	r.compactBuild = &build
+}
+
+// CachedCompactTopologyBuild returns the projection already produced by the
+// runner, avoiding a second full build in the transport layer.
+func (r Report) CachedCompactTopologyBuild() (CompactTopologyBuildResult, bool) {
+	if r.compactBuild == nil || r.compactBuild.Topology == nil || r.compactBuild.Topology != r.CompactTopology {
+		return CompactTopologyBuildResult{}, false
+	}
+	return *r.compactBuild, true
 }
 
 type Summary struct {

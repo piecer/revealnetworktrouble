@@ -32,6 +32,10 @@ const CATEGORIES = new Set(['name_resolution', 'connectivity', 'application', 's
 const PROVENANCES = new Set(['result', 'details']);
 const COVERAGE_CODES = new Set(['missing_details', 'malformed_details', 'unsupported_details']);
 const TOPOLOGY_STATUSES = new Set(['healthy', 'degraded', 'unknown', 'failure']);
+const COMPACT_NODE_KINDS = new Set(['local', 'ip', 'hostname', 'unknown']);
+const COMPACT_TRUNCATION_REASONS = Object.freeze(['node_limit', 'link_limit', 'response_size', 'geo_metadata_limit']);
+const COMPACT_MAX_ROUTES = SCHEMA_LIMITS.results * 10;
+const COMPACT_LIMITS = Object.freeze({ nodes: 500, links: 1000, maxResponseBytesExclusive: 1 << 20, maxGeoBundleBytes: 4096 });
 const FINDING_CODES = new Set([
   'dns_resolution_failed', 'endpoint_connect_failed', 'http_unexpected_status', 'invalid_target',
   'execution_timeout', 'execution_cancelled', 'tls_downgrade', 'tls_certificate_expired',
@@ -419,6 +423,194 @@ function normalizeTopology(value, path = 'topology') {
   return { reached: boolean(source.reached, `${path}.reached`), nodes, links };
 }
 
+function normalizeCompactCount(value, path, max = SCHEMA_LIMITS.reportTopologyLinks) {
+  const source = object(value, path);
+  const normalized = {
+    total: integer(source.total, `${path}.total`, 0, max),
+    displayed: integer(source.displayed, `${path}.displayed`, 0, max),
+    omitted: integer(source.omitted, `${path}.omitted`, 0, max)
+  };
+  if (normalized.total !== normalized.displayed + normalized.omitted) throw schemaError(path, 'total must equal displayed plus omitted');
+  return normalized;
+}
+
+function normalizeCompactRouteCount(value, path) {
+  const source = object(value, path);
+  const normalized = {
+    total: integer(source.total, `${path}.total`, 0, COMPACT_MAX_ROUTES),
+    displayed: integer(source.displayed, `${path}.displayed`, 0, COMPACT_MAX_ROUTES),
+    complete: integer(source.complete, `${path}.complete`, 0, COMPACT_MAX_ROUTES),
+    partial: integer(source.partial, `${path}.partial`, 0, COMPACT_MAX_ROUTES),
+    omitted: integer(source.omitted, `${path}.omitted`, 0, COMPACT_MAX_ROUTES)
+  };
+  if (normalized.total !== normalized.displayed + normalized.omitted || normalized.displayed !== normalized.complete + normalized.partial) {
+    throw schemaError(path, 'route counts do not agree');
+  }
+  return normalized;
+}
+
+function normalizeCompactTopology(value, path = 'compact_topology') {
+  const source = object(value, path);
+  if (source.schema !== 'compact-v1') throw schemaError(`${path}.schema`, 'unsupported value');
+  if (source.selection !== 'fair-complete-prefix-v1') throw schemaError(`${path}.selection`, 'unsupported value');
+
+  const limitSource = object(source.limits, `${path}.limits`);
+  const limits = {
+    nodes: integer(limitSource.nodes, `${path}.limits.nodes`, 0, COMPACT_LIMITS.nodes),
+    links: integer(limitSource.links, `${path}.limits.links`, 0, COMPACT_LIMITS.links),
+    max_response_bytes_exclusive: integer(limitSource.max_response_bytes_exclusive, `${path}.limits.max_response_bytes_exclusive`, 1, COMPACT_LIMITS.maxResponseBytesExclusive),
+    max_geo_bundle_bytes: integer(limitSource.max_geo_bundle_bytes, `${path}.limits.max_geo_bundle_bytes`, 1, COMPACT_LIMITS.maxGeoBundleBytes)
+  };
+  if (limits.nodes !== COMPACT_LIMITS.nodes || limits.links !== COMPACT_LIMITS.links ||
+      limits.max_response_bytes_exclusive !== COMPACT_LIMITS.maxResponseBytesExclusive || limits.max_geo_bundle_bytes !== COMPACT_LIMITS.maxGeoBundleBytes) {
+    throw schemaError(`${path}.limits`, 'unsupported compact-v1 limits');
+  }
+
+  const nodes = array(source.nodes, `${path}.nodes`, COMPACT_LIMITS.nodes).map((entry, index) => {
+    const itemPath = `${path}.nodes[${index}]`;
+    const item = object(entry, itemPath);
+    const normalized = {
+      id: text(item.id, `${itemPath}.id`),
+      kind: enumValue(item.kind, COMPACT_NODE_KINDS, `${itemPath}.kind`),
+      address: optionalText(item.address, `${itemPath}.address`),
+      status: enumValue(item.status, TOPOLOGY_STATUSES, `${itemPath}.status`),
+      hop_min: integer(item.hop_min, `${itemPath}.hop_min`, 0, 255),
+      hop_max: integer(item.hop_max, `${itemPath}.hop_max`, 0, 255),
+      observations: integer(item.observations, `${itemPath}.observations`, 1, SCHEMA_LIMITS.reportTopologyNodes)
+    };
+    if (item.public_ip !== undefined) normalized.public_ip = boolean(item.public_ip, `${itemPath}.public_ip`);
+    if (normalized.hop_min > normalized.hop_max) throw schemaError(itemPath, 'hop_min exceeds hop_max');
+    if (item.latency_ms_avg !== undefined) normalized.latency_ms_avg = finite(item.latency_ms_avg, `${itemPath}.latency_ms_avg`, 0, Number.MAX_SAFE_INTEGER);
+    if (item.geolocation !== undefined && item.geolocation !== null) {
+      const geo = object(item.geolocation, `${itemPath}.geolocation`);
+      normalized.geolocation = {
+        city: optionalText(geo.city, `${itemPath}.geolocation.city`), region: optionalText(geo.region, `${itemPath}.geolocation.region`),
+        country: optionalText(geo.country, `${itemPath}.geolocation.country`), country_code: optionalText(geo.country_code, `${itemPath}.geolocation.country_code`),
+        latitude: finite(geo.latitude, `${itemPath}.geolocation.latitude`, -90, 90), longitude: finite(geo.longitude, `${itemPath}.geolocation.longitude`, -180, 180)
+      };
+    }
+    if (item.asn !== undefined && item.asn !== null) {
+      const asn = object(item.asn, `${itemPath}.asn`);
+      normalized.asn = { number: integer(asn.number, `${itemPath}.asn.number`, 0, 4294967295), organization: optionalText(asn.organization, `${itemPath}.asn.organization`) };
+    }
+    return normalized;
+  });
+  const nodeIDs = new Set(nodes.map(node => node.id));
+  if (nodeIDs.size !== nodes.length) throw schemaError(`${path}.nodes`, 'node ids must be unique');
+
+  const links = array(source.links, `${path}.links`, COMPACT_LIMITS.links).map((entry, index) => {
+    const itemPath = `${path}.links[${index}]`;
+    const item = object(entry, itemPath);
+    const normalized = {
+      from: text(item.from, `${itemPath}.from`), to: text(item.to, `${itemPath}.to`),
+      status: enumValue(item.status, TOPOLOGY_STATUSES, `${itemPath}.status`),
+      observations: integer(item.observations, `${itemPath}.observations`, 1, SCHEMA_LIMITS.reportTopologyLinks)
+    };
+    if (!nodeIDs.has(normalized.from) || !nodeIDs.has(normalized.to)) throw schemaError(itemPath, 'link references an unknown node');
+    if (normalized.from === normalized.to) throw schemaError(itemPath, 'self links are not supported');
+    return normalized;
+  });
+  const linkKeys = new Set();
+  for (const link of links) {
+    const key = `${link.from}\u0000${link.to}`;
+    if (linkKeys.has(key)) throw schemaError(`${path}.links`, 'directed links must be unique');
+    linkKeys.add(key);
+  }
+
+  const routeObservationCounts = [];
+  const routes = array(source.routes, `${path}.routes`, COMPACT_MAX_ROUTES).map((entry, index) => {
+    const itemPath = `${path}.routes[${index}]`;
+    const item = object(entry, itemPath);
+    const rawNodeIDs = array(item.node_ids, `${itemPath}.node_ids`, 32).map((id, nodeIndex) => text(id, `${itemPath}.node_ids[${nodeIndex}]`));
+    if (rawNodeIDs.length === 0 || rawNodeIDs.some(id => !nodeIDs.has(id))) throw schemaError(itemPath, 'route references an unknown node');
+    const node_ids = rawNodeIDs.filter((id, nodeIndex) => nodeIndex === 0 || id !== rawNodeIDs[nodeIndex - 1]);
+    for (let nodeIndex = 1; nodeIndex < node_ids.length; nodeIndex++) {
+      if (!linkKeys.has(`${node_ids[nodeIndex - 1]}\u0000${node_ids[nodeIndex]}`)) throw schemaError(itemPath, 'route edge has no matching directed link');
+    }
+    const result_index = integer(item.result_index, `${itemPath}.result_index`, 0, SCHEMA_LIMITS.results - 1);
+    routeObservationCounts.push({ result_index, nodes: rawNodeIDs.length, links: Math.max(0, node_ids.length - 1) });
+    return {
+      result_index,
+      attempt: integer(item.attempt, `${itemPath}.attempt`, 1, 10),
+      status: enumValue(item.status, STATUSES, `${itemPath}.status`),
+      reached: boolean(item.reached, `${itemPath}.reached`), complete: boolean(item.complete, `${itemPath}.complete`), node_ids
+    };
+  });
+
+  const statsSource = object(source.stats, `${path}.stats`);
+  const stats = {
+    nodes: normalizeCompactCount(statsSource.nodes, `${path}.stats.nodes`, SCHEMA_LIMITS.reportTopologyNodes),
+    links: normalizeCompactCount(statsSource.links, `${path}.stats.links`, SCHEMA_LIMITS.reportTopologyLinks),
+    routes: normalizeCompactRouteCount(statsSource.routes, `${path}.stats.routes`),
+    node_observations: normalizeCompactCount(statsSource.node_observations, `${path}.stats.node_observations`, SCHEMA_LIMITS.reportTopologyNodes),
+    link_observations: normalizeCompactCount(statsSource.link_observations, `${path}.stats.link_observations`, SCHEMA_LIMITS.reportTopologyLinks)
+  };
+  if (stats.nodes.displayed !== nodes.length || stats.links.displayed !== links.length || stats.routes.displayed !== routes.length ||
+      stats.routes.complete !== routes.filter(route => route.complete).length || stats.routes.partial !== routes.filter(route => !route.complete).length ||
+      stats.link_observations.displayed !== links.reduce((sum, link) => sum + link.observations, 0)) {
+    throw schemaError(`${path}.stats`, 'displayed counts do not match compact arrays');
+  }
+
+  const result_stats = array(source.result_stats ?? [], `${path}.result_stats`, SCHEMA_LIMITS.results).map((entry, index) => {
+    const itemPath = `${path}.result_stats[${index}]`; const item = object(entry, itemPath);
+    return {
+      result_index: integer(item.result_index, `${itemPath}.result_index`, 0, SCHEMA_LIMITS.results - 1),
+      routes: normalizeCompactRouteCount(item.routes, `${itemPath}.routes`),
+      node_observations: normalizeCompactCount(item.node_observations, `${itemPath}.node_observations`, SCHEMA_LIMITS.reportTopologyNodes),
+      link_observations: normalizeCompactCount(item.link_observations, `${itemPath}.link_observations`, SCHEMA_LIMITS.reportTopologyLinks)
+    };
+  });
+  if (new Set(result_stats.map(item => item.result_index)).size !== result_stats.length) throw schemaError(`${path}.result_stats`, 'result indexes must be unique');
+  const sum = (field, subfield) => result_stats.reduce((total, item) => total + item[field][subfield], 0);
+  for (const field of ['routes', 'node_observations', 'link_observations']) {
+    for (const subfield of field === 'routes' ? ['total', 'displayed', 'complete', 'partial', 'omitted'] : ['total', 'displayed', 'omitted']) {
+      if (sum(field, subfield) !== stats[field][subfield]) throw schemaError(`${path}.result_stats`, 'per-result counts do not match global stats');
+    }
+  }
+  const routeCounts = new Map();
+  for (const route of routes) {
+    const counts = routeCounts.get(route.result_index) ?? { displayed: 0, complete: 0, partial: 0 };
+    counts.displayed++;
+    counts[route.complete ? 'complete' : 'partial']++;
+    routeCounts.set(route.result_index, counts);
+  }
+  for (const item of result_stats) {
+    const counts = routeCounts.get(item.result_index) ?? { displayed: 0, complete: 0, partial: 0 };
+    if (item.routes.displayed !== counts.displayed || item.routes.complete !== counts.complete || item.routes.partial !== counts.partial) {
+      throw schemaError(`${path}.result_stats`, 'displayed routes do not match route array');
+    }
+    const observations = routeObservationCounts.filter(route => route.result_index === item.result_index);
+    const displayedNodes = observations.reduce((total, route) => total + route.nodes, 0);
+    const displayedLinks = observations.reduce((total, route) => total + route.links, 0);
+    if (item.node_observations.displayed !== displayedNodes || item.link_observations.displayed !== displayedLinks) {
+      throw schemaError(`${path}.result_stats`, 'displayed observations do not match route prefixes');
+    }
+  }
+
+  const geoSource = object(source.geo, `${path}.geo`);
+  const geo = {
+    eligible: integer(geoSource.eligible, `${path}.geo.eligible`, 0, COMPACT_LIMITS.nodes),
+    available: integer(geoSource.available, `${path}.geo.available`, 0, COMPACT_LIMITS.nodes),
+    included: integer(geoSource.included, `${path}.geo.included`, 0, COMPACT_LIMITS.nodes),
+    omitted: integer(geoSource.omitted, `${path}.geo.omitted`, 0, COMPACT_LIMITS.nodes),
+    unavailable: integer(geoSource.unavailable, `${path}.geo.unavailable`, 0, COMPACT_LIMITS.nodes)
+  };
+  const eligible = nodes.filter(node => node.public_ip).length;
+  const included = nodes.filter(node => node.public_ip && (node.geolocation || node.asn)).length;
+  if (geo.eligible !== eligible || geo.eligible !== geo.available + geo.unavailable || geo.available !== geo.included + geo.omitted || geo.included !== included) {
+    throw schemaError(`${path}.geo`, 'Geo counts do not match nodes');
+  }
+
+  const reasons = array(source.truncation_reasons ?? [], `${path}.truncation_reasons`, COMPACT_TRUNCATION_REASONS.length)
+    .map((reason, index) => enumValue(reason, new Set(COMPACT_TRUNCATION_REASONS), `${path}.truncation_reasons[${index}]`));
+  if (new Set(reasons).size !== reasons.length || reasons.some((reason, index) => index > 0 && COMPACT_TRUNCATION_REASONS.indexOf(reason) <= COMPACT_TRUNCATION_REASONS.indexOf(reasons[index - 1]))) {
+    throw schemaError(`${path}.truncation_reasons`, 'reasons must be unique and in fixed order');
+  }
+  const truncated = boolean(source.truncated, `${path}.truncated`);
+  if (truncated !== (reasons.length > 0)) throw schemaError(`${path}.truncated`, 'does not match truncation reasons');
+  return { schema: 'compact-v1', selection: 'fair-complete-prefix-v1', limits, nodes, links, routes, stats, result_stats, geo, truncated, truncation_reasons: reasons };
+}
+
 function normalizedTopologyStatus(topology) {
   if (!topology.reached) return 'unreachable';
   return topology.nodes.some(node => node.status === 'unknown' || node.status === 'degraded') ? 'degraded' : 'healthy';
@@ -523,6 +715,13 @@ function normalizeReport(value) {
   const expectedStatus = summary.failed === 0 ? 'healthy' : (hasDegraded || summary.passed > 0 ? 'degraded' : 'unreachable');
   if (status !== expectedStatus) throw schemaError('report.status', 'contradicts result statuses');
   const normalizedAnalysis = source.analysis === undefined || source.analysis === null ? null : normalizeAnalysis(source.analysis);
+  const compactTopology = source.compact_topology === undefined ? null : normalizeCompactTopology(source.compact_topology, 'report.compact_topology');
+  if (compactTopology) {
+    if (compactTopology.result_stats.length !== results.length || compactTopology.result_stats.some((item, index) => item.result_index !== index)) {
+      throw schemaError('report.compact_topology.result_stats', 'must contain one ordered entry per result');
+    }
+    if (compactTopology.routes.some(route => route.result_index >= results.length)) throw schemaError('report.compact_topology.routes', 'references unknown result');
+  }
   if (normalizedAnalysis) {
     for (const evidence of normalizedAnalysis.evidence) {
       if (evidence.result_index >= results.length) throw schemaError('report.analysis.evidence', 'references unknown result');
@@ -534,7 +733,7 @@ function normalizeReport(value) {
   return {
     id: text(source.id, 'report.id'), status,
     started_at: timestamp(source.started_at, 'report.started_at'), duration_ms: integer(source.duration_ms, 'report.duration_ms'),
-    summary, results, analysis: normalizedAnalysis
+    summary, results, analysis: normalizedAnalysis, compact_topology: compactTopology
   };
 }
 
@@ -542,5 +741,5 @@ export {
   REQUEST_PHASES, ERROR_KINDS, SCHEMA_LIMITS,
   createRequestLane, canonicalDiagnosticsInput, canonicalTopologyInput, inputSignature,
   transitionRequest, ownsRequest, clientTimeoutMS, parseRetryAfter, normalizeRequestError, parseResponse,
-  normalizeReport, normalizeAnalysis, normalizeResult, normalizeTopology
+  normalizeReport, normalizeAnalysis, normalizeResult, normalizeTopology, normalizeCompactTopology
 };

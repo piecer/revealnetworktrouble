@@ -2,6 +2,7 @@ package diagnostic
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -62,13 +63,45 @@ func TestRunnerRejectsInvalidRequests(t *testing.T) {
 		{Targets: []Target{{Kind: KindDNS, Address: ""}}},
 		{Targets: []Target{{Kind: KindHTTP, Address: "https://example.test"}}},
 		{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}, TimeoutMS: 50},
-		{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}, TimeoutMS: (1 << 58) + 1000},
+		{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}, TimeoutMS: int(^uint(0) >> 1)},
 		{Targets: []Target{{Kind: KindDNS, Address: "example.test", Attempts: 2}}},
 		{Targets: []Target{{Kind: KindDNS, Address: "example.test", Attempts: MaxTraceAttempts + 1}}},
 	}
 	for _, req := range tests {
 		if err := runner.Validate(req); err == nil {
 			t.Fatalf("Validate(%+v) returned nil", req)
+		}
+	}
+}
+
+func TestRunnerValidatesTopologyModeAndCompactScope(t *testing.T) {
+	runner := NewRunner(
+		fakeChecker{kind: KindDNS, status: StatusHealthy},
+		fakeChecker{kind: KindTraceroute, status: StatusHealthy},
+	)
+	valid := []Request{
+		{Targets: []Target{{Kind: KindDNS, Address: "example.test"}}},
+		{TopologyMode: TopologyModeFull, Targets: []Target{{Kind: KindDNS, Address: "example.test"}}},
+		{TopologyMode: TopologyModeCompact, Targets: []Target{{Kind: KindTraceroute, Address: "example.test"}}},
+	}
+	for _, request := range valid {
+		if err := runner.Validate(request); err != nil {
+			t.Fatalf("Validate(%+v) = %v", request, err)
+		}
+	}
+	for _, mode := range []TopologyMode{"", " ", "FULL", "Compact", "unknown"} {
+		request := Request{TopologyMode: mode, Targets: []Target{{Kind: KindTraceroute, Address: "example.test"}}}
+		request.topologyModeSet = true
+		if err := runner.Validate(request); err == nil {
+			t.Fatalf("Validate() accepted explicitly supplied mode %q", mode)
+		}
+	}
+	for _, targets := range [][]Target{
+		{{Kind: KindDNS, Address: "example.test"}},
+		{{Kind: KindTraceroute, Address: "example.test"}, {Kind: KindDNS, Address: "example.test"}},
+	} {
+		if err := runner.Validate(Request{TopologyMode: TopologyModeCompact, Targets: targets}); err == nil {
+			t.Fatalf("compact request accepted non-traceroute targets: %+v", targets)
 		}
 	}
 }
@@ -113,6 +146,37 @@ func TestRunnerWiresRequestDeadlineAndAttemptTimeoutToTraceroute(t *testing.T) {
 	}}
 	if _, err := NewRunner(checker).Run(context.Background(), req); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerBuildsCompactTopologyAfterAnalysisWithoutPruningRawFacts(t *testing.T) {
+	attempts := []TraceAttempt{compactTestAttempt(1,
+		TopologyNode{ID: "local", Hop: 0, Address: "local", Status: "healthy"},
+		TopologyNode{ID: "destination", Hop: 1, Address: "203.0.113.8", Status: "healthy"},
+	)}
+	checker := checkerFunc{kind: KindTraceroute, fn: func(context.Context, Target) Result {
+		return Result{Kind: KindTraceroute, Status: StatusHealthy, Details: map[string]any{
+			"attempts": attempts, "attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0,
+			"attempts_unreached": 0, "attempts_execution_failed": 0, "attempts_timed_out": 0, "attempts_cancelled": 0,
+		}}
+	}}
+	report, err := NewRunner(checker).Run(context.Background(), Request{
+		TopologyMode: TopologyModeCompact,
+		Targets:      []Target{{Kind: KindTraceroute, Address: "example.test", Attempts: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Analysis == nil || report.CompactTopology == nil || len(report.CompactTopology.Routes) != 1 {
+		t.Fatalf("compact report was not built after analysis: %+v", report)
+	}
+	cached, ok := report.CachedCompactTopologyBuild()
+	if !ok || cached.Topology != report.CompactTopology || cached.AcceptedTransactions != 1 {
+		t.Fatalf("compact build metadata was not cached: ok=%v build=%+v", ok, cached)
+	}
+	gotAttempts, ok := report.Results[0].Details["attempts"].([]TraceAttempt)
+	if !ok || !reflect.DeepEqual(gotAttempts, attempts) {
+		t.Fatalf("raw attempts were pruned or mutated: %#v", report.Results[0].Details["attempts"])
 	}
 }
 

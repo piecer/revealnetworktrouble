@@ -82,6 +82,12 @@ func NewRunnerWithClock(now func() time.Time, checkers ...Checker) *Runner {
 }
 
 func (r *Runner) Validate(req Request) error {
+	if req.topologyModeSet && req.TopologyMode == "" {
+		return fmt.Errorf("topology_mode must be full or compact")
+	}
+	if req.TopologyMode != "" && req.TopologyMode != TopologyModeFull && req.TopologyMode != TopologyModeCompact {
+		return fmt.Errorf("topology_mode must be full or compact")
+	}
 	if len(req.Targets) < 1 || len(req.Targets) > MaxTargets {
 		return fmt.Errorf("targets must contain 1 to %d items", MaxTargets)
 	}
@@ -91,6 +97,9 @@ func (r *Runner) Validate(req Request) error {
 		}
 	}
 	for i, target := range req.Targets {
+		if req.TopologyMode == TopologyModeCompact && target.Kind != KindTraceroute {
+			return fmt.Errorf("targets[%d].kind must be traceroute when topology_mode is compact", i)
+		}
 		if strings.TrimSpace(target.Address) == "" {
 			return fmt.Errorf("targets[%d].address is required", i)
 		}
@@ -158,6 +167,9 @@ func (r *Runner) Run(ctx context.Context, req Request) (Report, error) {
 	}
 	analysis := Analyze(report.Results, r.now().UTC())
 	report.Analysis = &analysis
+	if req.TopologyMode == TopologyModeCompact {
+		report.SetCompactTopologyBuild(BuildCompactTopologyWithOptions(report, -1, true))
+	}
 	return report, nil
 }
 

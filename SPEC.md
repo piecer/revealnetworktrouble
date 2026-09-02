@@ -20,8 +20,8 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 - 목적지별 반복 횟수는 1~10회이며 기본값은 5회다.
 - API에는 각 목적지를 `traceroute` target으로 전달한다.
 - 수집된 여러 실행은 주소가 같은 응답 노드를 하나로 합쳐 공통 구간과 분기 구간을 표현한다.
-- 식별할 수 없는 연속 무응답 홉은 하나의 범위 노드로 접되 원래 홉 범위와 개수를 보존한다.
-- 동일 홉 계층의 IPv4 `/24`, IPv6 `/48`, 호스트 도메인 형제 노드는 집계 노드로 표현할 수 있다.
+- 식별할 수 없는 홉은 `(result, attempt, hop)` 범위의 독립 unknown node로 유지해 서로 다른 경로의 미응답을 잘못 병합하지 않는다.
+- IPv4/IPv6는 canonical 주소, hostname은 lowercase/trailing-dot 제거 identity로 합치며 consecutive canonical self-hop은 route에서 collapse한다.
 
 ## 4. 목적지 선택과 비교
 
@@ -30,17 +30,16 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 - 선택 변경 시 서버 재요청 없이 요약 지표, 노드, 링크, 범례를 즉시 다시 계산한다.
 - 경로 색상은 원래 결과 순서에 고정되어 필터 전후에 바뀌지 않는다.
 - 아무 목적지도 선택하지 않으면 빈 상태 안내를 표시하고 지표를 0으로 표시한다.
-- `응답없음 노드` toggle을 해제하면 서버 재요청 없이 무응답 범위 노드를 숨기고 인접한 응답 노드 사이의 링크를 다시 연결한다.
-- 요약은 선택된 목적지 수, 총 실행, 도달/미도달 수, 최대 홉 단계, 고유 응답 노드를 제공한다.
+- `응답없음 노드` toggle을 해제하면 각 경로를 첫 unknown 이전의 검증된 directed-link prefix로 제한하고 존재하지 않는 링크는 만들지 않는다.
+- 요약은 서버 선택 수와 실제 화면의 displayed/total/omitted 노드·링크·경로를 구분한다.
 
 ## 5. 토폴로지 조회
 
 - 같은 주소는 경로가 갈라졌다 합쳐져도 하나의 물리 노드로 표시한다.
-- 링크 굵기는 관측 빈도를 나타내며 색상은 경로 소속을 나타낸다.
-- 노드는 마우스 hover 또는 키보드 focus로 주소, 홉, 관측 횟수, 평균 지연, 관련 목적지를 조회할 수 있다.
-- 노드는 drag로 재배치할 수 있으며 캔버스 범위를 벗어나지 않는다.
+- 링크 굵기는 관측 빈도를 나타내며 경로 카드는 원래 result 순서의 색상을 사용한다.
+- 노드는 마우스 hover 또는 키보드 focus로 주소, 상태, 홉 범위, 관측 횟수, 평균 지연과 Geo/ASN을 조회할 수 있다.
+- 노드 카드는 drag 또는 `Alt+Arrow`로 순서를 재배치할 수 있고 일반 방향키는 roving focus에 사용한다.
 - 전체 화면 조회를 지원한다.
-- 집계 노드 tooltip에는 포함된 개별 노드 또는 해당 IP 라벨을 표시한다.
 
 ## 6. IP 라벨 매핑
 
@@ -54,13 +53,11 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 
 - 직접 추가, 테이블 수정 및 개별 삭제를 지원한다.
 - 경로 토폴로지 화면에서는 IP를 직접 입력하거나 개별 IP 노드를 선택해 라벨과 설명을 바로 추가·수정·삭제할 수 있다.
-- 집계 노드는 여러 IP를 포함하므로 하나의 IP 편집 대상으로 취급하지 않는다.
 - 동일 IP를 다시 입력하거나 import하면 최신 값으로 갱신한다.
 - 매핑은 `checknetwork.ip-labels.v1` key의 브라우저 local storage에 저장한다.
-- IPv4 `/24`, IPv6 `/48`, 동일 도메인 형제의 `N` 집계 노드는 맵에서 직접 선택해 별도 라벨과 설명을 지정할 수 있다.
-- 집계 라벨은 홉이나 렌더링 순서가 아닌 집계 기준 key로 식별하고 `checknetwork.aggregate-labels.v1`에 저장한다. 개별 IP 라벨 데이터와 충돌하지 않는다.
+
 - 저장소를 사용할 수 없는 환경에서도 현재 페이지의 메모리 내 편집은 유지한다.
-- 라벨 변경은 이미 렌더링된 통합 진단 및 standalone topology에 즉시 반영한다.
+- 라벨 변경은 이미 렌더링된 통합 진단 및 bounded topology에 즉시 반영한다.
 - 라벨이 있는 노드는 라벨을 대표 이름으로, 원본 IP를 보조 정보로 표시한다.
 
 ## 7. Import 형식
@@ -102,12 +99,12 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 
 ## 9. 검증 기준
 
-- 세 메뉴 각각의 직접 접근과 클릭 전환이 가능하다.
+- 네 메뉴 각각의 직접 접근과 클릭 전환이 가능하다.
 - `IP 라벨` 선택 시 관리 form과 table이 표시되고 나머지 view는 숨겨진다.
 - CSV/JSON 파싱, IPv4/IPv6 검증, 라벨 표시를 자동 테스트한다.
 - 목적지 선택 상태가 summary와 topology에 일관되게 반영된다.
-- 무응답 노드 toggle을 해제하면 무응답 노드는 제거되고 전후 응답 노드가 연결된다.
-- 기존 노드 병합, 네트워크 집계, 무응답 홉 접기, drag 및 전체 화면 기능이 회귀하지 않는다.
+- 무응답 노드 toggle을 해제하면 첫 unknown 이전의 검증된 경로 prefix만 유지된다.
+- compact graph의 canonical node 병합, fair complete-prefix, truncation metadata, 전체 화면과 focus lifecycle이 회귀하지 않는다.
 
 ## 10. 설명 가능한 자동 분석
 
@@ -139,6 +136,8 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 - 분석 정보 계층은 compact 상태·관측 위치·coverage header → 원인 후보 → 근거와 안전한 조치 → coverage/한계 → 접힌 원시 결과 순이다. 서버 문자열은 `textContent`로만 삽입하고 severity/status class는 allowlist에서 선택한다.
 - `analysis`가 없는 legacy report는 측정 결과를 ready로 유지하되 자동 분석을 미지원/판단 보류로 명시한다.
 - 상태 알림은 짧은 live region만 사용한다. 성공은 분석 heading, 오류는 alert, 명시적 취소는 실행 button, 초기 deep-link와 hash 탐색은 현재 보이는 화면의 `h2`로 focus를 이동한다.
-- topology SVG는 accessible name을 제공하고 IP 라벨 표는 caption과 column scope를 가진다. 파일 import는 숨기지 않은 native file input을 제공한다.
+- topology는 one-element cards와 roving focus를 사용하고 Geo Canvas는 접근 가능한 위치 목록을 제공한다. IP 라벨 표는 caption과 column scope를 가진다.
 - 320/375/400px에서는 document overflow 대신 table, raw JSON, topology/map 구성요소가 자체 horizontal scroll을 소유한다. double focus ring과 reduced-motion 설정을 제공한다.
-- CARTO 설정은 배포 환경 `CARTO_BASE_MAP`이 현재 탭 입력보다 우선하며 화면 설명과 runtime 선택 순서가 일치한다.
+- topology request는 `topology_mode:"compact"`를 사용한다. compact payload는 nodes 500, links 1,000, response 1 MiB 미만이며 Web은 active view만 mount해 chunk 100/document 1,200 actual elements를 넘지 않는다.
+- label import는 1 MiB/500 records/label 256자/note 1024자로 제한하고 한 페이지에 최대 100행을 점진적으로 삽입한다.
+- `createApp` instance는 상태·storage·listener를 공유하지 않으며 `destroy()` 이후 async completion이 후속 instance를 변경하지 못한다.

@@ -16,6 +16,29 @@ import (
 
 const latencyJumpThresholdMS = 50.0
 
+const (
+	// MaxTraceHops is the largest hop number accepted from traceroute output.
+	MaxTraceHops = 30
+	// MaxTraceOutputBytes bounds combined traceroute stdout and stderr.
+	MaxTraceOutputBytes = 256 << 10
+	// MaxTraceLatencyMS bounds an observed RTT to the largest supported
+	// per-attempt request timeout. Larger values cannot be genuine observations
+	// from a command that is terminated at MaxTimeout.
+	MaxTraceLatencyMS = float64(MaxTimeout / time.Millisecond)
+)
+
+// ErrTraceOutputLimit reports that traceroute produced more output than allowed.
+var ErrTraceOutputLimit = errors.New("traceroute output exceeds limit")
+
+// ErrTraceHopLimit reports a hop number beyond MaxTraceHops.
+var ErrTraceHopLimit = errors.New("traceroute hop exceeds limit")
+
+// ErrTraceHopSequence reports a non-positive, duplicate, or decreasing hop.
+var ErrTraceHopSequence = errors.New("traceroute hops are not strictly increasing")
+
+// ErrTraceLatency reports an invalid or non-finite latency token.
+var ErrTraceLatency = errors.New("invalid traceroute latency")
+
 type TopologyNode struct {
 	ID          string       `json:"id"`
 	Hop         int          `json:"hop"`
@@ -85,7 +108,8 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 	timedOut := 0
 	cancelled := 0
 	for attemptNumber := 1; attemptNumber <= attemptCount; attemptNumber++ {
-		attemptCtx, cancelAttempt := context.WithTimeout(ctx, attemptTimeout(ctx))
+		attemptDuration := attemptTimeout(ctx)
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, attemptDuration)
 		commandDestination := destination
 		if c.Policy != nil {
 			addresses, resolveErr := c.Policy.Resolve(attemptCtx, destination)
@@ -95,7 +119,8 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 			}
 			commandDestination = addresses[0].String()
 		}
-		output, commandErr := run(attemptCtx, "traceroute", "-n", "-q", "1", "-w", "2", "-m", "30", commandDestination)
+		name, args := traceCommandSpec(attemptDuration, commandDestination)
+		output, commandErr := run(attemptCtx, name, args...)
 		if contextErr := attemptCtx.Err(); contextErr != nil {
 			commandErr = contextErr
 		}
@@ -315,20 +340,48 @@ func traceDestination(address string) (string, error) {
 	return address, nil
 }
 
-var latencyPattern = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)\s*ms`)
+var latencyPattern = regexp.MustCompile(`(\S+)\s*ms(?:\s|$)`)
 var headerAddressPattern = regexp.MustCompile(`\(([^()]+)\)`)
+var windowsHeaderAddressPattern = regexp.MustCompile(`\[([^\[\]]+)\]`)
 
 func parseTraceroute(output, requestedDestination string) (Topology, error) {
+	if len(output) > MaxTraceOutputBytes {
+		return Topology{}, ErrTraceOutputLimit
+	}
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) < 2 {
 		return Topology{}, fmt.Errorf("traceroute output did not contain any hops")
 	}
 	destination := requestedDestination
-	if match := headerAddressPattern.FindStringSubmatch(lines[0]); len(match) == 2 {
-		destination = match[1]
+	headerIndex := 0
+	headerFound := false
+	windowsOutput := false
+	for i, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if !strings.Contains(lower, "traceroute to ") && !strings.HasPrefix(lower, "tracing route to ") {
+			continue
+		}
+		headerIndex = i
+		headerFound = true
+		windowsOutput = strings.HasPrefix(lower, "tracing route to ")
+		if windowsOutput {
+			if match := windowsHeaderAddressPattern.FindStringSubmatch(line); len(match) == 2 {
+				destination = match[1]
+			} else {
+				trimmed := strings.TrimSpace(line)
+				destination = strings.TrimSpace(trimmed[len("Tracing route to "):])
+			}
+		} else if match := headerAddressPattern.FindStringSubmatch(line); len(match) == 2 {
+			destination = match[1]
+		}
+		break
+	}
+	if !headerFound {
+		return Topology{}, fmt.Errorf("traceroute output did not contain a header")
 	}
 	topology := Topology{Nodes: []TopologyNode{{ID: "hop-0", Hop: 0, Address: "local", Status: "healthy"}}}
-	for _, line := range lines[1:] {
+	previousHop := 0
+	for _, line := range lines[headerIndex+1:] {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -337,8 +390,21 @@ func parseTraceroute(output, requestedDestination string) (Topology, error) {
 		if err != nil {
 			continue
 		}
+		if hop > MaxTraceHops {
+			return Topology{}, ErrTraceHopLimit
+		}
+		if hop <= previousHop {
+			return Topology{}, ErrTraceHopSequence
+		}
+		previousHop = hop
 		node := TopologyNode{ID: fmt.Sprintf("hop-%d", hop), Hop: hop, Status: "unknown"}
-		if fields[1] != "*" {
+		if windowsOutput {
+			parsed, parseErr := parseWindowsTraceHop(fields, node)
+			if parseErr != nil {
+				return Topology{}, parseErr
+			}
+			node = parsed
+		} else if fields[1] != "*" {
 			node.Address = strings.Trim(fields[1], "()")
 			if net.ParseIP(node.Address) == nil && len(fields) > 2 {
 				candidate := strings.Trim(fields[2], "()")
@@ -347,7 +413,12 @@ func parseTraceroute(output, requestedDestination string) (Topology, error) {
 				}
 			}
 			if match := latencyPattern.FindStringSubmatch(line); len(match) == 2 {
-				node.LatencyMS, _ = strconv.ParseFloat(match[1], 64)
+				latencyText := strings.TrimPrefix(match[1], "<")
+				latency, parseErr := strconv.ParseFloat(latencyText, 64)
+				if parseErr != nil || !isValidTraceLatency(latency) {
+					return Topology{}, fmt.Errorf("%w: %q", ErrTraceLatency, match[1])
+				}
+				node.LatencyMS = latency
 				node.Status = "healthy"
 			}
 		}
@@ -368,19 +439,84 @@ func parseTraceroute(output, requestedDestination string) (Topology, error) {
 	return topology, nil
 }
 
+// parseWindowsTraceHop selects the minimum finite latency from tracert's three
+// probes. This is deterministic and avoids a timeout probe biasing the value.
+func parseWindowsTraceHop(fields []string, node TopologyNode) (TopologyNode, error) {
+	position := 1
+	minimum := 0.0
+	hasLatency := false
+	for probe := 0; probe < 3; probe++ {
+		if position >= len(fields) {
+			return TopologyNode{}, fmt.Errorf("%w: incomplete Windows probe row", ErrTraceLatency)
+		}
+		if fields[position] == "*" {
+			position++
+			continue
+		}
+		latencyText := strings.TrimPrefix(fields[position], "<")
+		position++
+		if position >= len(fields) || !strings.EqualFold(fields[position], "ms") {
+			return TopologyNode{}, fmt.Errorf("%w: malformed Windows probe", ErrTraceLatency)
+		}
+		position++
+		latency, err := strconv.ParseFloat(latencyText, 64)
+		if err != nil || !isValidTraceLatency(latency) {
+			return TopologyNode{}, fmt.Errorf("%w: %q", ErrTraceLatency, latencyText)
+		}
+		if !hasLatency || latency < minimum {
+			minimum = latency
+			hasLatency = true
+		}
+	}
+	for _, candidate := range fields[position:] {
+		candidate = strings.Trim(candidate, "[]()")
+		if net.ParseIP(candidate) != nil {
+			node.Address = candidate
+			break
+		}
+	}
+	if hasLatency {
+		node.LatencyMS = minimum
+		node.Status = "healthy"
+	}
+	return node, nil
+}
+
 func classifyTopology(topology *Topology) {
 	for i := 1; i < len(topology.Nodes); i++ {
 		previous, current := topology.Nodes[i-1], &topology.Nodes[i]
 		link := TopologyLink{From: previous.ID, To: current.ID, Status: current.Status}
 		if current.Status == "healthy" && previous.Status == "healthy" && previous.Hop > 0 {
-			link.LatencyDeltaMS = math.Round((current.LatencyMS-previous.LatencyMS)*100) / 100
-			if link.LatencyDeltaMS >= latencyJumpThresholdMS {
+			latencyDelta, valid := roundedTraceLatencyDelta(current.LatencyMS, previous.LatencyMS)
+			if valid {
+				link.LatencyDeltaMS = latencyDelta
+			}
+			if valid && link.LatencyDeltaMS >= latencyJumpThresholdMS {
 				link.Status = "degraded"
 				current.Status = "degraded"
 			}
 		}
 		topology.Links = append(topology.Links, link)
 	}
+}
+
+func isValidTraceLatency(latency float64) bool {
+	return latency >= 0 && latency <= MaxTraceLatencyMS && !math.IsNaN(latency) && !math.IsInf(latency, 0)
+}
+
+func roundedTraceLatencyDelta(current, previous float64) (float64, bool) {
+	if math.IsNaN(current) || math.IsInf(current, 0) || math.IsNaN(previous) || math.IsInf(previous, 0) {
+		return 0, false
+	}
+	delta := current - previous
+	if math.IsNaN(delta) || math.IsInf(delta, 0) {
+		return 0, false
+	}
+	scaled := delta * 100
+	if math.IsNaN(scaled) || math.IsInf(scaled, 0) {
+		return 0, false
+	}
+	return math.Round(scaled) / 100, true
 }
 
 func topologyStatus(topology Topology) Status {

@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +30,81 @@ func (successChecker) Check(_ context.Context, target diagnostic.Target) diagnos
 func newTestHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewServer(diagnostic.NewRunner(successChecker{}), logger, "test", []string{"http://localhost:3000"})
+}
+
+func TestWriteJSONReturnsStableErrorBeforeCommittingNonFiniteValue(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	writeJSON(rec, http.StatusOK, map[string]any{"value": math.Inf(1)})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("invalid JSON error body %q: %v", rec.Body.String(), err)
+	}
+	if response.Error.Code != "response_serialization_failed" {
+		t.Fatalf("error code = %q, body = %q", response.Error.Code, rec.Body.String())
+	}
+}
+
+type failingJSONValue struct{}
+
+func (failingJSONValue) MarshalJSON() ([]byte, error) {
+	return []byte(`{"partial":`), io.ErrUnexpectedEOF
+}
+
+func TestWriteJSONReturnsStableErrorBeforeCommittingFailingMarshaler(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	writeJSON(rec, http.StatusOK, failingJSONValue{})
+
+	want := "{\"error\":{\"code\":\"response_serialization_failed\",\"message\":\"report response could not be serialized\"}}\n"
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != want {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	if contentType := rec.Header().Get("Content-Type"); contentType != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", contentType)
+	}
+}
+
+func TestWriteJSONKeepsOrdinarySuccessAndErrorResponsesValid(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		write  func(http.ResponseWriter)
+	}{
+		{name: "success", status: http.StatusOK, write: func(w http.ResponseWriter) {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		}},
+		{name: "error", status: http.StatusBadRequest, write: func(w http.ResponseWriter) {
+			writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			tt.write(rec)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			if contentType := rec.Header().Get("Content-Type"); contentType != "application/json; charset=utf-8" {
+				t.Fatalf("Content-Type = %q", contentType)
+			}
+			var body any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("invalid JSON body %q: %v", rec.Body.String(), err)
+			}
+			if !strings.HasSuffix(rec.Body.String(), "\n") {
+				t.Fatalf("body no longer has compatibility newline: %q", rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestHealthAndCORS(t *testing.T) {
@@ -64,6 +143,32 @@ func TestChecksAdvertisesHTTPSAndServices(t *testing.T) {
 	}
 }
 
+func TestChecksAdvertisesTopologyModesAndCompactLimits(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/checks", nil))
+	var response struct {
+		TopologyModes []string `json:"topology_modes"`
+		Limits        struct {
+			CompactTopologyNodes          int `json:"compact_topology_nodes"`
+			CompactTopologyLinks          int `json:"compact_topology_links"`
+			CompactResponseBytesExclusive int `json:"compact_response_bytes_exclusive"`
+			CompactGeoBundleBytes         int `json:"compact_geo_bundle_bytes"`
+		} `json:"limits"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(response.TopologyModes, []string{"full", "compact"}) {
+		t.Fatalf("topology modes = %#v", response.TopologyModes)
+	}
+	if response.Limits.CompactTopologyNodes != diagnostic.CompactTopologyMaxNodes ||
+		response.Limits.CompactTopologyLinks != diagnostic.CompactTopologyMaxLinks ||
+		response.Limits.CompactResponseBytesExclusive != diagnostic.CompactTopologyMaxResponseBytes ||
+		response.Limits.CompactGeoBundleBytes != diagnostic.CompactTopologyMaxGeoBundleBytes {
+		t.Fatalf("compact limits = %+v", response.Limits)
+	}
+}
+
 func TestCreateReport(t *testing.T) {
 	body := bytes.NewBufferString(`{"targets":[{"kind":"dns","address":"example.test"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/reports", body)
@@ -76,6 +181,600 @@ func TestCreateReport(t *testing.T) {
 	var report diagnostic.Report
 	if err := json.NewDecoder(rec.Body).Decode(&report); err != nil || report.Status != diagnostic.StatusHealthy || report.Analysis == nil {
 		t.Fatalf("report=%+v err=%v", report, err)
+	}
+}
+
+type compactTransportChecker struct {
+	result diagnostic.Result
+}
+
+func (compactTransportChecker) Kind() diagnostic.Kind { return diagnostic.KindTraceroute }
+func (checker compactTransportChecker) Check(_ context.Context, target diagnostic.Target) diagnostic.Result {
+	result := checker.result
+	result.Address = target.Address
+	return result
+}
+
+func TestCreateReportCompactPrunesRawTopologyAndLeavesFullAndSourceUnchanged(t *testing.T) {
+	topology := &diagnostic.Topology{Reached: true, Nodes: []diagnostic.TopologyNode{
+		{ID: "l", Hop: 0, Address: "local", Status: "healthy"},
+		{ID: "a", Hop: 1, Address: "8.8.8.8", Status: "healthy", PublicIP: true},
+	}}
+	source := diagnostic.Result{Kind: diagnostic.KindTraceroute, Status: diagnostic.StatusHealthy, LatencyMS: 12, Message: "kept", Details: map[string]any{
+		"attempts": []diagnostic.TraceAttempt{{Attempt: 1, Status: diagnostic.StatusHealthy, Topology: topology}},
+		"topology": topology, "attempts_total": 1, "geoip_provider_failures": 2, "bounded_other": "kept",
+	}}
+	before, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(diagnostic.NewRunner(compactTransportChecker{result: source}), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", nil)
+
+	request := func(mode string) *httptest.ResponseRecorder {
+		body := `{"targets":[{"kind":"traceroute","address":"example.test"}]` + mode + `}`
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(body)))
+		return rec
+	}
+	compact := request(`,"topology_mode":"compact"`)
+	if compact.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", compact.Code, compact.Body.String())
+	}
+	var compactBody map[string]any
+	if err := json.Unmarshal(compact.Body.Bytes(), &compactBody); err != nil {
+		t.Fatal(err)
+	}
+	compactResult := compactBody["results"].([]any)[0].(map[string]any)
+	compactDetails := compactResult["details"].(map[string]any)
+	if _, ok := compactDetails["attempts"]; ok {
+		t.Fatalf("compact attempts retained: %s", compact.Body.String())
+	}
+	if _, ok := compactDetails["topology"]; ok {
+		t.Fatalf("compact representative topology retained: %s", compact.Body.String())
+	}
+	for _, key := range []string{"attempts_total", "geoip_provider_failures", "bounded_other"} {
+		if _, ok := compactDetails[key]; !ok {
+			t.Fatalf("compact detail %q removed: %s", key, compact.Body.String())
+		}
+	}
+	if _, ok := compactBody["compact_topology"]; !ok {
+		t.Fatalf("compact_topology missing: %s", compact.Body.String())
+	}
+
+	full := request(`,"topology_mode":"full"`)
+	if full.Code != http.StatusOK {
+		t.Fatalf("full status=%d body=%s", full.Code, full.Body.String())
+	}
+	var fullBody map[string]any
+	if err := json.Unmarshal(full.Body.Bytes(), &fullBody); err != nil {
+		t.Fatal(err)
+	}
+	fullDetails := fullBody["results"].([]any)[0].(map[string]any)["details"].(map[string]any)
+	if _, ok := fullDetails["attempts"]; !ok {
+		t.Fatalf("full attempts pruned: %s", full.Body.String())
+	}
+	if _, ok := fullDetails["topology"]; !ok {
+		t.Fatalf("full topology pruned: %s", full.Body.String())
+	}
+	if _, ok := fullBody["compact_topology"]; ok {
+		t.Fatalf("full response gained compact field: %s", full.Body.String())
+	}
+	after, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("HTTP compact projection mutated checker source")
+	}
+}
+
+func exactJSONPayload(t *testing.T, size int) []byte {
+	t.Helper()
+	prefix, suffix := []byte(`{"padding":"`), []byte(`"}`)
+	if size < len(prefix)+len(suffix) {
+		t.Fatalf("payload size %d is too small", size)
+	}
+	payload := append(append(append([]byte(nil), prefix...), bytes.Repeat([]byte("x"), size-len(prefix)-len(suffix))...), suffix...)
+	if len(payload) != size || !json.Valid(payload) {
+		t.Fatalf("constructed payload len=%d valid=%v", len(payload), json.Valid(payload))
+	}
+	return payload
+}
+
+func compactResponseTestReport() diagnostic.Report {
+	geoA := &diagnostic.GeoLocation{City: "Seoul"}
+	geoB := &diagnostic.GeoLocation{City: "Busan"}
+	topology := &diagnostic.Topology{Reached: true, Nodes: []diagnostic.TopologyNode{
+		{ID: "l", Hop: 0, Address: "local", Status: "healthy"},
+		{ID: "a", Hop: 1, Address: "8.8.8.8", Status: "healthy", PublicIP: true, Geolocation: geoA},
+		{ID: "b", Hop: 2, Address: "1.1.1.1", Status: "healthy", PublicIP: true, Geolocation: geoB},
+	}}
+	return diagnostic.Report{ID: "report", Status: diagnostic.StatusHealthy, Results: []diagnostic.Result{{
+		Kind: diagnostic.KindTraceroute, Address: "example.test", Status: diagnostic.StatusHealthy,
+		Details: map[string]any{"attempts": []diagnostic.TraceAttempt{{Attempt: 1, Status: diagnostic.StatusHealthy, Topology: topology}}, "attempts_total": 1},
+	}}}
+}
+
+func maximumCompactResult(address string) diagnostic.Result {
+	attempts := make([]diagnostic.TraceAttempt, diagnostic.MaxTraceAttempts)
+	for attemptIndex := range attempts {
+		nodes := make([]diagnostic.TopologyNode, 0, diagnostic.MaxTraceHops+1)
+		nodes = append(nodes, diagnostic.TopologyNode{ID: "local", Hop: 0, Address: "local", Status: "healthy"})
+		for hop := 1; hop <= diagnostic.MaxTraceHops; hop++ {
+			nodes = append(nodes, diagnostic.TopologyNode{
+				ID: fmt.Sprintf("h%d", hop), Hop: hop,
+				Address: fmt.Sprintf("%s-a%d-h%d.example", address, attemptIndex, hop),
+				Status:  "healthy", LatencyMS: float64(hop),
+			})
+		}
+		attempts[attemptIndex] = diagnostic.TraceAttempt{Attempt: attemptIndex + 1, Status: diagnostic.StatusHealthy, Topology: &diagnostic.Topology{Reached: true, Nodes: nodes}}
+	}
+	return diagnostic.Result{Kind: diagnostic.KindTraceroute, Address: address, Status: diagnostic.StatusHealthy, Details: map[string]any{
+		"attempts": attempts, "topology": attempts[0].Topology, "attempts_total": diagnostic.MaxTraceAttempts,
+	}}
+}
+
+type maximumCompactChecker struct{}
+
+func (maximumCompactChecker) Kind() diagnostic.Kind { return diagnostic.KindTraceroute }
+func (maximumCompactChecker) Check(_ context.Context, target diagnostic.Target) diagnostic.Result {
+	return maximumCompactResult(target.Address)
+}
+
+func maximumCompactReport() diagnostic.Report {
+	results := make([]diagnostic.Result, diagnostic.MaxTargets)
+	for index := range results {
+		results[index] = maximumCompactResult(fmt.Sprintf("target-%02d", index))
+	}
+	return diagnostic.Report{ID: "stable", Status: diagnostic.StatusHealthy, Results: results}
+}
+
+func maximumGeoCompactReport() diagnostic.Report {
+	report := maximumCompactReport()
+	for resultIndex := range report.Results {
+		attempts := report.Results[resultIndex].Details["attempts"].([]diagnostic.TraceAttempt)
+		for attemptIndex := range attempts {
+			for nodeIndex := 1; nodeIndex < len(attempts[attemptIndex].Topology.Nodes); nodeIndex++ {
+				node := &attempts[attemptIndex].Topology.Nodes[nodeIndex]
+				node.PublicIP = true
+				node.Geolocation = &diagnostic.GeoLocation{City: fmt.Sprintf("city-%02d-%02d-%02d", resultIndex, attemptIndex, nodeIndex)}
+				node.ASN = &diagnostic.ASNInfo{Number: 64500, Organization: strings.Repeat("a", 3900)}
+			}
+		}
+		report.Results[resultIndex].Details["attempts"] = attempts
+	}
+	return report
+}
+
+func cloneCompactTopologyForTest(t *testing.T, topology *diagnostic.CompactTopology) *diagnostic.CompactTopology {
+	t.Helper()
+	encoded, err := json.Marshal(topology)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clone diagnostic.CompactTopology
+	if err := json.Unmarshal(encoded, &clone); err != nil {
+		t.Fatal(err)
+	}
+	return &clone
+}
+
+func linearGeoRollbackReference(t *testing.T, report diagnostic.Report) []byte {
+	t.Helper()
+	topology := cloneCompactTopologyForTest(t, diagnostic.BuildCompactTopologyWithOptions(report, -1, true).Topology)
+	responseLimited, geoLimited := false, false
+	for {
+		setCompactTruncationReasons(topology, responseLimited, geoLimited)
+		payload, err := json.Marshal(diagnostic.BuildCompactReport(report, topology))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload = append(payload, '\n')
+		if len(payload) < diagnostic.CompactTopologyMaxResponseBytes {
+			return payload
+		}
+		responseLimited = true
+		removed := false
+		for index := len(topology.Nodes) - 1; index >= 0; index-- {
+			node := &topology.Nodes[index]
+			if node.Geolocation == nil && node.ASN == nil {
+				continue
+			}
+			node.Geolocation, node.ASN = nil, nil
+			topology.Geo.Included--
+			topology.Geo.Omitted++
+			geoLimited, removed = true, true
+			break
+		}
+		if !removed {
+			t.Fatal("maximum Geo fixture unexpectedly required transaction rollback")
+		}
+	}
+}
+
+func TestMarshalCompactResponseMaximumGeoRollbackIsBoundedAndMaximal(t *testing.T) {
+	report := maximumGeoCompactReport()
+	rawBefore, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := linearGeoRollbackReference(t, report)
+	calls, buildCalls, cumulativeBytes := 0, 0, 0
+	started := time.Now()
+	body, err := marshalCompactResponseWithBuilder(report, func(value diagnostic.Report) ([]byte, error) {
+		calls++
+		payload, marshalErr := json.Marshal(value)
+		cumulativeBytes += len(payload)
+		return payload, marshalErr
+	}, func(value diagnostic.Report, accepted int, includeGeo bool) diagnostic.CompactTopologyBuildResult {
+		buildCalls++
+		return diagnostic.BuildCompactTopologyWithOptions(value, accepted, includeGeo)
+	})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls > 24 || buildCalls > 1 || calls+buildCalls > 24 || cumulativeBytes > 32<<20 {
+		t.Fatalf("rollback amplification: builds=%d marshals=%d cumulative=%d elapsed=%s", buildCalls, calls, cumulativeBytes, elapsed)
+	}
+	if !bytes.Equal(body, want) {
+		t.Fatalf("bounded rollback differs from linear reference: got=%d bytes want=%d", len(body), len(want))
+	}
+	if len(body) >= diagnostic.CompactTopologyMaxResponseBytes {
+		t.Fatalf("body len=%d is not strictly below limit", len(body))
+	}
+	var final diagnostic.Report
+	if err := json.Unmarshal(body, &final); err != nil {
+		t.Fatal(err)
+	}
+	assertAPICompactReferences(t, final.CompactTopology)
+	initial := diagnostic.BuildCompactTopologyWithOptions(report, -1, true).Topology
+	if final.CompactTopology.Stats != initial.Stats || !reflect.DeepEqual(final.CompactTopology.ResultStats, initial.ResultStats) {
+		t.Fatalf("Geo rollback changed topology stats: final=%+v initial=%+v", final.CompactTopology.Stats, initial.Stats)
+	}
+	if got, wantReasons := final.CompactTopology.TruncationReasons, []diagnostic.CompactTruncationReason{
+		diagnostic.CompactTruncationNodeLimit,
+		diagnostic.CompactTruncationResponseSize,
+		diagnostic.CompactTruncationGeoLimit,
+	}; !reflect.DeepEqual(got, wantReasons) {
+		t.Fatalf("reasons=%v want=%v", got, wantReasons)
+	}
+	if final.CompactTopology.Geo.Included+final.CompactTopology.Geo.Omitted != initial.Geo.Available || final.CompactTopology.Geo.Included <= 0 || final.CompactTopology.Geo.Omitted <= 0 {
+		t.Fatalf("Geo stats=%+v initial=%+v", final.CompactTopology.Geo, initial.Geo)
+	}
+	maximal := cloneCompactTopologyForTest(t, final.CompactTopology)
+	for index := len(maximal.Nodes) - 1; index >= 0; index-- {
+		if maximal.Nodes[index].Geolocation != nil || maximal.Nodes[index].ASN != nil {
+			continue
+		}
+		if initial.Nodes[index].Geolocation == nil && initial.Nodes[index].ASN == nil {
+			continue
+		}
+		maximal.Nodes[index].Geolocation = initial.Nodes[index].Geolocation
+		maximal.Nodes[index].ASN = initial.Nodes[index].ASN
+		maximal.Geo.Included++
+		maximal.Geo.Omitted--
+		payload, marshalErr := json.Marshal(diagnostic.BuildCompactReport(report, maximal))
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if len(payload)+1 < diagnostic.CompactTopologyMaxResponseBytes {
+			t.Fatalf("one more reverse-ordered Geo bundle fits: len=%d", len(payload)+1)
+		}
+		break
+	}
+	rawAfter, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rawBefore, rawAfter) {
+		t.Fatal("marshalCompactResponse mutated raw report")
+	}
+	t.Logf("maximum Geo rollback: calls=%d cumulative=%d body=%d elapsed=%s", calls, cumulativeBytes, len(body), elapsed)
+}
+
+func BenchmarkMarshalCompactResponseMaximumGeoRollback(b *testing.B) {
+	report := maximumGeoCompactReport()
+	var totalCalls, totalMarshaledBytes int64
+	b.ReportAllocs()
+	b.ResetTimer()
+	for run := 0; run < b.N; run++ {
+		body, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) {
+			totalCalls++
+			payload, marshalErr := json.Marshal(value)
+			totalMarshaledBytes += int64(len(payload))
+			return payload, marshalErr
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(body) >= diagnostic.CompactTopologyMaxResponseBytes {
+			b.Fatalf("body len=%d", len(body))
+		}
+	}
+	b.ReportMetric(float64(totalCalls)/float64(b.N), "marshals/op")
+	b.ReportMetric(float64(totalMarshaledBytes)/float64(b.N), "marshaled-B/op")
+}
+
+func TestMaximumCompactHTTPResponseIsStrictlyBelowLimitWithExactLength(t *testing.T) {
+	targets := make([]diagnostic.Target, diagnostic.MaxTargets)
+	for index := range targets {
+		targets[index] = diagnostic.Target{Kind: diagnostic.KindTraceroute, Address: fmt.Sprintf("target-%02d", index), Attempts: diagnostic.MaxTraceAttempts}
+	}
+	requestBody, err := json.Marshal(diagnostic.Request{Targets: targets, TopologyMode: diagnostic.TopologyModeCompact})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer(diagnostic.NewRunner(maximumCompactChecker{}), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/reports", bytes.NewReader(requestBody)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.Len() >= diagnostic.CompactTopologyMaxResponseBytes || rec.Header().Get("Content-Length") != fmt.Sprint(rec.Body.Len()) {
+		t.Fatalf("body len=%d Content-Length=%q", rec.Body.Len(), rec.Header().Get("Content-Length"))
+	}
+	var decoded diagnostic.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	assertAPICompactReferences(t, decoded.CompactTopology)
+	for index, result := range decoded.Results {
+		if _, exists := result.Details["attempts"]; exists {
+			t.Fatalf("results[%d] retained attempts", index)
+		}
+		if _, exists := result.Details["topology"]; exists {
+			t.Fatalf("results[%d] retained topology", index)
+		}
+	}
+}
+
+func TestCompactResponseBytesAreDeterministicAcrossOneHundredBuilds(t *testing.T) {
+	report := maximumGeoCompactReport()
+	first, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) { return json.Marshal(value) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for run := 1; run < 100; run++ {
+		next, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) { return json.Marshal(value) })
+		if err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+		if !bytes.Equal(first, next) {
+			t.Fatalf("run %d produced different bytes", run)
+		}
+	}
+}
+
+func TestMarshalCompactResponseExactExclusiveBoundary(t *testing.T) {
+	report := compactResponseTestReport()
+	calls := 0
+	body, err := marshalCompactResponse(report, func(diagnostic.Report) ([]byte, error) {
+		calls++
+		return exactJSONPayload(t, diagnostic.CompactTopologyMaxResponseBytes-2), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != diagnostic.CompactTopologyMaxResponseBytes-1 || calls != 1 || body[len(body)-1] != '\n' {
+		t.Fatalf("accepted body len=%d calls=%d", len(body), calls)
+	}
+}
+
+func TestMarshalCompactResponseRollsBackAtOneMiBBoundaryAndKeepsValidStats(t *testing.T) {
+	report := compactResponseTestReport()
+	var included []int
+	var lastNodeHasGeo []bool
+	var reasons [][]diagnostic.CompactTruncationReason
+	var final diagnostic.Report
+	body, err := marshalCompactResponse(report, func(value diagnostic.Report) ([]byte, error) {
+		topology := value.CompactTopology
+		included = append(included, topology.Geo.Included)
+		last := topology.Nodes[len(topology.Nodes)-1]
+		lastNodeHasGeo = append(lastNodeHasGeo, last.Geolocation != nil || last.ASN != nil)
+		reasons = append(reasons, append([]diagnostic.CompactTruncationReason(nil), topology.TruncationReasons...))
+		final = value
+		if len(included) == 1 {
+			return exactJSONPayload(t, diagnostic.CompactTopologyMaxResponseBytes-1), nil
+		}
+		return json.Marshal(value)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) >= diagnostic.CompactTopologyMaxResponseBytes || len(included) < 2 {
+		t.Fatalf("body len=%d snapshots=%d", len(body), len(included))
+	}
+	if included[0] != 2 || included[1] != 1 || !lastNodeHasGeo[0] || lastNodeHasGeo[1] {
+		t.Fatalf("Geo fallback order: included=%v last-node-geo=%v", included, lastNodeHasGeo)
+	}
+	if got, want := reasons[1], []diagnostic.CompactTruncationReason{diagnostic.CompactTruncationResponseSize, diagnostic.CompactTruncationGeoLimit}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reason order = %#v, want %#v", got, want)
+	}
+	var decoded diagnostic.Report
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("fallback body is invalid JSON: %v", err)
+	}
+	assertAPICompactReferences(t, decoded.CompactTopology)
+	assertAPICompactReferences(t, final.CompactTopology)
+}
+
+func linearCompactResponseReference(t *testing.T, report diagnostic.Report, marshal compactReportMarshaler) []byte {
+	t.Helper()
+	build := diagnostic.BuildCompactTopologyWithOptions(report, -1, true)
+	topology := cloneCompactTopologyForTest(t, build.Topology)
+	responseLimited, geoLimited := false, false
+	for {
+		setCompactTruncationReasons(topology, responseLimited, geoLimited)
+		payload, err := marshal(diagnostic.BuildCompactReport(report, topology))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload = append(payload, '\n')
+		if len(payload) < diagnostic.CompactTopologyMaxResponseBytes {
+			return payload
+		}
+		responseLimited = true
+		removed := false
+		for index := len(topology.Nodes) - 1; index >= 0; index-- {
+			node := &topology.Nodes[index]
+			if node.Geolocation == nil && node.ASN == nil {
+				continue
+			}
+			node.Geolocation, node.ASN = nil, nil
+			topology.Geo.Included--
+			topology.Geo.Omitted++
+			geoLimited, removed = true, true
+			break
+		}
+		if removed {
+			continue
+		}
+		if build.AcceptedTransactions <= 0 {
+			t.Fatal("linear reference found no fitting response")
+		}
+		build = diagnostic.BuildCompactTopologyWithOptions(report, build.AcceptedTransactions-1, false)
+		topology = cloneCompactTopologyForTest(t, build.Topology)
+	}
+}
+
+func TestMarshalCompactResponseBinarySearchesTransactionsAndReusesRunnerBuild(t *testing.T) {
+	report := compactResponseTestReport()
+	initial := diagnostic.BuildCompactTopologyWithOptions(report, -1, true)
+	report.SetCompactTopologyBuild(initial)
+	rawBefore, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marshalForOneLink := func(value diagnostic.Report) ([]byte, error) {
+		if value.CompactTopology.Stats.Links.Displayed > 1 {
+			return exactJSONPayload(t, diagnostic.CompactTopologyMaxResponseBytes-1), nil
+		}
+		return json.Marshal(value)
+	}
+	want := linearCompactResponseReference(t, report, marshalForOneLink)
+	buildCalls, marshalCalls := 0, 0
+	body, err := marshalCompactResponseWithBuilder(report, func(value diagnostic.Report) ([]byte, error) {
+		marshalCalls++
+		return marshalForOneLink(value)
+	}, func(value diagnostic.Report, accepted int, includeGeo bool) diagnostic.CompactTopologyBuildResult {
+		buildCalls++
+		if accepted < 0 {
+			t.Fatal("transport repeated the runner's full initial compact build")
+		}
+		return diagnostic.BuildCompactTopologyWithOptions(value, accepted, includeGeo)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, want) {
+		t.Fatalf("binary transaction rollback differs from linear reference: got=%s want=%s", body, want)
+	}
+	if buildCalls > 2 || marshalCalls > 6 {
+		t.Fatalf("small rollback amplification: builds=%d marshals=%d", buildCalls, marshalCalls)
+	}
+	var final diagnostic.Report
+	if err := json.Unmarshal(body, &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.CompactTopology.Stats.Links.Displayed != 1 || final.CompactTopology.Geo.Included != 0 {
+		t.Fatalf("did not retain greatest fitting transaction: %+v", final.CompactTopology)
+	}
+	if got, wantReasons := final.CompactTopology.TruncationReasons, []diagnostic.CompactTruncationReason{
+		diagnostic.CompactTruncationResponseSize,
+		diagnostic.CompactTruncationGeoLimit,
+	}; !reflect.DeepEqual(got, wantReasons) {
+		t.Fatalf("reason order=%v want=%v", got, wantReasons)
+	}
+	rawAfter, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rawBefore, rawAfter) {
+		t.Fatal("binary probes mutated cached topology or raw report")
+	}
+}
+
+func TestMarshalCompactResponseMaximumTransactionRollbackIsLogarithmicAndExact(t *testing.T) {
+	report := maximumCompactReport()
+	rawBefore, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const greatestFittingTransactions = 237
+	buildCalls, marshalCalls := 0, 0
+	body, err := marshalCompactResponseWithBuilder(report, func(value diagnostic.Report) ([]byte, error) {
+		marshalCalls++
+		if value.CompactTopology.Stats.LinkObservations.Displayed > greatestFittingTransactions {
+			return exactJSONPayload(t, diagnostic.CompactTopologyMaxResponseBytes-1), nil
+		}
+		return json.Marshal(value)
+	}, func(value diagnostic.Report, accepted int, includeGeo bool) diagnostic.CompactTopologyBuildResult {
+		buildCalls++
+		return diagnostic.BuildCompactTopologyWithOptions(value, accepted, includeGeo)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if buildCalls > 11 || marshalCalls > 12 {
+		t.Fatalf("transaction rollback amplification: builds=%d marshals=%d", buildCalls, marshalCalls)
+	}
+	var final diagnostic.Report
+	if err := json.Unmarshal(body, &final); err != nil {
+		t.Fatal(err)
+	}
+	if got := final.CompactTopology.Stats.LinkObservations.Displayed; got != greatestFittingTransactions {
+		t.Fatalf("accepted transactions=%d want=%d", got, greatestFittingTransactions)
+	}
+	if got := final.CompactTopology.TruncationReasons; !reflect.DeepEqual(got, []diagnostic.CompactTruncationReason{
+		diagnostic.CompactTruncationResponseSize,
+	}) {
+		t.Fatalf("reasons=%v", got)
+	}
+	assertAPICompactReferences(t, final.CompactTopology)
+	rawAfter, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rawBefore, rawAfter) {
+		t.Fatal("transaction probes mutated raw report")
+	}
+}
+
+func TestMarshalCompactResponseRejectsIrreducibleBaseAndMarshalFailure(t *testing.T) {
+	base := diagnostic.Report{ID: "base", Results: []diagnostic.Result{{Kind: diagnostic.KindTraceroute}}}
+	_, err := marshalCompactResponse(base, func(diagnostic.Report) ([]byte, error) {
+		return exactJSONPayload(t, diagnostic.CompactTopologyMaxResponseBytes-1), nil
+	})
+	if !errors.Is(err, errCompactResponseTooLarge) {
+		t.Fatalf("irreducible error = %v", err)
+	}
+	_, err = marshalCompactResponse(base, func(diagnostic.Report) ([]byte, error) { return nil, io.ErrUnexpectedEOF })
+	if !errors.Is(err, errResponseSerialization) {
+		t.Fatalf("serialization error = %v", err)
+	}
+}
+
+func assertAPICompactReferences(t *testing.T, topology *diagnostic.CompactTopology) {
+	t.Helper()
+	if topology == nil {
+		t.Fatal("compact topology is nil")
+	}
+	ids := make(map[string]bool, len(topology.Nodes))
+	for _, node := range topology.Nodes {
+		ids[node.ID] = true
+	}
+	for _, link := range topology.Links {
+		if !ids[link.From] || !ids[link.To] {
+			t.Fatalf("dangling link %+v", link)
+		}
+	}
+	for _, route := range topology.Routes {
+		for _, id := range route.NodeIDs {
+			if !ids[id] {
+				t.Fatalf("dangling route ref %q", id)
+			}
+		}
 	}
 }
 
