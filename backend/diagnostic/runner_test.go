@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,16 @@ type checkerFunc struct {
 	kind Kind
 	fn   func(context.Context, Target) Result
 }
+
+type deadlineOnlyContext struct {
+	deadline time.Time
+	err      error
+}
+
+func (c deadlineOnlyContext) Deadline() (time.Time, bool) { return c.deadline, !c.deadline.IsZero() }
+func (deadlineOnlyContext) Done() <-chan struct{}         { return nil }
+func (c deadlineOnlyContext) Err() error                  { return c.err }
+func (deadlineOnlyContext) Value(any) any                 { return nil }
 
 func (c checkerFunc) Kind() Kind { return c.kind }
 func (c checkerFunc) Check(ctx context.Context, target Target) Result {
@@ -364,6 +375,229 @@ func TestRunnerSimultaneousCompletionAndCancellationUsesCommittedCancellation(t 
 	if got := report.Results[0]; got.ErrorCode != "cancelled" || got.Address != "race.example" {
 		t.Fatalf("terminal result=%+v", got)
 	}
+}
+
+func TestRunnerCheckerDeadlineObservedAtReturnOverridesLateHealthyResult(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	deadlineObserved := make(chan struct{})
+	allowReturn := make(chan struct{})
+	checker := checkerFunc{kind: KindDNS, fn: func(ctx context.Context, target Target) Result {
+		<-ctx.Done()
+		close(deadlineObserved)
+		<-allowReturn
+		return Result{Kind: target.Kind, Address: "late-healthy.example", Status: StatusHealthy}
+	}}
+	req := Request{TimeoutMS: int(MinTimeout.Milliseconds()), Targets: []Target{{Kind: KindDNS, Address: "deadline.example"}}}
+	done := make(chan Report, 1)
+	started := time.Now()
+	go func() {
+		report, _ := NewRunnerWithSupervisor(supervisor, checker).Run(context.Background(), req)
+		done <- report
+	}()
+	<-deadlineObserved
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 1 {
+		t.Fatalf("lease released before checker return: %+v", snapshot)
+	}
+	close(allowReturn)
+	report := <-done
+	if elapsed := time.Since(started); elapsed >= RequestBudget(req)-200*time.Millisecond {
+		t.Fatalf("completion waited for report grace: elapsed=%s budget=%s", elapsed, RequestBudget(req))
+	}
+	if got := report.Results[0]; got.ErrorCode != "timeout" || got.Status != StatusUnreachable || got.Address != "deadline.example" {
+		t.Fatalf("deadline result=%+v", got)
+	}
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 0 {
+		t.Fatalf("lease retained after checker return: %+v", snapshot)
+	}
+}
+
+func TestRunnerCompletionAtCheckerDeadlineTimesOutBeforeTimerCallbackRuns(t *testing.T) {
+	previousProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
+
+	const runs = 100
+	healthy := 0
+	unexpected := 0
+	for i := 0; i < runs; i++ {
+		supervisor := mustSupervisor(t, 1)
+		checker := checkerFunc{kind: KindDNS, fn: func(ctx context.Context, target Target) Result {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("non-traceroute checker context has no deadline")
+			}
+			for time.Now().Before(deadline) {
+			}
+			return Result{Kind: target.Kind, Address: target.Address, Status: StatusHealthy}
+		}}
+		runner := NewRunnerWithSupervisor(supervisor, checker)
+		outcomes := make(chan indexedOutcome, 1)
+		lease := supervisor.acquire()
+		terminal := &targetTerminal{
+			index: 0, target: Target{Kind: KindDNS, Address: "deadline.example"}, started: time.Now().UTC(),
+			parentCtx: context.Background(), runCtx: context.Background(), supervisor: supervisor, lease: lease, outcomes: outcomes,
+		}
+		go runner.runChecker(context.Background(), time.Millisecond, terminal.target, lease, terminal)
+		result := (<-outcomes).result
+		if result.Status == StatusHealthy {
+			healthy++
+		}
+		if result.ErrorCode != "timeout" {
+			unexpected++
+		}
+	}
+	if healthy != 0 || unexpected != 0 {
+		t.Fatalf("healthy results=%d/%d; non-timeout results=%d/%d", healthy, runs, unexpected, runs)
+	}
+}
+
+func TestRunnerPanicAtCheckerDeadlineTimesOutBeforeTimerCallbackRuns(t *testing.T) {
+	previousProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
+
+	supervisor := mustSupervisor(t, 1)
+	checker := checkerFunc{kind: KindDNS, fn: func(ctx context.Context, _ Target) Result {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			panic("missing checker deadline")
+		}
+		for time.Now().Before(deadline) {
+		}
+		panic("deadline panic")
+	}}
+	runner := NewRunnerWithSupervisor(supervisor, checker)
+	outcomes := make(chan indexedOutcome, 1)
+	lease := supervisor.acquire()
+	terminal := &targetTerminal{
+		target: Target{Kind: KindDNS, Address: "panic.example"}, started: time.Now().UTC(),
+		parentCtx: context.Background(), runCtx: context.Background(), supervisor: supervisor, lease: lease, outcomes: outcomes,
+	}
+	go runner.runChecker(context.Background(), time.Millisecond, terminal.target, lease, terminal)
+	if got := (<-outcomes).result; got.ErrorCode != "timeout" || got.Status != StatusUnreachable {
+		t.Fatalf("panic-at-deadline result=%+v", got)
+	}
+}
+
+func TestTargetTerminalCompletionDeadlineBoundaries(t *testing.T) {
+	boundary := time.Unix(1_700_000_000, 0)
+	tests := []struct {
+		name        string
+		target      Target
+		runCtx      context.Context
+		checkCtx    context.Context
+		completedAt time.Time
+		wantCode    string
+	}{
+		{name: "before checker deadline", target: Target{Kind: KindDNS}, runCtx: context.Background(), checkCtx: deadlineOnlyContext{deadline: boundary}, completedAt: boundary.Add(-time.Nanosecond)},
+		{name: "exactly at checker deadline", target: Target{Kind: KindDNS}, runCtx: context.Background(), checkCtx: deadlineOnlyContext{deadline: boundary}, completedAt: boundary, wantCode: "timeout"},
+		{name: "after checker deadline", target: Target{Kind: KindDNS}, runCtx: context.Background(), checkCtx: deadlineOnlyContext{deadline: boundary}, completedAt: boundary.Add(time.Nanosecond), wantCode: "timeout"},
+		{name: "checker error visible before timestamp", target: Target{Kind: KindDNS}, runCtx: context.Background(), checkCtx: deadlineOnlyContext{deadline: boundary, err: context.DeadlineExceeded}, completedAt: boundary.Add(-time.Hour), wantCode: "timeout"},
+		{name: "exactly at report deadline", target: Target{Kind: KindDNS}, runCtx: deadlineOnlyContext{deadline: boundary}, checkCtx: context.Background(), completedAt: boundary, wantCode: "timeout"},
+		{name: "report error visible before timestamp", target: Target{Kind: KindDNS}, runCtx: deadlineOnlyContext{deadline: boundary, err: context.DeadlineExceeded}, checkCtx: context.Background(), completedAt: boundary.Add(-time.Hour), wantCode: "timeout"},
+		{name: "contexts without deadlines", target: Target{Kind: KindDNS}, runCtx: context.Background(), checkCtx: context.Background(), completedAt: boundary},
+		{name: "traceroute ignores checker deadline", target: Target{Kind: KindTraceroute}, runCtx: deadlineOnlyContext{deadline: boundary.Add(time.Hour)}, checkCtx: deadlineOnlyContext{deadline: boundary}, completedAt: boundary},
+		{name: "traceroute uses report deadline", target: Target{Kind: KindTraceroute}, runCtx: deadlineOnlyContext{deadline: boundary}, checkCtx: deadlineOnlyContext{deadline: boundary.Add(time.Hour)}, completedAt: boundary, wantCode: "timeout"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			supervisor := mustSupervisor(t, 1)
+			terminal := &targetTerminal{target: test.target, started: boundary, parentCtx: context.Background(), runCtx: test.runCtx, supervisor: supervisor}
+			outcome, claimed := terminal.complete(Result{Kind: test.target.Kind, Status: StatusHealthy}, test.checkCtx, test.completedAt)
+			if !claimed {
+				t.Fatal("completion was not claimed")
+			}
+			if got := outcome.result.ErrorCode; got != test.wantCode {
+				t.Fatalf("error_code=%q, want %q; result=%+v", got, test.wantCode, outcome.result)
+			}
+		})
+	}
+}
+
+func TestRunnerHealthyCompletionBeforeCheckerDeadlineRemainsHealthy(t *testing.T) {
+	checker := checkerFunc{kind: KindDNS, fn: func(_ context.Context, target Target) Result {
+		return Result{Kind: target.Kind, Address: target.Address, Status: StatusHealthy}
+	}}
+	report, err := NewRunnerWithSupervisor(mustSupervisor(t, 1), checker).Run(context.Background(), Request{
+		TimeoutMS: int(MinTimeout.Milliseconds()), Targets: []Target{{Kind: KindDNS, Address: "healthy.example"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := report.Results[0]; got.Status != StatusHealthy || got.ErrorCode != "" {
+		t.Fatalf("healthy result=%+v", got)
+	}
+}
+
+func TestRunnerParentCancellationObservedAtReturnOverridesLateHealthyResult(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	checker := checkerFunc{kind: KindDNS, fn: func(checkCtx context.Context, target Target) Result {
+		close(started)
+		<-checkCtx.Done()
+		return Result{Kind: target.Kind, Address: "late-healthy.example", Status: StatusHealthy}
+	}}
+	done := make(chan Report, 1)
+	go func() {
+		report, _ := NewRunnerWithSupervisor(supervisor, checker).Run(ctx, Request{Targets: []Target{{Kind: KindDNS, Address: "cancel.example"}}})
+		done <- report
+	}()
+	<-started
+	cancel()
+	if got := (<-done).Results[0]; got.ErrorCode != "cancelled" || got.Address != "cancel.example" {
+		t.Fatalf("cancel result=%+v", got)
+	}
+}
+
+func TestRunnerSupervisorCancellationObservedAtReturnOverridesLateHealthyResult(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	started := make(chan struct{})
+	checker := checkerFunc{kind: KindDNS, fn: func(checkCtx context.Context, target Target) Result {
+		close(started)
+		<-checkCtx.Done()
+		return Result{Kind: target.Kind, Address: "late-healthy.example", Status: StatusHealthy}
+	}}
+	done := make(chan Report, 1)
+	go func() {
+		report, _ := NewRunnerWithSupervisor(supervisor, checker).Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "shutdown.example"}}})
+		done <- report
+	}()
+	<-started
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	cancelWait()
+	if remaining := supervisor.Shutdown(waitCtx); remaining < 0 || remaining > 1 {
+		t.Fatalf("remaining=%d", remaining)
+	}
+	if got := (<-done).Results[0]; got.ErrorCode != "cancelled" || got.Address != "shutdown.example" {
+		t.Fatalf("shutdown result=%+v", got)
+	}
+}
+
+func TestRunnerPanicKeepsCheckerPanicUnlessDeadlineAlreadyObservable(t *testing.T) {
+	t.Run("checker panic", func(t *testing.T) {
+		checker := checkerFunc{kind: KindDNS, fn: func(context.Context, Target) Result { panic("canary") }}
+		report, err := NewRunnerWithSupervisor(mustSupervisor(t, 1), checker).Run(context.Background(), Request{Targets: []Target{{Kind: KindDNS, Address: "panic.example"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := report.Results[0].ErrorCode; got != "checker_panic" {
+			t.Fatalf("error_code=%q", got)
+		}
+	})
+	t.Run("deadline then panic", func(t *testing.T) {
+		checker := checkerFunc{kind: KindDNS, fn: func(ctx context.Context, _ Target) Result {
+			<-ctx.Done()
+			panic("canary")
+		}}
+		report, err := NewRunnerWithSupervisor(mustSupervisor(t, 1), checker).Run(context.Background(), Request{
+			TimeoutMS: int(MinTimeout.Milliseconds()), Targets: []Target{{Kind: KindDNS, Address: "panic.example"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := report.Results[0].ErrorCode; got != "timeout" {
+			t.Fatalf("error_code=%q", got)
+		}
+	})
 }
 
 func TestRunnerRunWithIDValidatesAndPreservesOpaqueID(t *testing.T) {

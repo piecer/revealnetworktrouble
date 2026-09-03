@@ -3,12 +3,42 @@ package diagnostic
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+const httpBodySampleLimit = 32 * 1024
+
+type readCloseStub struct {
+	reader   io.Reader
+	closeErr error
+}
+
+func (body *readCloseStub) Read(payload []byte) (int, error) { return body.reader.Read(payload) }
+func (body *readCloseStub) Close() error                     { return body.closeErr }
+
+type bytesThenErrorReader struct {
+	remaining int
+	err       error
+}
+
+func (reader *bytesThenErrorReader) Read(payload []byte) (int, error) {
+	if reader.remaining == 0 {
+		return 0, reader.err
+	}
+	n := min(len(payload), reader.remaining)
+	for index := 0; index < n; index++ {
+		payload[index] = 'x'
+	}
+	reader.remaining -= n
+	return n, nil
+}
 
 type pipeDialer struct{}
 
@@ -49,6 +79,84 @@ func TestHTTPCheckerExpectedStatus(t *testing.T) {
 	failed := (HTTPChecker{}).Check(context.Background(), Target{Kind: KindHTTP, Address: server.URL, ExpectedStatus: http.StatusOK})
 	if failed.ErrorCode != "unexpected_status" {
 		t.Fatalf("unexpected mismatch result: %+v", failed)
+	}
+}
+
+func TestHTTPCheckerBodyReadDeadlineIsNotHealthyAndIncludesObservationLatency(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("x"))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer func() {
+		close(release)
+		server.Close()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), MinTimeout)
+	defer cancel()
+	result := (HTTPChecker{}).Check(ctx, Target{Kind: KindHTTP, Address: server.URL})
+	if result.Status != StatusUnreachable || result.ErrorCode != "timeout" {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.LatencyMS < MinTimeout.Milliseconds()-20 {
+		t.Fatalf("latency=%dms does not include bounded body observation", result.LatencyMS)
+	}
+	analysis := Analyze([]Result{result}, analysisTestNow)
+	if analysis.Verdict == VerdictHealthy || len(analysis.Findings) == 0 || analysis.Findings[0].Code != FindingExecutionTimeout {
+		t.Fatalf("analysis=%+v", analysis)
+	}
+}
+
+func TestHTTPCheckerBodyReadCancellationHasStableCancelledResult(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{StatusCode: http.StatusOK, Proto: "HTTP/1.1", Header: make(http.Header), Body: &readCloseStub{reader: &bytesThenErrorReader{err: context.Canceled}}}, nil
+	})}
+	result := (HTTPChecker{Client: client}).Check(ctx, Target{Kind: KindHTTP, Address: "http://example.test"})
+	if result.Status != StatusUnreachable || result.ErrorCode != "cancelled" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestHTTPCheckerBodyReadFailureIsStableAndDoesNotReflectErrorProse(t *testing.T) {
+	const canary = "BODY_READ_ERROR_CANARY"
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := &readCloseStub{reader: &bytesThenErrorReader{remaining: 10, err: errors.New(canary)}}
+		return &http.Response{StatusCode: http.StatusOK, Proto: "HTTP/1.1", Header: make(http.Header), Body: body}, nil
+	})}
+	result := (HTTPChecker{Client: client}).Check(context.Background(), Target{Kind: KindHTTP, Address: "http://example.test"})
+	if result.Status != StatusUnreachable || result.ErrorCode != "response_read_failed" || strings.Contains(result.Message, canary) {
+		t.Fatalf("result=%+v", result)
+	}
+	analysis := Analyze([]Result{result}, analysisTestNow)
+	if analysis.Verdict != VerdictInconclusive || len(analysis.Coverage.Limitations) == 0 {
+		t.Fatalf("analysis=%+v", analysis)
+	}
+}
+
+func TestHTTPCheckerBoundedSampleDoesNotRequireEOFAt32KiB(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := &readCloseStub{reader: &bytesThenErrorReader{remaining: httpBodySampleLimit, err: errors.New("must not be observed")}}
+		return &http.Response{StatusCode: http.StatusOK, Proto: "HTTP/1.1", Header: make(http.Header), Body: body}, nil
+	})}
+	result := (HTTPChecker{Client: client}).Check(context.Background(), Target{Kind: KindHTTP, Address: "http://example.test"})
+	if result.Status != StatusHealthy {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestHTTPCheckerBodyCloseErrorDoesNotOverrideCompletedObservation(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := &readCloseStub{reader: strings.NewReader("complete"), closeErr: errors.New("close canary")}
+		return &http.Response{StatusCode: http.StatusOK, Proto: "HTTP/1.1", Header: make(http.Header), Body: body}, nil
+	})}
+	result := (HTTPChecker{Client: client}).Check(context.Background(), Target{Kind: KindHTTP, Address: "http://example.test"})
+	if result.Status != StatusHealthy || result.ErrorCode != "" {
+		t.Fatalf("result=%+v", result)
 	}
 }
 

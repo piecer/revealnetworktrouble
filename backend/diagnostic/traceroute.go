@@ -602,7 +602,7 @@ func isValidTraceLatency(latency float64) bool {
 }
 
 func roundedTraceLatencyDelta(current, previous float64) (float64, bool) {
-	if math.IsNaN(current) || math.IsInf(current, 0) || math.IsNaN(previous) || math.IsInf(previous, 0) {
+	if !isValidTraceLatency(current) || !isValidTraceLatency(previous) {
 		return 0, false
 	}
 	delta := current - previous
@@ -613,7 +613,14 @@ func roundedTraceLatencyDelta(current, previous float64) (float64, bool) {
 	if math.IsNaN(scaled) || math.IsInf(scaled, 0) {
 		return 0, false
 	}
-	return math.Round(scaled) / 100, true
+	rounded := math.Round(scaled) / 100
+	if rounded <= 0 {
+		return 0, true
+	}
+	if !isValidTraceLatency(rounded) {
+		return 0, false
+	}
+	return rounded, true
 }
 
 func topologyStatus(topology Topology) Status {

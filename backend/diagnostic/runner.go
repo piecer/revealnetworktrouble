@@ -271,10 +271,11 @@ type indexedOutcome struct {
 }
 
 // targetTerminal arbitrates the only terminal result a target may publish.
-// After execution starts, the first committed event wins. A checker completion
-// observes already-committed parent/supervisor cancellation or request timeout
-// before it may commit success, making cancellation immediately followed by a
-// checker return deterministic rather than dependent on select scheduling.
+// After execution starts, the first committed event wins. At the instant Check
+// returns (or panics), completion observes parent/supervisor cancellation, the
+// report deadline, and the checker deadline before it may commit the checker
+// result. Cleanup cancellation is deliberately performed only after this
+// arbitration so it cannot manufacture a timeout or cancellation result.
 type targetTerminal struct {
 	once       sync.Once
 	index      int
@@ -289,14 +290,24 @@ type targetTerminal struct {
 	stopServer func() bool
 }
 
-func (t *targetTerminal) commit(result Result, code string) {
+func (t *targetTerminal) claim(result Result, code string) (indexedOutcome, bool) {
+	var outcome indexedOutcome
+	claimed := false
 	t.once.Do(func() {
 		if code != "" {
 			result = executionResult(t.target, code, t.started)
 			t.supervisor.markStuck(t.lease)
 		}
-		t.outcomes <- indexedOutcome{index: t.index, result: result}
+		outcome = indexedOutcome{index: t.index, result: result}
+		claimed = true
 	})
+	return outcome, claimed
+}
+
+func (t *targetTerminal) commit(result Result, code string) {
+	if outcome, claimed := t.claim(result, code); claimed {
+		t.outcomes <- outcome
+	}
 }
 
 func (t *targetTerminal) cutoff() {
@@ -307,20 +318,36 @@ func (t *targetTerminal) cutoff() {
 	t.commit(Result{}, code)
 }
 
-func (t *targetTerminal) complete(result Result) {
-	// Cancellation/deadline already observable when Check returns is the first
-	// terminal event for this target, even if its callback has not run yet.
-	if t.parentCtx.Err() != nil || t.supervisor.ctx.Err() != nil || t.runCtx.Err() != nil {
-		t.cutoff()
-	} else {
-		t.commit(result, "")
+func (t *targetTerminal) complete(result Result, checkCtx context.Context, completedAt time.Time) (indexedOutcome, bool) {
+	// Parent and supervisor cancellation take priority over deadlines. A
+	// checker-local deadline is terminal even though the report grace remains.
+	code := ""
+	switch {
+	case t.parentCtx.Err() != nil || t.supervisor.ctx.Err() != nil:
+		code = "cancelled"
+	case deadlineReached(t.runCtx, completedAt):
+		code = "timeout"
+	case t.target.Kind != KindTraceroute && deadlineReached(checkCtx, completedAt):
+		code = "timeout"
+	case errors.Is(checkCtx.Err(), context.Canceled):
+		code = "cancelled"
 	}
+	outcome, claimed := t.claim(result, code)
 	if t.stopRun != nil {
 		t.stopRun()
 	}
 	if t.stopServer != nil {
 		t.stopServer()
 	}
+	return outcome, claimed
+}
+
+func deadlineReached(ctx context.Context, completedAt time.Time) bool {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && !completedAt.Before(deadline)
 }
 
 func (r *Runner) Run(ctx context.Context, req Request) (Report, error) {
@@ -390,17 +417,25 @@ func (r *Runner) runChecker(runCtx context.Context, timeout time.Duration, targe
 	}
 	started := time.Now().UTC()
 	result := Result{}
+	completedAt := time.Time{}
 	defer func() {
+		if completedAt.IsZero() {
+			completedAt = time.Now()
+		}
 		if recover() != nil {
 			result = Result{Kind: target.Kind, Status: StatusUnreachable, StartedAt: started, LatencyMS: time.Since(started).Milliseconds(), ErrorCode: "checker_panic", Message: "checker execution failed"}
 		}
+		outcome, publish := terminal.complete(result, checkCtx, completedAt)
 		cancelCheck()
 		stopSupervisorCancel()
 		cancelWorker()
 		r.supervisor.release(lease)
-		terminal.complete(result)
+		if publish {
+			terminal.outcomes <- outcome
+		}
 	}()
 	result = r.checkers[target.Kind].Check(checkCtx, target)
+	completedAt = time.Now()
 }
 
 func executionResult(target Target, code string, started time.Time) Result {

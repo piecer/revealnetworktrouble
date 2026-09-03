@@ -60,6 +60,13 @@ func validTelemetryRecord(event TelemetryEvent, outcome TelemetryOutcome) Teleme
 	} else {
 		record.ReportID = "fedcba9876543210fedcba98"
 	}
+	if event == TelemetryEventReportFinish && outcome == TelemetryOutcomeOK {
+		record.ResponseBytes = record.ResponseAttemptedBytes
+		record.ReportStatus = diagnostic.StatusHealthy
+		record.AnalysisVerdict = diagnostic.VerdictHealthy
+		record.TotalResults = 1
+		record.reportDiagnosticsPresent = true
+	}
 	return record
 }
 
@@ -91,13 +98,12 @@ func TestEmitTelemetryAcceptsOnlyPositiveEventContractsAndHasExactFixedKeys(t *t
 	for _, outcome := range []TelemetryOutcome{
 		TelemetryOutcomeUnauthorized, TelemetryOutcomeRateLimited, TelemetryOutcomeInvalidJSON,
 		TelemetryOutcomeInvalidRequest, TelemetryOutcomeRequestTooLarge, TelemetryOutcomeServerCapacity,
-		TelemetryOutcomePolicy,
+		TelemetryOutcomeBodyCapacity, TelemetryOutcomePolicy,
 	} {
 		records = append(records, validTelemetryRecord(TelemetryEventReportReject, outcome))
 	}
 	for _, outcome := range []TelemetryOutcome{
-		TelemetryOutcomeOK, TelemetryOutcomeCheckerCapacity, TelemetryOutcomeWriteCapacity,
-		TelemetryOutcomeTimeout, TelemetryOutcomePanicSafeFailure, TelemetryOutcomeSerialization,
+		TelemetryOutcomeOK, TelemetryOutcomeWriteCapacity, TelemetryOutcomeSerialization,
 		TelemetryOutcomeFullSize, TelemetryOutcomeCompactSize, TelemetryOutcomeWriteFailedZero,
 		TelemetryOutcomeWriteFailedPartial,
 	} {
@@ -112,7 +118,7 @@ func TestEmitTelemetryAcceptsOnlyPositiveEventContractsAndHasExactFixedKeys(t *t
 		{413, TelemetryOutcomeRequestTooLarge}, {422, TelemetryOutcomeInvalidRequest}, {422, TelemetryOutcomePolicy},
 		{429, TelemetryOutcomeRateLimited}, {500, TelemetryOutcomePanicSafeFailure},
 		{500, TelemetryOutcomeSerialization}, {500, TelemetryOutcomeFullSize}, {500, TelemetryOutcomeCompactSize},
-		{503, TelemetryOutcomeServerCapacity}, {503, TelemetryOutcomeWriteCapacity},
+		{503, TelemetryOutcomeServerCapacity}, {503, TelemetryOutcomeBodyCapacity}, {503, TelemetryOutcomeWriteCapacity},
 		{200, TelemetryOutcomeWriteFailedZero}, {200, TelemetryOutcomeWriteFailedPartial},
 	} {
 		record := validTelemetryRecord(TelemetryEventHTTPTerminal, item.outcome)
@@ -122,7 +128,7 @@ func TestEmitTelemetryAcceptsOnlyPositiveEventContractsAndHasExactFixedKeys(t *t
 		}
 		records = append(records, record)
 	}
-	wantKeys := []string{
+	wantBaseKeys := []string{
 		"active", "capacity", "duration_ms", "event", "marshal_duration_ms",
 		"method", "msg", "outcome", "report_id", "request_bytes", "request_id",
 		"response_attempted_bytes", "response_bytes", "route", "runner_duration_ms",
@@ -147,12 +153,157 @@ func TestEmitTelemetryAcceptsOnlyPositiveEventContractsAndHasExactFixedKeys(t *t
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
+		wantKeys := append([]string(nil), wantBaseKeys...)
+		if records[index].reportDiagnosticsPresent {
+			wantKeys = append(wantKeys, "analysis_verdict", "failed_results", "finding_count", "report_status", "total_results")
+			sort.Strings(wantKeys)
+		}
 		if !reflect.DeepEqual(keys, wantKeys) {
 			t.Fatalf("record %d keys=%v, want %v", index, keys, wantKeys)
 		}
 		if record["msg"] != "api_telemetry" {
 			t.Fatalf("record %d msg=%v", index, record["msg"])
 		}
+	}
+}
+
+func TestEmitTelemetryRejectsInvalidOrMisplacedReportDiagnosticsWithoutLogging(t *testing.T) {
+	valid := validTelemetryRecord(TelemetryEventReportFinish, TelemetryOutcomeOK)
+	tests := []struct {
+		name   string
+		mutate func(*TelemetryRecord)
+	}{
+		{"missing presence", func(r *TelemetryRecord) { r.reportDiagnosticsPresent = false }},
+		{"wrong event", func(r *TelemetryRecord) { r.Event = TelemetryEventReportComputed }},
+		{"wrong outcome", func(r *TelemetryRecord) { r.Outcome = TelemetryOutcomeWriteFailedPartial }},
+		{"wrong lifecycle status", func(r *TelemetryRecord) { r.Status = http.StatusOK }},
+		{"incomplete write", func(r *TelemetryRecord) { r.ResponseBytes-- }},
+		{"zero total", func(r *TelemetryRecord) { r.TotalResults = 0 }},
+		{"total above producer max", func(r *TelemetryRecord) { r.TotalResults = diagnostic.MaxTargets + 1 }},
+		{"failed above total", func(r *TelemetryRecord) { r.FailedResults = 2 }},
+		{"finding below zero", func(r *TelemetryRecord) { r.FindingCount = -1 }},
+		{"finding above exact producer max", func(r *TelemetryRecord) { r.FindingCount = 2*diagnostic.MaxTargets + 1 }},
+		{"invalid status", func(r *TelemetryRecord) { r.ReportStatus = diagnostic.Status("STATUS_CANARY") }},
+		{"invalid verdict", func(r *TelemetryRecord) { r.AnalysisVerdict = diagnostic.Verdict("VERDICT_CANARY") }},
+		{"healthy with failures", func(r *TelemetryRecord) { r.FailedResults = 1 }},
+		{"degraded without failures", func(r *TelemetryRecord) { r.ReportStatus = diagnostic.StatusDegraded }},
+		{"unreachable without all failures", func(r *TelemetryRecord) { r.ReportStatus = diagnostic.StatusUnreachable }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := valid
+			test.mutate(&record)
+			var buffer bytes.Buffer
+			if err := EmitTelemetry(telemetryTestLogger(&buffer), record); err == nil {
+				t.Fatal("accepted invalid report diagnostics")
+			}
+			if buffer.Len() != 0 {
+				t.Fatalf("invalid diagnostics logged: %s", buffer.String())
+			}
+		})
+	}
+
+	for _, mutate := range []func(*TelemetryRecord){
+		func(r *TelemetryRecord) { r.Event = TelemetryEventReportComputed },
+		func(r *TelemetryRecord) { r.Outcome = TelemetryOutcomeSerialization },
+	} {
+		record := valid
+		record.reportDiagnosticsPresent = false
+		mutate(&record)
+		var buffer bytes.Buffer
+		if err := EmitTelemetry(telemetryTestLogger(&buffer), record); err == nil || buffer.Len() != 0 {
+			t.Fatalf("accepted hidden diagnostics without presence: record=%+v log=%s", record, buffer.String())
+		}
+	}
+}
+
+func TestEmitTelemetryAcceptsBaseSuccessfulReportFinishWithoutDiagnostics(t *testing.T) {
+	record := validTelemetryRecord(TelemetryEventReportFinish, TelemetryOutcomeOK)
+	record.ReportStatus = ""
+	record.AnalysisVerdict = ""
+	record.TotalResults = 0
+	record.FailedResults = 0
+	record.FindingCount = 0
+	record.reportDiagnosticsPresent = false
+
+	var logs bytes.Buffer
+	if err := EmitTelemetry(telemetryTestLogger(&logs), record); err != nil {
+		t.Fatalf("base successful report_finish rejected: %v", err)
+	}
+	records := decodeTelemetryLines(t, logs.Bytes())
+	if len(records) != 1 || records[0]["event"] != string(TelemetryEventReportFinish) || records[0]["outcome"] != string(TelemetryOutcomeOK) {
+		t.Fatalf("records=%v", records)
+	}
+	assertNoReportDiagnostics(t, records[0])
+}
+
+func TestEmitTelemetryAcceptsAllDegradedReportDiagnostics(t *testing.T) {
+	record := validTelemetryRecord(TelemetryEventReportFinish, TelemetryOutcomeOK)
+	record.ReportStatus = diagnostic.StatusDegraded
+	record.AnalysisVerdict = diagnostic.VerdictAttention
+	record.TotalResults = 2
+	record.FailedResults = 2
+	record.FindingCount = 2
+
+	var logs bytes.Buffer
+	if err := EmitTelemetry(telemetryTestLogger(&logs), record); err != nil {
+		t.Fatalf("all-degraded report diagnostics rejected: %v", err)
+	}
+	entries := decodeTelemetryLines(t, logs.Bytes())
+	if len(entries) != 1 || entries[0]["report_status"] != string(diagnostic.StatusDegraded) || entries[0]["failed_results"] != float64(2) {
+		t.Fatalf("all-degraded diagnostics=%v", entries)
+	}
+}
+
+func TestEmitTelemetryPreservesValidDiagnosticTupleAtFortyFindingLimit(t *testing.T) {
+	record := validTelemetryRecord(TelemetryEventReportFinish, TelemetryOutcomeOK)
+	record.TotalResults = diagnostic.MaxTargets
+	record.FindingCount = maxTelemetryFindings
+
+	var logs bytes.Buffer
+	if err := EmitTelemetry(telemetryTestLogger(&logs), record); err != nil {
+		t.Fatalf("valid boundary tuple rejected: %v", err)
+	}
+	got := decodeTelemetryLines(t, logs.Bytes())
+	assertDeliveredReportDiagnostics(t, got, diagnostic.StatusHealthy, diagnostic.VerdictHealthy, diagnostic.MaxTargets, 0, 40)
+	if maxTelemetryFindings != 40 {
+		t.Fatalf("finding limit=%d, want 40", maxTelemetryFindings)
+	}
+}
+
+func TestEmitTelemetryDirectRecordCannotBypassDiagnosticPresenceOrTupleValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*TelemetryRecord)
+	}{
+		{
+			name: "hidden malicious values",
+			mutate: func(record *TelemetryRecord) {
+				record.reportDiagnosticsPresent = false
+				record.AnalysisVerdict = diagnostic.Verdict("DIRECT_HIDDEN_VERDICT_CANARY")
+			},
+		},
+		{
+			name: "flagged malicious tuple",
+			mutate: func(record *TelemetryRecord) {
+				record.ReportStatus = diagnostic.StatusHealthy
+				record.FailedResults = 1
+				record.AnalysisVerdict = diagnostic.Verdict("DIRECT_FLAGGED_VERDICT_CANARY")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := validTelemetryRecord(TelemetryEventReportFinish, TelemetryOutcomeOK)
+			test.mutate(&record)
+			var logs bytes.Buffer
+			if err := EmitTelemetry(telemetryTestLogger(&logs), record); err == nil {
+				t.Fatal("malicious direct record accepted")
+			}
+			if logs.Len() != 0 {
+				t.Fatalf("malicious direct record logged: %s", logs.String())
+			}
+		})
 	}
 }
 
@@ -283,7 +434,7 @@ func TestEmitTelemetryClampsOversizedBoundedValues(t *testing.T) {
 	record.Capacity = maxTelemetryCount + 2
 	record.RequestBytes = maxTelemetryBytes + 1
 	record.ResponseAttemptedBytes = maxTelemetryBytes + 3
-	record.ResponseBytes = maxTelemetryBytes + 2
+	record.ResponseBytes = maxTelemetryBytes + 3
 	record.Duration = maxTelemetryDuration + time.Hour
 	record.RunnerDuration = maxTelemetryDuration + time.Hour
 	record.MarshalDuration = maxTelemetryDuration + time.Hour
@@ -338,9 +489,10 @@ func TestEmitTelemetryValidatesCounterRelationshipsBeforeClamping(t *testing.T) 
 func TestTelemetryRecordHasOnlyAllowlistedTypedFields(t *testing.T) {
 	typeInfo := reflect.TypeOf(TelemetryRecord{})
 	want := []string{
-		"Active", "Capacity", "Duration", "Event", "MarshalDuration", "Method", "Outcome",
-		"ReportID", "RequestBytes", "RequestID", "ResponseAttemptedBytes", "ResponseBytes",
-		"Route", "RunnerDuration", "Status", "WriteDuration",
+		"Active", "AnalysisVerdict", "Capacity", "Duration", "Event", "FailedResults", "FindingCount",
+		"MarshalDuration", "Method", "Outcome", "ReportID", "ReportStatus", "RequestBytes", "RequestID",
+		"ResponseAttemptedBytes", "ResponseBytes", "Route", "RunnerDuration", "Status", "TotalResults",
+		"WriteDuration", "reportDiagnosticsPresent",
 	}
 	got := make([]string, 0, typeInfo.NumField())
 	for index := 0; index < typeInfo.NumField(); index++ {
@@ -554,6 +706,125 @@ func telemetryEventNames(records []map[string]any) []string {
 	return events
 }
 
+var reportDiagnosticLogKeys = []string{"report_status", "analysis_verdict", "total_results", "failed_results", "finding_count"}
+
+func assertNoReportDiagnostics(t *testing.T, record map[string]any) {
+	t.Helper()
+	for _, key := range reportDiagnosticLogKeys {
+		if _, exists := record[key]; exists {
+			t.Fatalf("unexpected %s in telemetry record: %v", key, record)
+		}
+	}
+}
+
+func assertDeliveredReportDiagnostics(t *testing.T, records []map[string]any, status diagnostic.Status, verdict diagnostic.Verdict, total, failed, findings int) {
+	t.Helper()
+	finishCount := 0
+	for _, record := range records {
+		if record["event"] != string(TelemetryEventReportFinish) {
+			assertNoReportDiagnostics(t, record)
+			continue
+		}
+		finishCount++
+		want := map[string]any{
+			"report_status": string(status), "analysis_verdict": string(verdict),
+			"total_results": float64(total), "failed_results": float64(failed), "finding_count": float64(findings),
+		}
+		for key, value := range want {
+			if record[key] != value {
+				t.Fatalf("finish %s=%v, want %v; record=%v", key, record[key], value, record)
+			}
+		}
+		if record["outcome"] != string(TelemetryOutcomeOK) {
+			t.Fatalf("delivered finish outcome=%v, want ok", record["outcome"])
+		}
+	}
+	if finishCount != 1 {
+		t.Fatalf("report_finish count=%d, want 1; records=%v", finishCount, records)
+	}
+}
+
+func assertAllRecordsLackReportDiagnostics(t *testing.T, records []map[string]any) {
+	t.Helper()
+	for _, record := range records {
+		assertNoReportDiagnostics(t, record)
+	}
+}
+
+func TestCompleteSuccessfulWriteFallsBackToBaseFinishForUnavailableOrInvalidDiagnostics(t *testing.T) {
+	const verdictCanary = "INVALID_VERDICT_CANARY"
+	tests := []struct {
+		name   string
+		report diagnostic.Report
+	}{
+		{
+			name: "nil analysis",
+			report: diagnostic.Report{
+				Status:  diagnostic.StatusHealthy,
+				Summary: diagnostic.Summary{Total: 1},
+			},
+		},
+		{
+			name: "healthy status contradicts failed count",
+			report: diagnostic.Report{
+				Status:   diagnostic.StatusHealthy,
+				Summary:  diagnostic.Summary{Total: 1, Failed: 1},
+				Analysis: &diagnostic.Analysis{Verdict: diagnostic.VerdictAttention},
+			},
+		},
+		{
+			name: "invalid verdict canary",
+			report: diagnostic.Report{
+				Status:   diagnostic.StatusHealthy,
+				Summary:  diagnostic.Summary{Total: 1},
+				Analysis: &diagnostic.Analysis{Verdict: diagnostic.Verdict(verdictCanary)},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			server, err := newServer(diagnostic.NewRunner(successChecker{}), telemetryTestLogger(&logs), "test", ServerConfig{MaxConcurrentReports: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := server.middleware(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				server.writeJSONPayload(writer, request, http.StatusOK, TelemetryOutcomeOK, []byte("{}\n"))
+				server.emitReportFinish(request, TelemetryOutcomeOK, test.report)
+			}))
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, reportRequest(context.Background()))
+
+			if recorder.Code != http.StatusOK || recorder.Body.String() != "{}\n" {
+				t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+			}
+			records := decodeTelemetryLines(t, logs.Bytes())
+			finishCount, terminalCount := 0, 0
+			for _, record := range records {
+				assertNoReportDiagnostics(t, record)
+				switch record["event"] {
+				case string(TelemetryEventReportFinish):
+					finishCount++
+					if record["outcome"] != string(TelemetryOutcomeOK) {
+						t.Fatalf("finish=%v", record)
+					}
+				case string(TelemetryEventHTTPTerminal):
+					terminalCount++
+					if record["outcome"] != string(TelemetryOutcomeOK) || record["status"] != float64(http.StatusOK) {
+						t.Fatalf("terminal=%v", record)
+					}
+				}
+			}
+			if finishCount != 1 || terminalCount != 1 {
+				t.Fatalf("finish=%d terminal=%d events=%v records=%v", finishCount, terminalCount, telemetryEventNames(records), records)
+			}
+			if strings.Contains(logs.String(), verdictCanary) {
+				t.Fatalf("invalid tuple canary leaked: %s", logs.String())
+			}
+		})
+	}
+}
+
 func TestReportWriterAndDeadlinePanicsAreContainedWithSingleTerminalEvents(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -620,6 +891,11 @@ func TestReportWriterAndDeadlinePanicsAreContainedWithSingleTerminalEvents(t *te
 			if finishCount != 1 || terminalCount != 1 {
 				t.Fatalf("finish=%d terminal=%d events=%v", finishCount, terminalCount, telemetryEventNames(records))
 			}
+			if test.wantOutcome == TelemetryOutcomeOK {
+				assertDeliveredReportDiagnostics(t, records, diagnostic.StatusHealthy, diagnostic.VerdictInconclusive, 1, 0, 0)
+			} else {
+				assertAllRecordsLackReportDiagnostics(t, records)
+			}
 			if strings.Contains(logs.String(), "PANIC_CANARY") {
 				t.Fatalf("panic text leaked to telemetry: %s", logs.String())
 			}
@@ -670,6 +946,7 @@ func TestServerTelemetrySuccessSequenceCorrelatesIDsBytesAndDurations(t *testing
 	if terminal["status"] != float64(http.StatusOK) || terminal["outcome"] != string(TelemetryOutcomeOK) || terminal["request_bytes"] != float64(len(body)) || terminal["response_attempted_bytes"] != float64(recorder.Body.Len()) || terminal["response_bytes"] != float64(recorder.Body.Len()) {
 		t.Fatalf("terminal=%v body bytes=%d/%d", terminal, len(body), recorder.Body.Len())
 	}
+	assertDeliveredReportDiagnostics(t, records, diagnostic.StatusHealthy, diagnostic.VerdictInconclusive, 1, 0, 0)
 	if strings.Contains(logs.String(), "QUERY_CANARY") || strings.Contains(logs.String(), "example.test") {
 		t.Fatalf("telemetry leaked request data: %s", logs.String())
 	}
@@ -679,14 +956,18 @@ func TestServerTelemetryDeterministicEarlyTerminalPaths(t *testing.T) {
 	tests := []struct {
 		name, method, target, body string
 		config                     ServerConfig
+		contentLength              int64
+		streamed                   bool
 		status                     int
 		outcome                    TelemetryOutcome
 		events                     []string
+		wantRequestBytes           *int64
 	}{
 		{name: "unauthorized report", method: http.MethodPost, target: "/api/v1/reports", body: `{}`, config: ServerConfig{Mode: ModePublic, APIKey: "AUTH_CANARY", RateLimitPerMinute: 2}, status: 401, outcome: TelemetryOutcomeUnauthorized, events: []string{"report_submit", "report_reject", "http_terminal"}},
 		{name: "invalid json", method: http.MethodPost, target: "/api/v1/reports", body: `{`, status: 400, outcome: TelemetryOutcomeInvalidJSON, events: []string{"report_submit", "report_reject", "http_terminal"}},
 		{name: "invalid request", method: http.MethodPost, target: "/api/v1/reports", body: `{"targets":[]}`, status: 422, outcome: TelemetryOutcomeInvalidRequest, events: []string{"report_submit", "report_reject", "http_terminal"}},
-		{name: "too large", method: http.MethodPost, target: "/api/v1/reports", body: `{"targets":[{"kind":"dns","address":"` + strings.Repeat("x", maxBodyBytes) + `"}]}`, status: 413, outcome: TelemetryOutcomeRequestTooLarge, events: []string{"report_submit", "report_reject", "http_terminal"}},
+		{name: "declared too large", method: http.MethodPost, target: "/api/v1/reports", body: `BODY_DECLARED_CANARY`, contentLength: maxBodyBytes + 1, status: 413, outcome: TelemetryOutcomeRequestTooLarge, events: []string{"report_submit", "report_reject", "http_terminal"}, wantRequestBytes: int64Pointer(0)},
+		{name: "streamed too large", method: http.MethodPost, target: "/api/v1/reports", body: `{"targets":[{"kind":"dns","address":"BODY_STREAMED_CANARY` + strings.Repeat("x", maxBodyBytes) + `"}]}`, streamed: true, config: ServerConfig{MaxConcurrentBodyDecodes: 1}, status: 413, outcome: TelemetryOutcomeRequestTooLarge, events: []string{"report_submit", "report_reject", "http_terminal"}, wantRequestBytes: int64Pointer(maxBodyBytes + 1)},
 		{name: "unmatched", method: http.MethodGet, target: "/private/PATH_CANARY?token=QUERY_CANARY", status: 404, outcome: TelemetryOutcomeUnmatched, events: []string{"http_terminal"}},
 		{name: "method", method: http.MethodPut, target: "/api/v1/health?token=QUERY_CANARY", status: 405, outcome: TelemetryOutcomeUnmatched, events: []string{"http_terminal"}},
 	}
@@ -695,7 +976,15 @@ func TestServerTelemetryDeterministicEarlyTerminalPaths(t *testing.T) {
 			var logs bytes.Buffer
 			handler := telemetryIntegrationHandler(t, telemetryTestLogger(&logs), diagnostic.NewRunner(successChecker{}), test.config)
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, httptest.NewRequest(test.method, test.target, strings.NewReader(test.body)))
+			request := httptest.NewRequest(test.method, test.target, strings.NewReader(test.body))
+			if test.contentLength != 0 {
+				request.ContentLength = test.contentLength
+			}
+			if test.streamed {
+				request.Body = io.NopCloser(strings.NewReader(test.body))
+				request.ContentLength = -1
+			}
+			handler.ServeHTTP(recorder, request)
 			if recorder.Code != test.status {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
@@ -707,12 +996,69 @@ func TestServerTelemetryDeterministicEarlyTerminalPaths(t *testing.T) {
 			if terminal["status"] != float64(test.status) || terminal["outcome"] != string(test.outcome) {
 				t.Fatalf("terminal=%v", terminal)
 			}
-			if test.name == "too large" && terminal["request_bytes"] != float64(maxBodyBytes+1) {
-				t.Fatalf("bounded request bytes=%v, want %d", terminal["request_bytes"], maxBodyBytes+1)
+			if test.wantRequestBytes != nil && terminal["request_bytes"] != float64(*test.wantRequestBytes) {
+				t.Fatalf("request bytes=%v, want %d", terminal["request_bytes"], *test.wantRequestBytes)
 			}
-			for _, canary := range []string{"AUTH_CANARY", "PATH_CANARY", "QUERY_CANARY"} {
+			assertAllRecordsLackReportDiagnostics(t, records)
+			for _, canary := range []string{"AUTH_CANARY", "PATH_CANARY", "QUERY_CANARY", "BODY_DECLARED_CANARY", "BODY_STREAMED_CANARY"} {
 				if strings.Contains(logs.String(), canary) {
 					t.Fatalf("canary %q leaked: %s", canary, logs.String())
+				}
+			}
+			if test.streamed {
+				recovered := httptest.NewRecorder()
+				handler.ServeHTTP(recovered, reportRequest(context.Background()))
+				if recovered.Code != http.StatusOK {
+					t.Fatalf("body decode token was not released: status=%d body=%s", recovered.Code, recovered.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
+type telemetryAggregateChecker struct{}
+
+func (telemetryAggregateChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }
+func (telemetryAggregateChecker) Check(_ context.Context, target diagnostic.Target) diagnostic.Result {
+	if strings.Contains(target.Address, "fail") {
+		return diagnostic.Result{Kind: target.Kind, Address: target.Address, Status: diagnostic.StatusUnreachable, ErrorCode: "connection_failed", Message: "DIAGNOSTIC_PROSE_CANARY"}
+	}
+	return diagnostic.Result{Kind: target.Kind, Address: target.Address, Status: diagnostic.StatusHealthy, Details: map[string]any{"addresses": []string{"203.0.113.77"}, "answer_count": 1}}
+}
+
+func TestDeliveredReportFinishSeparatesLifecycleOutcomeFromDiagnosticAggregates(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		status        diagnostic.Status
+		verdict       diagnostic.Verdict
+		total, failed int
+		findings      int
+	}{
+		{name: "DNS failure", body: `{"targets":[{"kind":"dns","address":"fail-target.example"}]}`, status: diagnostic.StatusUnreachable, verdict: diagnostic.VerdictAttention, total: 1, failed: 1, findings: 1},
+		{name: "mixed", body: `{"targets":[{"kind":"dns","address":"healthy-target.example"},{"kind":"dns","address":"fail-target.example"}]}`, status: diagnostic.StatusDegraded, verdict: diagnostic.VerdictAttention, total: 2, failed: 1, findings: 1},
+		{name: "healthy zero findings", body: `{"targets":[{"kind":"dns","address":"healthy-target.example"}]}`, status: diagnostic.StatusHealthy, verdict: diagnostic.VerdictHealthy, total: 1, failed: 0, findings: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler := telemetryIntegrationHandler(t, telemetryTestLogger(&logs), diagnostic.NewRunner(telemetryAggregateChecker{}), ServerConfig{MaxConcurrentReports: 1})
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(test.body)))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			records := decodeTelemetryLines(t, logs.Bytes())
+			assertDeliveredReportDiagnostics(t, records, test.status, test.verdict, test.total, test.failed, test.findings)
+			terminal := records[len(records)-1]
+			if terminal["event"] != string(TelemetryEventHTTPTerminal) || terminal["outcome"] != string(TelemetryOutcomeOK) {
+				t.Fatalf("terminal=%v", terminal)
+			}
+			for _, canary := range []string{"healthy-target.example", "fail-target.example", "203.0.113.77", "DIAGNOSTIC_PROSE_CANARY"} {
+				if strings.Contains(logs.String(), canary) {
+					t.Fatalf("privacy canary %q leaked: %s", canary, logs.String())
 				}
 			}
 		})
@@ -742,6 +1088,7 @@ func TestServerTelemetryCancellationIsOperational499WithoutBody(t *testing.T) {
 	if records[len(records)-2]["status"] != float64(0) || records[len(records)-1]["status"] != float64(499) || records[len(records)-1]["outcome"] != "cancelled" {
 		t.Fatalf("cancel records=%v", records)
 	}
+	assertAllRecordsLackReportDiagnostics(t, records)
 }
 
 func TestTelemetryWriteFailuresKeepCommittedStatusForZeroAndPartialWrites(t *testing.T) {
@@ -759,6 +1106,7 @@ func TestTelemetryWriteFailuresKeepCommittedStatusForZeroAndPartialWrites(t *tes
 		if terminal["status"] != float64(http.StatusOK) || terminal["outcome"] != wantOutcome || terminal["response_bytes"] != float64(actual) {
 			t.Fatalf("actual=%d terminal=%v", actual, terminal)
 		}
+		assertAllRecordsLackReportDiagnostics(t, records)
 	}
 }
 
@@ -804,7 +1152,7 @@ func TestServerTelemetryRatePolicyMarshalAndCheckerPanicSequences(t *testing.T) 
 	}{
 		{name: "policy", runner: diagnostic.NewRunner(policyBlockedChecker{}), config: ServerConfig{Mode: ModePublic, APIKey: "AUTH_CANARY", RateLimitPerMinute: 2, MaxConcurrentReports: 1}, auth: true, status: 422, events: []string{"report_submit", "report_admit", "report_start", "report_computed", "report_reject", "http_terminal"}, finish: TelemetryOutcomePolicy},
 		{name: "marshal", runner: diagnostic.NewRunner(detailsChecker{details: map[string]any{"provider": make(chan int)}}), config: ServerConfig{MaxConcurrentReports: 1}, status: 500, events: []string{"report_submit", "report_admit", "report_start", "report_computed", "report_finish", "http_terminal"}, finish: TelemetryOutcomeSerialization},
-		{name: "checker panic", runner: diagnostic.NewRunner(panicTelemetryChecker{}), config: ServerConfig{MaxConcurrentReports: 1}, status: 200, events: []string{"report_submit", "report_admit", "report_start", "report_computed", "report_finish", "http_terminal"}, finish: TelemetryOutcomePanicSafeFailure},
+		{name: "checker panic", runner: diagnostic.NewRunner(panicTelemetryChecker{}), config: ServerConfig{MaxConcurrentReports: 1}, status: 200, events: []string{"report_submit", "report_admit", "report_start", "report_computed", "report_finish", "http_terminal"}, finish: TelemetryOutcomeOK},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -832,8 +1180,13 @@ func TestServerTelemetryRatePolicyMarshalAndCheckerPanicSequences(t *testing.T) 
 			} else if records[len(records)-2]["outcome"] != string(test.finish) {
 				t.Fatalf("finish=%v", records[len(records)-2])
 			}
-			if test.name == "checker panic" && records[len(records)-1]["outcome"] != string(TelemetryOutcomeOK) {
-				t.Fatalf("HTTP terminal not OK: %v", records[len(records)-1])
+			if test.name == "checker panic" {
+				if records[len(records)-1]["outcome"] != string(TelemetryOutcomeOK) {
+					t.Fatalf("HTTP terminal not OK: %v", records[len(records)-1])
+				}
+				assertDeliveredReportDiagnostics(t, records, diagnostic.StatusUnreachable, diagnostic.VerdictAttention, 1, 1, 1)
+			} else {
+				assertAllRecordsLackReportDiagnostics(t, records)
 			}
 			for _, canary := range []string{"AUTH_CANARY", "QUERY_CANARY", "example.test", "203.0.113.99", "PANIC_PROSE_CANARY", "provider"} {
 				if strings.Contains(logs.String(), canary) {
@@ -930,6 +1283,7 @@ func TestServerCapacityTelemetryReportsActiveAndCapacity(t *testing.T) {
 	if !foundReject {
 		t.Fatalf("server capacity reject missing: %v", records)
 	}
+	assertAllRecordsLackReportDiagnostics(t, records)
 }
 
 func TestWriteFailureSemanticTableAllowsAnyCommittedHTTPStatus(t *testing.T) {
@@ -942,6 +1296,56 @@ func TestWriteFailureSemanticTableAllowsAnyCommittedHTTPStatus(t *testing.T) {
 			}
 		}
 	}
+}
+
+type telemetryDeadlineChecker struct{}
+
+func (telemetryDeadlineChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }
+func (telemetryDeadlineChecker) Check(ctx context.Context, target diagnostic.Target) diagnostic.Result {
+	<-ctx.Done()
+	return diagnostic.Result{Kind: target.Kind, Address: "late-healthy.example", Status: diagnostic.StatusHealthy}
+}
+
+func TestReportFinishTelemetryMatchesCorrectedCheckerDeadlineResult(t *testing.T) {
+	var logs bytes.Buffer
+	runner := diagnostic.NewRunnerWithSupervisor(mustAPICheckerSupervisor(t, 1), telemetryDeadlineChecker{})
+	handler := telemetryIntegrationHandler(t, telemetryTestLogger(&logs), runner, ServerConfig{MaxConcurrentReports: 1})
+	body := `{"timeout_ms":100,"targets":[{"kind":"dns","address":"DEADLINE_TARGET_CANARY"}]}`
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var report diagnostic.Report
+	if err := json.Unmarshal(recorder.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Results) != 1 || report.Results[0].ErrorCode != "timeout" || report.Results[0].Status != diagnostic.StatusUnreachable || report.Status != diagnostic.StatusUnreachable {
+		t.Fatalf("report=%+v", report)
+	}
+	records := decodeTelemetryLines(t, logs.Bytes())
+	var finish map[string]any
+	for _, record := range records {
+		if record["event"] == string(TelemetryEventReportFinish) {
+			finish = record
+		}
+	}
+	if finish == nil || finish["outcome"] != string(TelemetryOutcomeOK) {
+		t.Fatalf("finish=%v records=%v", finish, records)
+	}
+	assertDeliveredReportDiagnostics(t, records, diagnostic.StatusUnreachable, diagnostic.VerdictAttention, 1, 1, 1)
+	if strings.Contains(logs.String(), "DEADLINE_TARGET_CANARY") || strings.Contains(logs.String(), "late-healthy.example") {
+		t.Fatalf("telemetry leaked target data: %s", logs.String())
+	}
+}
+
+func mustAPICheckerSupervisor(t *testing.T, capacity int) *diagnostic.CheckerSupervisor {
+	t.Helper()
+	supervisor, err := diagnostic.NewCheckerSupervisor(capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return supervisor
 }
 
 func TestCheckerCapacityFinishesWithStableOutcomeWhileHTTPRemainsOK(t *testing.T) {
@@ -967,12 +1371,13 @@ func TestCheckerCapacityFinishesWithStableOutcomeWhileHTTPRemainsOK(t *testing.T
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	records := decodeTelemetryLines(t, logs.Bytes())
-	if got := records[len(records)-2]["outcome"]; got != string(TelemetryOutcomeCheckerCapacity) {
+	if got := records[len(records)-2]["outcome"]; got != string(TelemetryOutcomeOK) {
 		t.Fatalf("finish outcome=%v records=%v", got, records)
 	}
 	if got := records[len(records)-1]["outcome"]; got != string(TelemetryOutcomeOK) {
 		t.Fatalf("terminal outcome=%v", got)
 	}
+	assertDeliveredReportDiagnostics(t, records, diagnostic.StatusUnreachable, diagnostic.VerdictInconclusive, 1, 1, 1)
 	if strings.Contains(logs.String(), "FIRST_TARGET_CANARY") {
 		t.Fatalf("target leaked: %s", logs.String())
 	}
@@ -1015,5 +1420,10 @@ func TestWriteCapacityHasDeterministicFinishAndTerminalSequence(t *testing.T) {
 	want := []string{"report_submit", "report_admit", "report_start", "report_computed", "report_finish", "http_terminal"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events=%v want=%v records=%v", events, want, records)
+	}
+	for _, record := range records {
+		if record["report_id"] == busyID {
+			assertNoReportDiagnostics(t, record)
+		}
 	}
 }

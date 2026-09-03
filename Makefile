@@ -1,6 +1,6 @@
 .PHONY: test test-race vet frontend-deps web-test web-test-syntax run build \
 	android-wrapper-verify android-env android-test android-lint android-assemble android-check \
-	ci-inner ci ci-clean-archive
+	ci-inner ci ci-clean-archive release verify-release
 
 test:
 	go test ./...
@@ -27,6 +27,12 @@ run:
 
 build:
 	go build -trimpath -o bin/checknetwork-api ./cmd/checknetwork-api
+
+release:
+	CHECKNETWORK_RELEASE_OUTPUT=bin/checknetwork-api ./scripts/verify-release.sh "$$(git rev-parse HEAD)"
+
+verify-release:
+	./scripts/verify-release.sh "$$(git rev-parse HEAD)"
 
 android-wrapper-verify:
 	./scripts/verify-android-wrapper.sh

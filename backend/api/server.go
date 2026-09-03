@@ -28,6 +28,9 @@ const (
 
 	// MaxConcurrentReportsLimit is the audited hard bound for report admission.
 	MaxConcurrentReportsLimit = 16
+	// MaxConcurrentBodyDecodesLimit is the audited hard bound for authenticated
+	// request bodies being decoded concurrently.
+	MaxConcurrentBodyDecodesLimit = 64
 	// MaxConcurrentResponseWritesLimit bounds response-write goroutines and must
 	// never exceed the report admission bound.
 	MaxConcurrentResponseWritesLimit = 16
@@ -53,12 +56,21 @@ const (
 type ServerConfig struct {
 	AllowedOrigins              []string
 	MaxConcurrentReports        int
+	MaxConcurrentBodyDecodes    int
 	MaxConcurrentResponseWrites int
 	BusyRetryAfter              time.Duration
 	Mode                        DeploymentMode
 	APIKey                      string
 	RateLimitPerMinute          int
 	MaxRateLimitClients         int
+	Revision                    string
+}
+
+// HealthResponse identifies the exact application build serving the request.
+type HealthResponse struct {
+	Status   string `json:"status"`
+	Version  string `json:"version"`
+	Revision string `json:"revision"`
 }
 
 type clientWindow struct {
@@ -105,7 +117,9 @@ type Server struct {
 	logger         *slog.Logger
 	allowedOrigins map[string]struct{}
 	version        string
+	revision       string
 	admission      chan struct{}
+	bodyDecodes    chan struct{}
 	responseWrites chan struct{}
 	busyRetryAfter time.Duration
 	mode           DeploymentMode
@@ -125,6 +139,19 @@ func NewServer(runner *diagnostic.Runner, logger *slog.Logger, version string, a
 }
 
 func NewServerWithConfig(runner *diagnostic.Runner, logger *slog.Logger, version string, config ServerConfig) (http.Handler, error) {
+	s, err := newServer(runner, logger, version, config)
+	if err != nil {
+		return nil, err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/health", s.health)
+	mux.HandleFunc("GET /api/v1/checks", s.checks)
+	mux.HandleFunc("POST /api/v1/reports", s.createReport)
+	mux.HandleFunc("OPTIONS /api/v1/", s.options)
+	return s.middleware(mux), nil
+}
+
+func newServer(runner *diagnostic.Runner, logger *slog.Logger, version string, config ServerConfig) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -154,6 +181,12 @@ func NewServerWithConfig(runner *diagnostic.Runner, logger *slog.Logger, version
 	if config.MaxConcurrentReports < 1 || config.MaxConcurrentReports > MaxConcurrentReportsLimit {
 		return nil, fmt.Errorf("max concurrent reports must be between 1 and %d", MaxConcurrentReportsLimit)
 	}
+	if config.MaxConcurrentBodyDecodes == 0 {
+		config.MaxConcurrentBodyDecodes = config.MaxConcurrentReports
+	}
+	if config.MaxConcurrentBodyDecodes < 1 || config.MaxConcurrentBodyDecodes > MaxConcurrentBodyDecodesLimit {
+		return nil, fmt.Errorf("max concurrent body decodes must be between 1 and %d", MaxConcurrentBodyDecodesLimit)
+	}
 	if config.MaxConcurrentResponseWrites == 0 {
 		config.MaxConcurrentResponseWrites = min(config.MaxConcurrentReports, hardMaxConcurrentResponseWrites)
 	}
@@ -163,10 +196,14 @@ func NewServerWithConfig(runner *diagnostic.Runner, logger *slog.Logger, version
 	if config.BusyRetryAfter <= 0 {
 		config.BusyRetryAfter = time.Second
 	}
+	if config.Revision == "" {
+		config.Revision = "dev"
+	}
 	s := &Server{
-		runner: runner, logger: logger, version: version,
+		runner: runner, logger: logger, version: version, revision: config.Revision,
 		allowedOrigins: make(map[string]struct{}),
 		admission:      make(chan struct{}, config.MaxConcurrentReports),
+		bodyDecodes:    make(chan struct{}, config.MaxConcurrentBodyDecodes),
 		responseWrites: make(chan struct{}, config.MaxConcurrentResponseWrites),
 		busyRetryAfter: config.BusyRetryAfter,
 		mode:           config.Mode,
@@ -178,16 +215,11 @@ func NewServerWithConfig(runner *diagnostic.Runner, logger *slog.Logger, version
 	for _, origin := range config.AllowedOrigins {
 		s.allowedOrigins[strings.TrimSpace(origin)] = struct{}{}
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/health", s.health)
-	mux.HandleFunc("GET /api/v1/checks", s.checks)
-	mux.HandleFunc("POST /api/v1/reports", s.createReport)
-	mux.HandleFunc("OPTIONS /api/v1/", s.options)
-	return s.middleware(mux), nil
+	return s, nil
 }
 
 func (s *Server) health(w http.ResponseWriter, request *http.Request) {
-	s.writeJSON(w, request, http.StatusOK, TelemetryOutcomeOK, map[string]any{"status": "ok", "version": s.version, "time": time.Now().UTC()})
+	s.writeJSON(w, request, http.StatusOK, TelemetryOutcomeOK, HealthResponse{Status: "ok", Version: s.version, Revision: s.revision})
 }
 
 func (s *Server) checks(w http.ResponseWriter, request *http.Request) {
@@ -207,27 +239,62 @@ func (s *Server) checks(w http.ResponseWriter, request *http.Request) {
 	})
 }
 
+type reportDecodeFailure struct {
+	status  int
+	outcome TelemetryOutcome
+	code    string
+	message string
+}
+
+func (s *Server) decodeReportRequest(w http.ResponseWriter, r *http.Request) (diagnostic.Request, bool) {
+	if r.ContentLength > maxBodyBytes {
+		s.rejectReport(w, r, http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit")
+		return diagnostic.Request{}, false
+	}
+	select {
+	case s.bodyDecodes <- struct{}{}:
+	default:
+		retrySeconds := int(math.Ceil(s.busyRetryAfter.Seconds()))
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, retrySeconds)))
+		s.rejectReport(w, r, http.StatusServiceUnavailable, TelemetryOutcomeBodyCapacity, "body_decode_capacity_unavailable", "request body decode capacity is temporarily unavailable")
+		return diagnostic.Request{}, false
+	}
+
+	var req diagnostic.Request
+	var failure *reportDecodeFailure
+	func() {
+		defer func() { <-s.bodyDecodes }()
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			if isRequestTooLarge(err) {
+				failure = &reportDecodeFailure{http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit"}
+				return
+			}
+			failure = &reportDecodeFailure{http.StatusBadRequest, TelemetryOutcomeInvalidJSON, "invalid_json", "request body must be a valid JSON report request"}
+			return
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			if isRequestTooLarge(err) {
+				failure = &reportDecodeFailure{http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit"}
+				return
+			}
+			failure = &reportDecodeFailure{http.StatusBadRequest, TelemetryOutcomeInvalidJSON, "invalid_json", "request body must contain one JSON object"}
+		}
+	}()
+	if failure != nil {
+		s.rejectReport(w, r, failure.status, failure.outcome, failure.code, failure.message)
+		return diagnostic.Request{}, false
+	}
+	return req, true
+}
+
 func (s *Server) createReport(w http.ResponseWriter, r *http.Request) {
 	observation := observationFromRequest(r)
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	var req diagnostic.Request
-	if err := decoder.Decode(&req); err != nil {
-		if isRequestTooLarge(err) {
-			s.rejectReport(w, r, http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit")
-			return
-		}
-		s.rejectReport(w, r, http.StatusBadRequest, TelemetryOutcomeInvalidJSON, "invalid_json", "request body must be a valid JSON report request")
-		return
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if isRequestTooLarge(err) {
-			s.rejectReport(w, r, http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit")
-			return
-		}
-		s.rejectReport(w, r, http.StatusBadRequest, TelemetryOutcomeInvalidJSON, "invalid_json", "request body must contain one JSON object")
+	req, ok := s.decodeReportRequest(w, r)
+	if !ok {
 		return
 	}
 	if err := s.runner.Validate(req); err != nil {
@@ -315,12 +382,8 @@ func (s *Server) createReport(w http.ResponseWriter, r *http.Request) {
 	releaseAdmission()
 	defer func() { <-s.responseWrites }()
 	s.setReportWriteDeadline(w)
-	finishOutcome := reportFinishOutcome(report)
 	s.writeJSONPayload(w, r, http.StatusOK, TelemetryOutcomeOK, payload)
-	if observation.outcome == TelemetryOutcomeWriteFailedZero || observation.outcome == TelemetryOutcomeWriteFailedPartial {
-		finishOutcome = observation.outcome
-	}
-	s.emit(r, TelemetryEventReportFinish, finishOutcome, 0)
+	s.emitReportFinish(r, observation.outcome, report)
 }
 
 func (s *Server) setReportWriteDeadline(w http.ResponseWriter) {
@@ -496,23 +559,49 @@ func (s *Server) originAllowed(origin string) bool {
 	return ok
 }
 
-func (s *Server) emit(request *http.Request, event TelemetryEvent, outcome TelemetryOutcome, status int) {
+func (s *Server) telemetryRecord(request *http.Request, event TelemetryEvent, outcome TelemetryOutcome, status int) TelemetryRecord {
 	observation := observationFromRequest(request)
-	if observation == nil {
-		return
-	}
 	requestBytes := int64(0)
 	if observation.requestBody != nil {
 		requestBytes = observation.requestBody.bytes
 	}
-	_ = EmitTelemetry(s.logger, TelemetryRecord{
+	return TelemetryRecord{
 		Event: event, Outcome: outcome, RequestID: observation.requestID, ReportID: observation.reportID,
 		Method: observation.method, Route: observation.route, Status: status,
 		Active: int64(len(s.admission)), Capacity: int64(cap(s.admission)), RequestBytes: requestBytes,
 		ResponseAttemptedBytes: observation.responseAttempted, ResponseBytes: observation.responseActual,
 		Duration: time.Since(observation.started), RunnerDuration: observation.runnerDuration,
 		MarshalDuration: observation.marshalDuration, WriteDuration: observation.writeDuration,
-	})
+	}
+}
+
+func (s *Server) emit(request *http.Request, event TelemetryEvent, outcome TelemetryOutcome, status int) {
+	if observationFromRequest(request) == nil {
+		return
+	}
+	_ = EmitTelemetry(s.logger, s.telemetryRecord(request, event, outcome, status))
+}
+
+func (s *Server) emitReportFinish(request *http.Request, outcome TelemetryOutcome, report diagnostic.Report) {
+	observation := observationFromRequest(request)
+	if observation == nil {
+		return
+	}
+	record := s.telemetryRecord(request, TelemetryEventReportFinish, outcome, 0)
+	if outcome == TelemetryOutcomeOK && observation.responseAttempted > 0 &&
+		observation.responseActual == observation.responseAttempted && report.Analysis != nil {
+		candidate := record
+		candidate.ReportStatus = report.Status
+		candidate.AnalysisVerdict = report.Analysis.Verdict
+		candidate.TotalResults = report.Summary.Total
+		candidate.FailedResults = report.Summary.Failed
+		candidate.FindingCount = len(report.Analysis.Findings)
+		candidate.reportDiagnosticsPresent = true
+		if validReportDiagnostics(candidate) {
+			record = candidate
+		}
+	}
+	_ = EmitTelemetry(s.logger, record)
 }
 
 func (s *Server) rejectReport(w http.ResponseWriter, request *http.Request, status int, outcome TelemetryOutcome, code, message string) {
@@ -567,22 +656,6 @@ func reportHasResultCode(report diagnostic.Report, code string) bool {
 		}
 	}
 	return false
-}
-
-func reportFinishOutcome(report diagnostic.Report) TelemetryOutcome {
-	for _, item := range []struct {
-		code    string
-		outcome TelemetryOutcome
-	}{
-		{"checker_panic", TelemetryOutcomePanicSafeFailure},
-		{"checker_capacity_unavailable", TelemetryOutcomeCheckerCapacity},
-		{"timeout", TelemetryOutcomeTimeout},
-	} {
-		if reportHasResultCode(report, item.code) {
-			return item.outcome
-		}
-	}
-	return TelemetryOutcomeOK
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

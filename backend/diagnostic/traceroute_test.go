@@ -402,13 +402,82 @@ func TestTracerouteClassifiesUnknownLatencyJumpAndFailure(t *testing.T) {
 	}
 }
 
-func TestTracerouteMarksLatencyJumpDegraded(t *testing.T) {
-	topology, err := parseTraceroute("traceroute to 203.0.113.8 (203.0.113.8), 30 hops max\n1  192.0.2.1  1.2 ms\n2  198.51.100.4  80.5 ms\n3  203.0.113.8  82.0 ms", "203.0.113.8")
+func TestTracerouteDecreasingHealthyRTTOmitsNonAdditionalLatencyDelta(t *testing.T) {
+	topology, err := parseTraceroute("traceroute to 203.0.113.8 (203.0.113.8), 30 hops max\n1  192.0.2.1  20.0 ms\n2  203.0.113.8  5.0 ms", "203.0.113.8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta, valid := roundedTraceLatencyDelta(5, 20); !valid || delta != 0 {
+		t.Fatalf("decreasing RTT delta = %v, valid = %t; want 0, true", delta, valid)
+	}
+	if topologyStatus(topology) != StatusHealthy || topology.Nodes[2].Status != "healthy" || topology.Links[1].Status != "healthy" {
+		t.Fatalf("decreasing healthy RTT was degraded: %+v", topology)
+	}
+	encoded, err := json.Marshal(topology.Links)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"from":"hop-0","to":"hop-1","status":"healthy"},{"from":"hop-1","to":"hop-2","status":"healthy"}]`
+	if string(encoded) != want {
+		t.Fatalf("serialized links = %s, want %s", encoded, want)
+	}
+}
+
+func TestRoundedTraceLatencyDeltaRequiresBoundedFiniteInputs(t *testing.T) {
+	validCases := []struct {
+		name              string
+		current, previous float64
+		want              float64
+	}{
+		{name: "zero", current: 5, previous: 5, want: 0},
+		{name: "rounded positive", current: 80.126, previous: 20, want: 60.13},
+		{name: "maximum", current: MaxTraceLatencyMS, previous: 0, want: MaxTraceLatencyMS},
+	}
+	for _, tt := range validCases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, valid := roundedTraceLatencyDelta(tt.current, tt.previous)
+			if !valid || got != tt.want || got < 0 || got > MaxTraceLatencyMS {
+				t.Fatalf("roundedTraceLatencyDelta(%v, %v) = %v, %t; want %v, true", tt.current, tt.previous, got, valid, tt.want)
+			}
+		})
+	}
+
+	invalidCases := []struct {
+		name              string
+		current, previous float64
+	}{
+		{name: "negative current", current: -0.01, previous: 0},
+		{name: "negative previous", current: 0, previous: -0.01},
+		{name: "current above maximum", current: MaxTraceLatencyMS + 0.01, previous: 0},
+		{name: "previous above maximum", current: 0, previous: MaxTraceLatencyMS + 0.01},
+		{name: "NaN current", current: math.NaN(), previous: 0},
+		{name: "positive infinity previous", current: 0, previous: math.Inf(1)},
+		{name: "negative infinity current", current: math.Inf(-1), previous: 0},
+	}
+	for _, tt := range invalidCases {
+		t.Run(tt.name, func(t *testing.T) {
+			if delta, valid := roundedTraceLatencyDelta(tt.current, tt.previous); valid || delta != 0 {
+				t.Fatalf("roundedTraceLatencyDelta(%v, %v) = %v, %t; want 0, false", tt.current, tt.previous, delta, valid)
+			}
+		})
+	}
+}
+
+func TestTracerouteMarksPositiveLatencyJumpDegradedAndSerializesRoundedDelta(t *testing.T) {
+	topology, err := parseTraceroute("traceroute to 203.0.113.8 (203.0.113.8), 30 hops max\n1  192.0.2.1  20.0 ms\n2  203.0.113.8  80.126 ms", "203.0.113.8")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if topology.Nodes[2].Status != "degraded" || topology.Links[1].Status != "degraded" || topologyStatus(topology) != StatusDegraded {
 		t.Fatalf("unexpected topology: %+v", topology)
+	}
+	encoded, err := json.Marshal(topology.Links)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"from":"hop-0","to":"hop-1","status":"healthy"},{"from":"hop-1","to":"hop-2","status":"degraded","latency_delta_ms":60.13}]`
+	if string(encoded) != want {
+		t.Fatalf("serialized links = %s, want %s", encoded, want)
 	}
 }
 

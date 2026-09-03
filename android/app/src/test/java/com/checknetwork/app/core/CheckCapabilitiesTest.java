@@ -3,6 +3,7 @@ package com.checknetwork.app.core;
 import static org.junit.Assert.*;
 
 import java.util.Arrays;
+import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
@@ -42,27 +43,62 @@ public final class CheckCapabilitiesTest {
         assertFalse((capabilities.toString()).contains("future-probe-v2"));
     }
 
-    @Test public void reducedCapabilitiesRejectUnsupportedRequestsLocally() {
+    @Test public void reducedCapabilitiesRejectUnsupportedRequestsWithClosedReasons() {
         CheckCapabilities reduced = CheckCapabilities.parse(fixture(
                 "[\"dns\",\"traceroute\"]", "[\"full\"]", 1, 3, 500, 2_000));
         reduced.validate(ReportRequest.builder().timeoutMs(500)
                 .addTarget(TargetInput.of(CheckKind.DNS, "one.test")).build());
 
         assertRejected(reduced, ReportRequest.builder().timeoutMs(500)
-                .addTarget(TargetInput.of(CheckKind.TCP, "one.test")).build());
+                .addTarget(TargetInput.of(CheckKind.TCP, "one.test")).build(),
+                CheckCapabilities.CapabilityMismatchException.Reason.CHECK_KIND);
         assertRejected(reduced, ReportRequest.builder().timeoutMs(500)
                 .addTarget(TargetInput.of(CheckKind.DNS, "one.test"))
-                .addTarget(TargetInput.of(CheckKind.DNS, "two.test")).build());
+                .addTarget(TargetInput.of(CheckKind.DNS, "two.test")).build(),
+                CheckCapabilities.CapabilityMismatchException.Reason.TARGET_COUNT);
         assertRejected(reduced, ReportRequest.builder().timeoutMs(499)
-                .addTarget(TargetInput.of(CheckKind.DNS, "one.test")).build());
+                .addTarget(TargetInput.of(CheckKind.DNS, "one.test")).build(),
+                CheckCapabilities.CapabilityMismatchException.Reason.TIMEOUT);
         assertRejected(reduced, ReportRequest.builder().timeoutMs(2_001)
-                .addTarget(TargetInput.of(CheckKind.DNS, "one.test")).build());
+                .addTarget(TargetInput.of(CheckKind.DNS, "one.test")).build(),
+                CheckCapabilities.CapabilityMismatchException.Reason.TIMEOUT);
         assertRejected(reduced, ReportRequest.builder().timeoutMs(500)
-                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "one.test").attempts(4).build()).build());
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "one.test").attempts(4).build()).build(),
+                CheckCapabilities.CapabilityMismatchException.Reason.TRACEROUTE_ATTEMPTS);
         assertRejected(reduced, ReportRequest.builder().timeoutMs(500)
-                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "one.test").build()).build());
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "one.test").build()).build(),
+                CheckCapabilities.CapabilityMismatchException.Reason.TRACEROUTE_ATTEMPTS);
         assertRejected(reduced, ReportRequest.topologyBuilder().timeoutMs(500)
-                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "one.test").attempts(3).build()).build());
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "one.test").attempts(3).build()).build(),
+                CheckCapabilities.CapabilityMismatchException.Reason.TOPOLOGY_MODE);
+    }
+
+    @Test public void mismatchPriorityIsDeterministicAndExceptionDoesNotReflectInputsOrServerLimits() {
+        CheckCapabilities reduced = CheckCapabilities.parse(fixture(
+                "[\"dns\"]", "[]", 1, 1, 500, 1_000));
+        ReportRequest request = ReportRequest.topologyBuilder().timeoutMs(2_000)
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "PRIVATE-TARGET.example")
+                        .attempts(10).build())
+                .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "PRIVATE-TOKEN.example")
+                        .attempts(10).build()).build();
+
+        CheckCapabilities.CapabilityMismatchException error = assertThrows(
+                CheckCapabilities.CapabilityMismatchException.class, () -> reduced.validate(request));
+
+        assertEquals(CheckCapabilities.CapabilityMismatchException.Reason.CHECK_KIND, error.reason());
+        assertEquals("The report request is not supported by the server capabilities.", error.getMessage());
+        assertEquals("CapabilityMismatchException{reason=CHECK_KIND}", error.toString());
+        for (String secret : List.of("PRIVATE-TARGET", "PRIVATE-TOKEN", "dns", "500", "1000")) {
+            assertFalse(error.getMessage().contains(secret));
+            assertFalse(error.toString().contains(secret));
+        }
+        assertArrayEquals(new CheckCapabilities.CapabilityMismatchException.Reason[]{
+                CheckCapabilities.CapabilityMismatchException.Reason.CHECK_KIND,
+                CheckCapabilities.CapabilityMismatchException.Reason.TARGET_COUNT,
+                CheckCapabilities.CapabilityMismatchException.Reason.TIMEOUT,
+                CheckCapabilities.CapabilityMismatchException.Reason.TRACEROUTE_ATTEMPTS,
+                CheckCapabilities.CapabilityMismatchException.Reason.TOPOLOGY_MODE},
+                CheckCapabilities.CapabilityMismatchException.Reason.values());
     }
 
     @Test public void parseRequiresOneBoundedObjectAndStrictRequiredIntegerLimits() {
@@ -99,8 +135,11 @@ public final class CheckCapabilitiesTest {
         assertEquals(ContractLimits.MAX_TRACEROUTE_ATTEMPTS, capabilities.maxTracerouteAttempts());
     }
 
-    private static void assertRejected(CheckCapabilities capabilities, ReportRequest request) {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> capabilities.validate(request));
+    private static void assertRejected(CheckCapabilities capabilities, ReportRequest request,
+            CheckCapabilities.CapabilityMismatchException.Reason reason) {
+        CheckCapabilities.CapabilityMismatchException error = assertThrows(
+                CheckCapabilities.CapabilityMismatchException.class, () -> capabilities.validate(request));
+        assertEquals(reason, error.reason());
         assertFalse(error.getMessage().contains("one.test"));
     }
 

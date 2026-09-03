@@ -156,6 +156,10 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 			"error_code", fact.errorCode, "completed observation", ProvenanceResult,
 			"Repeat the cancelled check", "Run the check again when the request can remain active through completion.", "The repeated check completes with an observed result.", "Escalate if checks are repeatedly cancelled without an intentional caller cancellation.")
 		return
+	case "response_read_failed":
+		b.hasUnexplained = true
+		b.analysis.Coverage.Limitations = append(b.analysis.Coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: fact.index, Kind: fact.kind, Signal: "response_body", Reason: "the bounded HTTP response sample could not be completed"})
+		return
 	}
 
 	if fact.kind == KindTraceroute {
@@ -734,7 +738,7 @@ func validErrorCode(fact normalizedResultFacts) bool {
 		return fact.kind == KindTraceroute && fact.status == StatusDegraded && fact.hasTraceCounters
 	}
 	switch fact.errorCode {
-	case "network_policy_blocked", "invalid_url", "invalid_address", "timeout", "cancelled", "connection_failed", "checker_panic", "checker_capacity_unavailable":
+	case "network_policy_blocked", "invalid_url", "invalid_address", "timeout", "cancelled", "connection_failed", "response_read_failed", "checker_panic", "checker_capacity_unavailable":
 		return true
 	case "tls_downgrade", "unexpected_status":
 		return fact.kind == KindHTTP || fact.kind == KindHTTPS

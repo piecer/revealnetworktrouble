@@ -2,7 +2,7 @@
 
 ## 1. 목적
 
-CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 서비스의 상태를 한 번에 확인하고 운영자가 비교 가능한 형태로 리포팅하는 애플리케이션이다. 이 문서는 CMP-18에서 추가한 다중 trace 분석, 목적지 필터 및 IP 라벨 매핑의 동작 계약을 정의한다.
+CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 서비스의 상태를 한 번에 확인하고 운영자가 비교 가능한 형태로 리포팅하는 애플리케이션이다. 이 문서는 현재 구현된 다중 trace 분석, 목적지 필터, IP 라벨, 런타임 admission, 진단 truth, release identity의 동작 계약을 정의한다.
 
 ## 2. 화면과 탐색
 
@@ -37,6 +37,7 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 
 - 같은 주소는 경로가 갈라졌다 합쳐져도 하나의 물리 노드로 표시한다.
 - 링크 굵기는 관측 빈도를 나타내며 경로 카드는 원래 result 순서의 색상을 사용한다.
+- full topology link의 `latency_delta_ms`는 선택 필드이며 유한한 0~30000 ms 값만 허용한다. 후속 홉 RTT가 감소하면 delta는 0으로 clamp되고 JSON `omitempty`에 따라 생략된다. link의 `latency_ms`는 producer 필드가 아니며 Android parser가 거부한다.
 - 노드는 마우스 hover 또는 키보드 focus로 주소, 상태, 홉 범위, 관측 횟수, 평균 지연과 Geo/ASN을 조회할 수 있다.
 - 노드 카드는 drag 또는 `Alt+Arrow`로 순서를 재배치할 수 있고 일반 방향키는 roving focus에 사용한다.
 - 전체 화면 조회를 지원한다.
@@ -147,10 +148,28 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 
 - Android는 `/api/v1/checks`를 bounded하게 조회한 뒤 server가 광고한 kind/limit/topology mode 안에서만 report를 요청한다.
 - 13종 kind를 제공하고 HTTP/HTTPS의 expected status와 traceroute attempts를 kind별로 검증한다. traceroute-only topology 요청은 compact mode를 사용한다.
-- report transport는 Content-Length와 stream을 UTF-8 8 MiB로 제한하고 absolute deadline, cancel과 exactly-once disconnect를 적용한다.
+- capability discovery와 report transport는 사용자 실행마다 하나의 315초 monotonic absolute deadline을 공유한다. discovery는 `min(10s, shared remaining)`, report는 request별 계산 deadline과 shared remaining의 교집합을 connection 생성·socket timeout·scheduler·body I/O·terminal publish 전에 다시 적용한다. 남은 시간이 0이면 새 연결을 열지 않는다.
+- report transport는 Content-Length와 stream을 UTF-8 8 MiB로 제한하고 cancel과 exactly-once disconnect를 적용한다.
+- 유효한 capability와 local selection의 불일치는 typed `UNSUPPORTED_CAPABILITY` 및 `CHECK_KIND`, `TARGET_COUNT`, `TIMEOUT`, `TRACEROUTE_ATTEMPTS`, `TOPOLOGY_MODE` 중 하나로 반환하고 고정된 UI 문구만 표시한다. malformed capability/report JSON과 schema 위반은 계속 `INVALID_RESPONSE`이며 임의 예외를 capability mismatch로 재분류하지 않는다.
 - request state는 owner ID와 canonical signature를 가지며 replacement, input mutation, cancel, recreation과 final destroy 뒤 stale success/error/finally를 게시하지 않는다.
-- Android analysis 순서는 status/verdict/coverage → findings → evidence/actions → limitations/provider failures → raw results/compact summary다. confidence를 장애 확률로 표현하지 않는다.
+- Android analysis 순서는 status/verdict/coverage → findings → evidence/actions → limitations/provider failures → raw results/compact summary다. confidence를 장애 확률로 표현하지 않는다. human export는 모든 finding code를 exhaustive switch로 매핑하며 `checker_panic`은 `Checker execution failed`, `checker_capacity_unavailable`은 `Checker capacity was unavailable`로 표시하고 traceroute failure로 오표기하지 않는다.
+- capability mismatch UI는 reason별 fixed localized copy만 사용한다: unsupported check kind, target count, timeout, traceroute attempts, topology mode. server value나 exception prose는 반사하지 않는다.
 - release는 HTTPS만 허용하고 기본 origin은 비어 있다. Bearer는 메모리에서만 사용하며 URL, signature, saved state, preferences, report, log 또는 share에 포함하지 않는다.
 - 기본 공유는 식별자·주소·raw observation을 제외한 human summary다. raw JSON은 명시적 경고 확인 후 8 MiB 이하 private-cache file과 non-exported `FileProvider` read grant로만 공유한다.
 - form state는 최대 20 targets와 bounded strings만 복원한다. portrait를 강제하지 않으며 320dp/landscape/large font에서 control은 stack되고 touch target은 48dp 이상이다.
 - JVM/Robolectric은 schema, lifecycle, resource와 outbound Intent를 검증한다. 실제 TalkBack, Switch Access, OEM share sheet, physical-device network cancellation은 device acceptance 전까지 미검증 limitation이다.
+
+## 14. 런타임 admission과 진단 truth
+
+- accepted connection은 `net/http` handler goroutine 생성 전에 프로세스 전체에서 기본 128개, `CHECKNETWORK_MAX_CONNECTIONS` 설정 hard max 256개로 제한한다. 초과 socket은 즉시 close하고 5 ms interruptible rejection backoff 뒤 accept를 재개한다. 이 경계에서는 HTTP status를 보장하지 않는다.
+- authenticated report body decode는 기본 effective report limit, `CHECKNETWORK_MAX_CONCURRENT_BODY_DECODES` 설정 hard max 64개의 독립 slot을 사용한다. 정확한 route/auth/rate 검사 뒤, 선언된 `Content-Length > 1 MiB`를 slot 획득 전에 거부하고, slot은 `MaxBytesReader`를 통한 단일 JSON object+EOF decode 동안만 유지한다. 포화 시 `Retry-After`와 고정 `503 body_decode_capacity_unavailable`을 반환하며 report/checker admission은 시작하지 않는다.
+- non-traceroute checker의 terminal arbitration은 checker가 반환한 정확한 timestamp를 parent/supervisor cancellation, report deadline, checker deadline 순으로 판정한다. deadline과 같거나 늦은 healthy 결과는 publish하지 않고 timeout을 반환한다. cleanup cancellation은 판정 뒤에만 실행한다.
+- HTTP(S) checker는 header 수신으로 성공하지 않고 최대 32 KiB body observation을 읽은 뒤 latency와 상태를 확정한다. body read의 timeout/cancel은 각각 stable code로 유지하고 그 외 read 오류는 `response_read_failed`이며 healthy가 아니다.
+
+## 15. 운영 probe, telemetry와 release identity
+
+- outer operational handler는 정확한 raw path의 `GET`/`HEAD /livez`와 `/readyz`만 business auth/rate middleware 밖에서 처리한다. `HEAD` body는 비어 있다. liveness body는 `{"status":"live"}`다. readiness는 startup-cached local traceroute executable 상태와 irreversible startup→accepting→draining phase만 사용하고 일시적인 connection/report/body/checker 포화에는 flap하지 않는다.
+- readiness body는 ready `{"status":"ready"}`, startup/drain/traceroute 부재 시 각각 `{"status":"not_ready","reason":"starting|draining|traceroute_unavailable"}`이며 non-ready는 503이다. drain이 시작되면 `/livez`는 200을 유지하고 `/readyz`와 모든 business route는 503이며 business handler를 호출하지 않는다. Compose API healthcheck는 `/readyz`를 사용한다.
+- telemetry `outcome`은 진단 결과가 아니라 delivery/lifecycle 결과만 나타낸다. 완전히 전달된 valid report의 `report_finish`만 `report_status`, `analysis_verdict`, `total_results`, `failed_results`, `finding_count`를 추가한다. diagnostic tuple이 없거나 malformed/모순이면 extension만 생략하고 valid base event는 유지한다. raw target/IP/path/query/body, credential, provider/error/panic prose와 ID metric label은 금지한다.
+- `VERSION`은 `0.1.0`이다. release build의 `/api/v1/health` exact schema는 `{"status":"ok","version":"0.1.0","revision":"<40-lowercase-hex>"}`이며 startup log와 OCI `org.opencontainers.image.version`/`revision` labels가 같은 값을 사용한다. 개발 `go run`과 기본 Compose build args는 명시적으로 `dev` identity다.
+- release Dockerfile은 builder/traceroute/runtime image digest, Go 1.22.12 toolchain 확인, Alpine v3.20 `traceroute-2.1.5-r0.apk` URL과 SHA-256을 고정한다. release verifier는 clean exact HEAD와 tracked SemVer VERSION, commit-derived `SOURCE_DATE_EPOCH`, canonical `git archive` bytes를 검증하고 두 no-cache build의 binary/image/rootfs digest 일치를 요구한다. Docker CLI와 daemon 부재는 skip이 아니라 release gate 실패다.

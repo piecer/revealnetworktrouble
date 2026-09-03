@@ -64,15 +64,25 @@ public final class ReportMarkdownExporter {
         }
     }
     private static String findingLabel(Report.FindingCode code) {
-        switch(code){
-            case DNS_RESOLUTION_FAILED:return "DNS resolution failed";case ENDPOINT_CONNECT_FAILED:return "Endpoint connection failed";
-            case HTTP_UNEXPECTED_STATUS:return "Unexpected HTTP status";case INVALID_TARGET:return "Invalid target";
-            case EXECUTION_TIMEOUT:return "Execution timed out";case EXECUTION_CANCELLED:return "Execution cancelled";
-            case TLS_DOWNGRADE:return "TLS downgrade";case TLS_CERTIFICATE_EXPIRED:return "TLS certificate expired";
-            case TLS_CERTIFICATE_EXPIRING:return "TLS certificate expiring";case TLS_HANDSHAKE_FAILED:return "TLS handshake failed";
-            case TARGET_POLICY_BLOCKED:return "Target blocked by policy";case TRACEROUTE_UNREACHABLE:return "Traceroute destination unreachable";
-            case TRACEROUTE_PARTIAL_REACHABILITY:return "Traceroute partial reachability";case TRACEROUTE_PATH_DEGRADED:return "Traceroute path degraded";
-            case TRACEROUTE_PATH_UNSTABLE:return "Traceroute path unstable";default:return "Traceroute execution failed";
-        }
+        return switch(code) {
+            case DNS_RESOLUTION_FAILED -> "DNS resolution failed";
+            case ENDPOINT_CONNECT_FAILED -> "Endpoint connection failed";
+            case HTTP_UNEXPECTED_STATUS -> "Unexpected HTTP status";
+            case INVALID_TARGET -> "Invalid target";
+            case EXECUTION_TIMEOUT -> "Execution timed out";
+            case EXECUTION_CANCELLED -> "Execution cancelled";
+            case TLS_DOWNGRADE -> "TLS downgrade";
+            case TLS_CERTIFICATE_EXPIRED -> "TLS certificate expired";
+            case TLS_CERTIFICATE_EXPIRING -> "TLS certificate expiring";
+            case TLS_HANDSHAKE_FAILED -> "TLS handshake failed";
+            case TARGET_POLICY_BLOCKED -> "Target blocked by policy";
+            case TRACEROUTE_UNREACHABLE -> "Traceroute destination unreachable";
+            case TRACEROUTE_PARTIAL_REACHABILITY -> "Traceroute partial reachability";
+            case TRACEROUTE_PATH_DEGRADED -> "Traceroute path degraded";
+            case TRACEROUTE_PATH_UNSTABLE -> "Traceroute path unstable";
+            case TRACEROUTE_EXECUTION_FAILED -> "Traceroute execution failed";
+            case CHECKER_PANIC -> "Checker execution failed";
+            case CHECKER_CAPACITY_UNAVAILABLE -> "Checker capacity was unavailable";
+        };
     }
 }

@@ -4,6 +4,7 @@ import com.checknetwork.app.core.CheckCapabilities;
 import com.checknetwork.app.core.ReportRequest;
 import com.checknetwork.app.network.ApiConnectionConfig;
 import com.checknetwork.app.network.CapabilitiesTransport;
+import com.checknetwork.app.network.OperationDeadline;
 import com.checknetwork.app.network.ReportTransport;
 import com.checknetwork.app.network.TransportException;
 import com.checknetwork.app.state.RequestCoordinator;
@@ -20,8 +21,8 @@ public final class DiagnosticsSession {
     public interface Listener { void onStateChanged(RequestState state); }
     public interface Dispatcher { void dispatch(Runnable runnable); }
     interface ProductionTransports {
-        CapabilitiesTransport capabilities(ApiConnectionConfig config);
-        ReportTransport reports(ApiConnectionConfig config);
+        CapabilitiesTransport capabilities(ApiConnectionConfig config, OperationDeadline deadline);
+        ReportTransport reports(ApiConnectionConfig config, OperationDeadline deadline);
     }
     private final RequestCoordinator coordinator;
     private final Dispatcher dispatcher;
@@ -50,20 +51,26 @@ public final class DiagnosticsSession {
             thread.setDaemon(true);
             return thread;
         });
+        ReportTransport.Clock clock = new ReportTransport.Clock() {
+            @Override public long nanoTime() { return System.nanoTime(); }
+            @Override public java.time.Instant now() { return java.time.Instant.now(); }
+        };
         ProductionFactory factory = new ProductionFactory(executor, new ProductionTransports() {
-            @Override public CapabilitiesTransport capabilities(ApiConnectionConfig config) {
-                return new CapabilitiesTransport(config);
+            @Override public CapabilitiesTransport capabilities(ApiConnectionConfig config,
+                    OperationDeadline deadline) {
+                return new CapabilitiesTransport(config, clock, deadline);
             }
-            @Override public ReportTransport reports(ApiConnectionConfig config) {
-                return new ReportTransport(config);
+            @Override public ReportTransport reports(ApiConnectionConfig config,
+                    OperationDeadline deadline) {
+                return new ReportTransport(config, clock, deadline);
             }
-        });
+        }, clock);
         return new DiagnosticsSession(new RequestCoordinator(factory), dispatcher, executor, factory);
     }
 
     static DiagnosticsSession createProductionForTests(Dispatcher dispatcher, ExecutorService executor,
-            ProductionTransports transports) {
-        ProductionFactory factory = new ProductionFactory(executor, transports);
+            ProductionTransports transports, ReportTransport.Clock clock) {
+        ProductionFactory factory = new ProductionFactory(executor, transports, clock);
         return new DiagnosticsSession(new RequestCoordinator(factory), dispatcher, executor, factory);
     }
 
@@ -137,11 +144,14 @@ public final class DiagnosticsSession {
     private static final class ProductionFactory implements RequestCoordinator.CallFactory {
         private final ExecutorService executor;
         private final ProductionTransports transports;
+        private final ReportTransport.Clock clock;
         private final AtomicReference<ApiConnectionConfig> nextConfig = new AtomicReference<>();
 
-        ProductionFactory(ExecutorService executor, ProductionTransports transports) {
+        ProductionFactory(ExecutorService executor, ProductionTransports transports,
+                ReportTransport.Clock clock) {
             this.executor = Objects.requireNonNull(executor, "executor");
             this.transports = Objects.requireNonNull(transports, "transports");
+            this.clock = Objects.requireNonNull(clock, "clock");
         }
 
         void setNextConfig(ApiConnectionConfig config) {
@@ -153,6 +163,8 @@ public final class DiagnosticsSession {
 
         @Override public RequestCoordinator.CancellableCall create(ReportRequest request) {
             ApiConnectionConfig snapshot = Objects.requireNonNull(nextConfig.getAndSet(null), "connection config");
+            OperationDeadline operationDeadline =
+                    new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
             return new RequestCoordinator.CancellableCall() {
                 interface Cancellation { void cancel(); }
                 final AtomicBoolean cancelled = new AtomicBoolean();
@@ -162,16 +174,23 @@ public final class DiagnosticsSession {
                 @Override public void start(RequestCoordinator.Callback callback) {
                     future = executor.submit(() -> {
                         try {
-                            CapabilitiesTransport.Call capabilitiesCall = transports.capabilities(snapshot).newCall();
+                            CapabilitiesTransport.Call capabilitiesCall =
+                                    transports.capabilities(snapshot, operationDeadline).newCall();
                             activate(capabilitiesCall::cancel);
                             CheckCapabilities capabilities = capabilitiesCall.execute();
+                            throwIfCancelled();
+                            if (operationDeadline.remainingMillis() == 0L)
+                                throw TransportException.of(TransportException.Kind.TIMEOUT);
                             try { capabilities.validate(request); }
-                            catch (IllegalArgumentException unsupported) {
-                                throw TransportException.of(TransportException.Kind.INVALID_RESPONSE);
+                            catch (CheckCapabilities.CapabilityMismatchException unsupported) {
+                                throw TransportException.unsupportedCapability(unsupported.reason());
                             }
                             throwIfCancelled();
 
-                            ReportTransport.Call reportCall = transports.reports(snapshot).newCall(request);
+                            if (operationDeadline.remainingMillis() == 0L)
+                                throw TransportException.of(TransportException.Kind.TIMEOUT);
+                            ReportTransport.Call reportCall =
+                                    transports.reports(snapshot, operationDeadline).newCall(request);
                             activate(reportCall::cancel);
                             ReportTransport.Response response = reportCall.execute();
                             callback.onSuccess(response.rawJson(), response.report());

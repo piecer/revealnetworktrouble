@@ -146,6 +146,40 @@ public final class MainActivityTest {
         assertEquals(2,configs.size());assertEquals("Bearer retry-secret",configs.get(1).authorizationHeader().orElseThrow());assertEquals(2,calls.calls.size());
     }
 
+    @Test public void everyCapabilityMismatchReasonUsesFixedLocalizedPrivateAccessibleError() {
+        Map<CheckCapabilities.CapabilityMismatchException.Reason,Integer> resources = Map.of(
+                CheckCapabilities.CapabilityMismatchException.Reason.CHECK_KIND, R.string.error_capability_check_kind,
+                CheckCapabilities.CapabilityMismatchException.Reason.TARGET_COUNT, R.string.error_capability_target_count,
+                CheckCapabilities.CapabilityMismatchException.Reason.TIMEOUT, R.string.error_capability_timeout,
+                CheckCapabilities.CapabilityMismatchException.Reason.TRACEROUTE_ATTEMPTS, R.string.error_capability_traceroute_attempts,
+                CheckCapabilities.CapabilityMismatchException.Reason.TOPOLOGY_MODE, R.string.error_capability_topology_mode);
+        assertEquals(CheckCapabilities.CapabilityMismatchException.Reason.values().length, resources.size());
+
+        for (CheckCapabilities.CapabilityMismatchException.Reason reason
+                : CheckCapabilities.CapabilityMismatchException.Reason.values()) {
+            FakeFactory calls = new FakeFactory();
+            DiagnosticsSession retained = new DiagnosticsSession(new RequestCoordinator(calls), Runnable::run, null);
+            MainActivity.setSessionFactoryForTests(dispatcher -> retained);
+            ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup();
+            MainActivity activity = controller.get();
+            setValidApi(activity);
+            ((EditText) activity.findViewById(R.id.address)).setText("PRIVATE-TARGET.example");
+            activity.findViewById(R.id.run).performClick();
+            calls.calls.get(0).fail(TransportException.unsupportedCapability(reason));
+
+            TextView error = activity.findViewById(R.id.error);
+            String message = error.getText().toString();
+            assertEquals(activity.getString(resources.get(reason)), message);
+            assertEquals(View.VISIBLE, error.getVisibility());
+            assertTrue(error.isFocused());
+            assertEquals(activity.getString(R.string.accessibility_error_state), error.getStateDescription());
+            for (String secret : List.of("PRIVATE-TARGET", "server prose", "Bearer", "token"))
+                assertFalse(message.contains(secret));
+            controller.destroy();
+            MainActivity.resetSessionFactoryForTests();
+        }
+    }
+
     @Test public void recreationDuringLoadingReattachesAndOldOwnerCannotConsumeCompletion() {
         FakeFactory calls=new FakeFactory(); DiagnosticsSession retained=new DiagnosticsSession(new RequestCoordinator(calls),Runnable::run,null);
         MainActivity.setSessionFactoryForTests(dispatcher->retained);

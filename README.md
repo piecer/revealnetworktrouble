@@ -1,8 +1,10 @@
 # CheckNetwork
 
+현재 릴리스 버전은 `VERSION`의 `0.1.0`이다. release binary의 `/api/v1/health`, startup log, OCI version/revision labels는 같은 버전과 정확한 40자리 Git revision을 제공한다. 일반 `go run`과 기본 Compose 개발 빌드는 이와 구분되는 명시적 `dev` identity를 사용한다.
+
 Web UI는 진단과 토폴로지를 독립 request lane으로 실행하며 stale-response를 차단한다. topology는 compact-v1 응답(nodes≤500, links≤1,000, body<1 MiB)을 사용하고 active view를 100-element chunk로 점진 렌더링하며 document 1,200-element 경계를 검사한다. Bearer credential은 API base별 현재 탭에만 유지되고 보고서/export에는 포함되지 않는다.
 
-운영 경계는 동시 report 기본 4(설정 hard max 16), checker 기본 80(hard max 1,024), 프로세스 전체 GeoIP active 8/queued 64, GeoIP LRU 2,048개, 동시 response write 최대 16이다. request body는 1 MiB, header는 64 KiB, full response는 newline 포함 8 MiB 이하, compact response는 1 MiB 미만이다. 정상 Web/Android report deadline은 요청 시작부터 315초이며 Compose는 6분 graceful stop과 CPU/memory/PID 제한을 적용한다. 자세한 과부하 결과와 관측 필드는 [운영 문서](docs/OPERATIONS.md)에 있다.
+운영 경계는 pre-handler accepted connection 기본 128(설정 hard max 256), 동시 report 기본 4(hard max 16), body decode 기본 effective report limit(hard max 64), checker 기본 80(hard max 1,024), 프로세스 전체 GeoIP active 8/queued 64, GeoIP LRU 2,048개, 동시 response write 최대 16이다. connection 초과분은 handler 생성 전에 즉시 close되고 interruptible 5 ms backoff가 적용된다. body slot은 인증·rate limit 뒤 JSON decode 동안만 소유하며 포화 시 고정 `503 body_decode_capacity_unavailable`을 반환한다. request body는 1 MiB, header는 64 KiB, full response는 newline 포함 8 MiB 이하, compact response는 1 MiB 미만이다. Web/Android report deadline은 요청 시작부터 315초이며 Android는 capability discovery와 report POST가 이 하나의 deadline을 공유한다. Compose는 6분 graceful stop과 CPU/memory/PID 제한을 적용한다. 자세한 과부하 결과와 관측 필드는 [운영 문서](docs/OPERATIONS.md)에 있다.
 
 CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망, 특정 서비스 상태를 한 번에 검사하고 구조화된 리포트를 만드는 멀티플랫폼 애플리케이션입니다.
 
@@ -20,6 +22,8 @@ go run ./cmd/checknetwork-api
 
 ```bash
 curl http://localhost:8080/api/v1/health
+curl http://localhost:8080/livez
+curl http://localhost:8080/readyz
 curl -X POST http://localhost:8080/api/v1/reports \
   -H 'Content-Type: application/json' \
   -d '{"targets":[{"kind":"dns","address":"example.com"},{"kind":"https","address":"https://example.com"},{"kind":"ssh","address":"example.com"}]}'
@@ -27,7 +31,7 @@ curl -X POST http://localhost:8080/api/v1/reports \
 
 지원 검사는 DNS, 임의 TCP, HTTP, HTTPS, traceroute와 SSH·SMTP·IMAP·POP3 계열 서비스다. 웹의 `경로 토폴로지`는 목적지별 1~10회 경로를 canonical node와 directed link로 합치고 result/attempt 사이에 공정한 complete-prefix를 표시한다. 서버 제한과 화면 제한, 실제/표시/생략 수를 구분하며 목적지 필터, roving keyboard focus와 전체 화면을 지원한다. `IP 라벨`은 CSV/JSON import와 직접 편집을 지원하되 1 MiB/500 records/100-row page 경계를 적용한다. HTTPS와 암시적 TLS 서비스는 TLS 버전, 암호 스위트, 인증서 제목과 만료 시각도 보고한다.
 
-Android 앱도 `/checks` capability와 13종 검사, HTTPS-only public credential, request owner/cancel/recreation, 설명 가능한 analysis와 compact topology 요약을 사용한다. 기본 공유는 redacted human summary이고 원본 JSON은 경고 확인 후 private cache의 bounded content URI로만 공유한다. Interactive Android graph와 실기기 TalkBack 검증은 아직 별도 acceptance 항목이다.
+Android 앱도 `/checks` capability와 13종 검사, HTTPS-only public credential, request owner/cancel/recreation, 설명 가능한 analysis와 compact topology 요약을 사용한다. discovery와 report는 하나의 315초 절대 deadline을 공유하고 각 단계의 더 짧은 local deadline과 교차한다. 유효하지만 축소된 capability와 선택값의 불일치는 typed `UNSUPPORTED_CAPABILITY` 이유와 고정 UI 문구로 표시하며 malformed 응답은 계속 invalid response다. 기본 공유는 redacted human summary이고 원본 JSON은 경고 확인 후 private cache의 bounded content URI로만 공유한다. Interactive Android graph와 실기기 TalkBack 검증은 아직 별도 acceptance 항목이다.
 
 공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. `Geo 경로 지도`는 같은 bounded selection을 외부 tile/credential 없는 Canvas 경로 개요와 접근 가능한 위치 목록으로 표시한다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치다.
 
@@ -42,11 +46,12 @@ python3 -m http.server 3000
 
 ```bash
 docker compose up --build --wait
+curl --fail http://127.0.0.1:9090/readyz
 curl --fail http://127.0.0.1:9090/api/v1/health
 curl --fail http://127.0.0.1:3000/
 ```
 
-API runtime image는 UID/GID `65532:65532`로 실행되고 Web nginx는 `worker_processes 2`를 사용한다. Compose publish는 두 서비스 모두 host loopback으로 제한된다.
+API runtime image는 UID/GID `65532:65532`로 실행되고 Web nginx는 `worker_processes 2`를 사용한다. Compose publish는 두 서비스 모두 host loopback으로 제한된다. Compose API healthcheck는 public mode에서도 credential과 rate quota를 사용하지 않는 `/readyz`를 호출한다.
 
 ## 검증
 
@@ -69,6 +74,10 @@ docker compose up -d --wait
 docker compose down
 # Go/Web와 Android 전체 gate
 make ci
+# commit 후 clean exact HEAD에서만 실행; Docker daemon 필수
+make ci-clean-archive
+# clean exact HEAD의 deterministic binary/image 및 identity 검증; Docker 필수
+make verify-release
 ```
 
 JVM/Node/Go 자동화는 실물 Android 기기, TalkBack/Switch Access, OEM share sheet, 실제 Chrome/Firefox/Safari의 HTTP/2 deadline 동작을 대신하지 않는다. 이 물리 기기/브라우저 acceptance와 postcommit-only `make ci-clean-archive`는 별도 gate다.

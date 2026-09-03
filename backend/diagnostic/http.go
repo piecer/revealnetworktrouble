@@ -12,6 +12,8 @@ import (
 
 var errTLSDowngrade = errors.New("HTTPS redirect did not preserve TLS")
 
+const maxHTTPResponseSampleBytes = 32 * 1024
+
 type HTTPChecker struct {
 	Client *http.Client
 	Policy *NetworkPolicy
@@ -100,7 +102,11 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		return result
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32*1024))
+	_, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, maxHTTPResponseSampleBytes))
+	if readErr != nil {
+		return httpResponseReadFailure(kind, target.Address, started, readErr)
+	}
+	result.LatencyMS = time.Since(started).Milliseconds()
 	if kind == KindHTTPS && resp.TLS == nil {
 		result.Status = StatusUnreachable
 		result.ErrorCode = "tls_downgrade"
@@ -130,6 +136,22 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		result.Status = StatusUnreachable
 		result.ErrorCode = "unexpected_status"
 		result.Message = "service returned an unexpected HTTP status"
+	}
+	return result
+}
+
+func httpResponseReadFailure(kind Kind, address string, started time.Time, err error) Result {
+	result := baseResult(kind, address, started, err)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		result.ErrorCode = "timeout"
+		result.Message = "HTTP response body read timed out"
+	case errors.Is(err, context.Canceled):
+		result.ErrorCode = "cancelled"
+		result.Message = "HTTP response body read was cancelled"
+	default:
+		result.ErrorCode = "response_read_failed"
+		result.Message = "HTTP response body could not be read"
 	}
 	return result
 }

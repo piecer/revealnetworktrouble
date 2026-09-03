@@ -168,6 +168,17 @@ func TestAnalyzeStableExecutionAndInputErrorCodes(t *testing.T) {
 	}
 }
 
+func TestAnalyzeResponseReadFailureUsesStableLimitationWithoutClaimingConnectFailure(t *testing.T) {
+	analysis := Analyze([]Result{{Kind: KindHTTP, Address: "http://example.test", Status: StatusUnreachable, ErrorCode: "response_read_failed", Message: "BODY_ERROR_CANARY"}}, analysisTestNow)
+	if analysis.Verdict != VerdictInconclusive || len(analysis.Findings) != 0 || len(analysis.Coverage.Limitations) == 0 {
+		t.Fatalf("analysis=%+v", analysis)
+	}
+	limitation := analysis.Coverage.Limitations[len(analysis.Coverage.Limitations)-1]
+	if limitation.Signal != "response_body" || strings.Contains(limitation.Reason, "BODY_ERROR_CANARY") {
+		t.Fatalf("limitation=%+v", limitation)
+	}
+}
+
 func TestAnalyzeCancelledIsInconclusive(t *testing.T) {
 	analysis := Analyze([]Result{{Kind: KindHTTP, Status: StatusUnreachable, ErrorCode: "cancelled"}}, analysisTestNow)
 	if analysis.Verdict != VerdictInconclusive || len(analysis.Findings) != 1 || analysis.Findings[0].Code != FindingExecutionCancelled {

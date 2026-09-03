@@ -118,6 +118,36 @@ func TestHealthAndCORS(t *testing.T) {
 	}
 }
 
+func TestHealthExposesImmutableBuildIdentity(t *testing.T) {
+	revision := "0123456789abcdef0123456789abcdef01234567"
+	handler, err := NewServerWithConfig(
+		diagnostic.NewRunner(successChecker{}),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"0.1.0",
+		ServerConfig{Mode: ModeTrustedLocal, Revision: revision},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var health HealthResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	if health != (HealthResponse{Status: "ok", Version: "0.1.0", Revision: revision}) {
+		t.Fatalf("health=%+v", health)
+	}
+	for _, forbidden := range []string{"time", "path", "build_time", "build_path"} {
+		if strings.Contains(recorder.Body.String(), `"`+forbidden+`"`) {
+			t.Fatalf("health leaked %s: %s", forbidden, recorder.Body.String())
+		}
+	}
+}
+
 func TestChecksAdvertisesHTTPSAndServices(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/checks", nil)
 	rec := httptest.NewRecorder()
@@ -922,13 +952,16 @@ func TestCreateReportDistinguishesBodyLimitFromMalformedAndMultipleJSON(t *testi
 
 	valid := `{"targets":[{"kind":"dns","address":"example.test"}]}`
 	tests := []struct {
-		name      string
-		body      string
-		status    int
-		errorCode string
+		name          string
+		body          string
+		contentLength int64
+		streamed      bool
+		status        int
+		errorCode     string
 	}{
-		{name: "limit during first decode", body: `{"targets":[{"kind":"dns","address":"` + strings.Repeat("x", maxBodyBytes) + `"}]}`, status: http.StatusRequestEntityTooLarge, errorCode: "request_too_large"},
-		{name: "limit during surplus decode", body: valid + ` "` + strings.Repeat("x", maxBodyBytes) + `"`, status: http.StatusRequestEntityTooLarge, errorCode: "request_too_large"},
+		{name: "declared limit before decode", body: "not read", contentLength: maxBodyBytes + 1, status: http.StatusRequestEntityTooLarge, errorCode: "request_too_large"},
+		{name: "streamed limit during first decode", body: `{"targets":[{"kind":"dns","address":"` + strings.Repeat("x", maxBodyBytes) + `"}]}`, streamed: true, status: http.StatusRequestEntityTooLarge, errorCode: "request_too_large"},
+		{name: "streamed limit during surplus decode", body: valid + ` "` + strings.Repeat("x", maxBodyBytes) + `"`, streamed: true, status: http.StatusRequestEntityTooLarge, errorCode: "request_too_large"},
 		{name: "malformed", body: `{`, status: http.StatusBadRequest, errorCode: "invalid_json"},
 		{name: "multiple values", body: valid + ` {}`, status: http.StatusBadRequest, errorCode: "invalid_json"},
 	}
@@ -936,7 +969,15 @@ func TestCreateReportDistinguishesBodyLimitFromMalformedAndMultipleJSON(t *testi
 		t.Run(test.name, func(t *testing.T) {
 			before := checker.callCount()
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(test.body)))
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(test.body))
+			if test.contentLength != 0 {
+				request.ContentLength = test.contentLength
+			}
+			if test.streamed {
+				request.Body = io.NopCloser(strings.NewReader(test.body))
+				request.ContentLength = -1
+			}
+			handler.ServeHTTP(recorder, request)
 			if recorder.Code != test.status {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}

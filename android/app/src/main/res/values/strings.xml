@@ -23,6 +23,12 @@
     <string name="attempts_label">Traceroute attempts</string><string name="attempts_hint">1 to 10</string><string name="remove_target">Remove target %1$d, %2$s, %3$s</string><string name="remove_symbol">×</string>
     <string name="error_api_base">Enter an allowed API origin. Release builds require HTTPS.</string><string name="error_timeout">Timeout must be 100 to 30000 ms.</string><string name="error_target">Check target %1$d: %2$s</string>
     <string name="error_network">Could not reach the API. Check the address and network.</string><string name="error_timeout_request">The diagnostics request timed out.</string><string name="error_response_large">The report was too large to display safely.</string><string name="error_invalid_response">The server returned an invalid report.</string>
+    <string name="error_capability_check_kind">This server does not support one or more selected check types.</string>
+    <string name="error_capability_target_count">This server supports fewer check targets. Remove targets and try again.</string>
+    <string name="error_capability_timeout">This server does not support the selected timeout. Choose a different timeout and try again.</string>
+    <string name="error_capability_traceroute_attempts">This server supports fewer traceroute attempts. Reduce attempts and try again.</string>
+    <string name="error_capability_topology_mode">This server does not support the selected topology mode.</string>
+    <string name="accessibility_error_state">Error</string>
     <string name="error_401">Authentication was rejected. Check the bearer credential.</string><string name="error_422">The targets or options were rejected. Review the highlighted inputs.</string><string name="error_429">Too many requests. Wait before retrying.</string><string name="error_503">The diagnostics service is temporarily busy.</string><string name="error_500">The server could not complete diagnostics.</string><string name="error_http">The server rejected the diagnostics request (HTTP %1$d).</string>
     <string name="retry_after">Try again after %1$s.</string>
     <string name="report_heading">Report</string>

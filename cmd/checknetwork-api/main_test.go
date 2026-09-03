@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,24 @@ import (
 	"github.com/network-troubleshooting-company/checknetwork/backend/api"
 	"github.com/network-troubleshooting-company/checknetwork/backend/diagnostic"
 )
+
+func TestServerStartedLogUsesExactBuildIdentity(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	logServerStarted(logger, "127.0.0.1:43210", "0.1.0", "0123456789abcdef0123456789abcdef01234567")
+	var record map[string]any
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["msg"] != "server started" || record["address"] != "127.0.0.1:43210" || record["version"] != "0.1.0" || record["revision"] != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("startup record=%v", record)
+	}
+	for _, forbidden := range []string{"build_path", "build_time"} {
+		if _, exists := record[forbidden]; exists {
+			t.Fatalf("startup record leaked %s: %v", forbidden, record)
+		}
+	}
+}
 
 func testEnvironment(values map[string]string) func(string) string {
 	return func(name string) string { return values[name] }
@@ -266,7 +285,9 @@ func TestShutdownServiceUsesOneEndToEndDeadline(t *testing.T) {
 
 	timeout := 50 * time.Millisecond
 	begin := time.Now()
-	err = shutdownService(context.Background(), timeout, &shutdownRecorder{wait: true}, supervisor, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	operational := newOperationalState(true)
+	operational.MarkAccepting()
+	err = shutdownService(context.Background(), timeout, operational, &shutdownRecorder{wait: true}, supervisor, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 	elapsed := time.Since(begin)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown error=%v", err)
@@ -302,7 +323,9 @@ func TestShutdownServiceCleansSupervisorAfterHTTPShutdownFailure(t *testing.T) {
 
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	if err := shutdownService(context.Background(), 100*time.Millisecond, recorder, supervisor, logger); !errors.Is(err, recorder.err) {
+	operational := newOperationalState(true)
+	operational.MarkAccepting()
+	if err := shutdownService(context.Background(), 100*time.Millisecond, operational, recorder, supervisor, logger); !errors.Is(err, recorder.err) {
 		t.Fatalf("shutdown error=%v", err)
 	}
 	<-runDone

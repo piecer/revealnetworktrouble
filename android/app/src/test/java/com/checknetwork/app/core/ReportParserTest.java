@@ -196,6 +196,50 @@ public final class ReportParserTest {
         assertThrows(ReportParseException.class, () -> ReportParser.parse(report("healthy", "{\"total\":1,\"passed\":1,\"failed\":0}", "[" + withBadLink + "]", "")));
     }
 
+    @Test public void fullTopologyAcceptsProducerOptionalLatencyDeltaAndItsExactBound() throws Exception {
+        JSONObject omittedZero = new JSONObject(enrichmentGoFixture("upstream"));
+        JSONObject firstProducerLink = omittedZero.getJSONArray("results").getJSONObject(0).getJSONObject("details")
+                .getJSONObject("topology").getJSONArray("links").getJSONObject(0);
+        assertFalse("Go omitempty must omit the zero delta", firstProducerLink.has("latency_delta_ms"));
+        assertEquals(CheckKind.TRACEROUTE, ReportParser.parse(omittedZero.toString()).results().get(0).kind());
+
+        JSONObject atBound = new JSONObject(enrichmentGoFixture("upstream"));
+        fullTopologyLinkWithDelta(atBound).put("latency_delta_ms", 30_000);
+        Report parsed = ReportParser.parse(atBound.toString());
+        Map<?, ?> details = parsed.results().get(0).details();
+        assertThrows(UnsupportedOperationException.class, () -> details.clear());
+        Map<?, ?> topology = (Map<?, ?>) details.get("topology");
+        assertThrows(UnsupportedOperationException.class, () -> topology.clear());
+        Map<?, ?> link = (Map<?, ?>) ((java.util.List<?>) topology.get("links")).get(1);
+        assertEquals(30_000, ((Number) link.get("latency_delta_ms")).intValue());
+        assertThrows(UnsupportedOperationException.class, () -> ((Map) link).put("latency_delta_ms", 1));
+    }
+
+    @Test public void fullTopologyRejectsMalformedOrOutOfRangeProducerLatencyDelta() throws Exception {
+        for (Object invalid : new Object[]{"1", -1, 30_001, JSONObject.NULL}) {
+            JSONObject report = new JSONObject(enrichmentGoFixture("upstream"));
+            fullTopologyLinkWithDelta(report).put("latency_delta_ms", invalid);
+            assertThrows(String.valueOf(invalid), ReportParseException.class, () -> ReportParser.parse(report.toString()));
+        }
+
+        String overflow = enrichmentGoFixture("upstream").replace("\"latency_delta_ms\":1", "\"latency_delta_ms\":1e309");
+        assertNotEquals(enrichmentGoFixture("upstream"), overflow);
+        assertThrows(ReportParseException.class, () -> ReportParser.parse(overflow));
+    }
+
+    @Test public void nonexistentLinkLatencyMsCannotSubstituteForProducerLatencyDelta() throws Exception {
+        JSONObject report = new JSONObject(enrichmentGoFixture("upstream"));
+        JSONObject link = fullTopologyLinkWithDelta(report);
+        link.remove("latency_delta_ms");
+        link.put("latency_ms", 1);
+        assertThrows(ReportParseException.class, () -> ReportParser.parse(report.toString()));
+    }
+
+    private static JSONObject fullTopologyLinkWithDelta(JSONObject report) throws Exception {
+        return report.getJSONArray("results").getJSONObject(0).getJSONObject("details")
+                .getJSONObject("topology").getJSONArray("links").getJSONObject(1);
+    }
+
     private static String result(String kind, String status) {
         return "{\"kind\":\"" + kind + "\",\"address\":\"secret.example.test\",\"status\":\"" + status
                 + "\",\"latency_ms\":12,\"started_at\":\"2026-09-02T00:00:00Z\"}";

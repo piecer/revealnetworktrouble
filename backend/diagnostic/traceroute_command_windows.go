@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+func traceExecutableName() string { return "tracert.exe" }
+
 func traceCommandSpec(timeout time.Duration, address string) (string, []string) {
 	timeoutMS := timeout.Milliseconds()
 	if timeoutMS < 1 {
@@ -15,5 +17,5 @@ func traceCommandSpec(timeout time.Duration, address string) (string, []string) 
 	if maxTimeoutMS := MaxTimeout.Milliseconds(); timeoutMS > maxTimeoutMS {
 		timeoutMS = maxTimeoutMS
 	}
-	return "tracert.exe", []string{"-d", "-w", strconv.FormatInt(timeoutMS, 10), "-h", strconv.Itoa(MaxTraceHops), address}
+	return traceExecutableName(), []string{"-d", "-w", strconv.FormatInt(timeoutMS, 10), "-h", strconv.Itoa(MaxTraceHops), address}
 }

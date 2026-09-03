@@ -22,6 +22,7 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import androidx.core.view.ViewCompat;
 import com.checknetwork.app.core.ApiError;
+import com.checknetwork.app.core.CheckCapabilities;
 import com.checknetwork.app.core.CheckKind;
 import com.checknetwork.app.core.ContractLimits;
 import com.checknetwork.app.core.Report;
@@ -161,10 +162,27 @@ public final class MainActivity extends Activity {
     }
     private void showTransportError(TransportException failure){
         if(failure.kind()==TransportException.Kind.API){ApiError api=failure.apiError().orElseThrow();int res=switch(api.status()){case 401->R.string.error_401;case 422->R.string.error_422;case 429->R.string.error_429;case 503->R.string.error_503;case 500->R.string.error_500;default->0;};String message=res==0?getString(R.string.error_http,api.status()):getString(res);if(api.retryAt().isPresent())message+="\n"+getString(R.string.retry_after,api.retryAt().orElseThrow().toString());showError(message);return;}
-        int res=switch(failure.kind()){case NETWORK->R.string.error_network;case TIMEOUT->R.string.error_timeout_request;case RESPONSE_TOO_LARGE->R.string.error_response_large;default->R.string.error_invalid_response;};showError(getString(res));
+        int res=switch(failure.kind()){
+            case NETWORK->R.string.error_network;
+            case TIMEOUT->R.string.error_timeout_request;
+            case RESPONSE_TOO_LARGE->R.string.error_response_large;
+            case INVALID_RESPONSE->R.string.error_invalid_response;
+            case UNSUPPORTED_CAPABILITY->capabilityErrorResource(
+                    failure.capabilityMismatchReason().orElseThrow());
+            case API,CANCELLED->throw new IllegalStateException("Unexpected error-state failure kind");
+        };showError(getString(res));
     }
-    private void showError(String message){error.setText(message);error.setVisibility(View.VISIBLE);error.requestFocus();}
-    private void hideError(){error.setVisibility(View.GONE);}
+    private static int capabilityErrorResource(CheckCapabilities.CapabilityMismatchException.Reason reason){
+        return switch(reason){
+            case CHECK_KIND->R.string.error_capability_check_kind;
+            case TARGET_COUNT->R.string.error_capability_target_count;
+            case TIMEOUT->R.string.error_capability_timeout;
+            case TRACEROUTE_ATTEMPTS->R.string.error_capability_traceroute_attempts;
+            case TOPOLOGY_MODE->R.string.error_capability_topology_mode;
+        };
+    }
+    private void showError(String message){error.setText(message);ViewCompat.setStateDescription(error,getString(R.string.accessibility_error_state));error.setVisibility(View.VISIBLE);error.requestFocus();}
+    private void hideError(){error.setVisibility(View.GONE);ViewCompat.setStateDescription(error,null);}
     private void clearReady(){readyReport=null;readyRaw=null;if(rawWarningDialog!=null){rawWarningDialog.dismiss();rawWarningDialog=null;}rawReportShare.clear();results.removeAllViews();report.setVisibility(View.GONE);share.setEnabled(false);shareRaw.setEnabled(false);}
     private void renderReady(RequestState state){
         String raw=state.rawJson().orElse(null);

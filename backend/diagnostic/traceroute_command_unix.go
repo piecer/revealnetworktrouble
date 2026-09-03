@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+func traceExecutableName() string { return "traceroute" }
+
 func traceCommandSpec(_ time.Duration, address string) (string, []string) {
-	return "traceroute", []string{"-n", "-q", "1", "-w", "2", "-m", strconv.Itoa(MaxTraceHops), address}
+	return traceExecutableName(), []string{"-n", "-q", "1", "-w", "2", "-m", strconv.Itoa(MaxTraceHops), address}
 }

@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/network-troubleshooting-company/checknetwork/backend/diagnostic"
 )
 
 // TelemetryEvent is a closed set of API lifecycle events.
@@ -41,6 +43,7 @@ const (
 	TelemetryOutcomeInvalidRequest     TelemetryOutcome = "invalid_request"
 	TelemetryOutcomeRequestTooLarge    TelemetryOutcome = "request_too_large"
 	TelemetryOutcomeServerCapacity     TelemetryOutcome = "server_capacity_unavailable"
+	TelemetryOutcomeBodyCapacity       TelemetryOutcome = "body_decode_capacity_unavailable"
 	TelemetryOutcomeCheckerCapacity    TelemetryOutcome = "checker_capacity_unavailable"
 	TelemetryOutcomeWriteCapacity      TelemetryOutcome = "write_capacity_unavailable"
 	TelemetryOutcomePolicy             TelemetryOutcome = "policy_blocked"
@@ -71,6 +74,7 @@ const (
 	maxTelemetryCount    int64 = 1 << 20
 	maxTelemetryBytes    int64 = 1 << 30
 	maxTelemetryDuration       = 24 * time.Hour
+	maxTelemetryFindings       = 2 * diagnostic.MaxTargets
 )
 
 // TelemetryRecord is the complete telemetry input contract. It intentionally
@@ -92,6 +96,13 @@ type TelemetryRecord struct {
 	RunnerDuration         time.Duration
 	MarshalDuration        time.Duration
 	WriteDuration          time.Duration
+	ReportStatus           diagnostic.Status
+	AnalysisVerdict        diagnostic.Verdict
+	TotalResults           int
+	FailedResults          int
+	FindingCount           int
+
+	reportDiagnosticsPresent bool
 }
 
 var (
@@ -151,7 +162,7 @@ func EmitTelemetry(logger *slog.Logger, record TelemetryRecord) (err error) {
 		}
 	}()
 
-	logger.LogAttrs(context.Background(), slog.LevelInfo, "api_telemetry",
+	attrs := []slog.Attr{
 		slog.String("event", string(bounded.Event)),
 		slog.String("outcome", string(bounded.Outcome)),
 		slog.String("request_id", bounded.RequestID),
@@ -168,7 +179,17 @@ func EmitTelemetry(logger *slog.Logger, record TelemetryRecord) (err error) {
 		slog.Int64("runner_duration_ms", bounded.RunnerDuration.Milliseconds()),
 		slog.Int64("marshal_duration_ms", bounded.MarshalDuration.Milliseconds()),
 		slog.Int64("write_duration_ms", bounded.WriteDuration.Milliseconds()),
-	)
+	}
+	if bounded.reportDiagnosticsPresent {
+		attrs = append(attrs,
+			slog.String("report_status", string(bounded.ReportStatus)),
+			slog.String("analysis_verdict", string(bounded.AnalysisVerdict)),
+			slog.Int("total_results", bounded.TotalResults),
+			slog.Int("failed_results", bounded.FailedResults),
+			slog.Int("finding_count", bounded.FindingCount),
+		)
+	}
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "api_telemetry", attrs...)
 	return nil
 }
 
@@ -197,6 +218,9 @@ func validateTelemetryRecord(record TelemetryRecord) (TelemetryRecord, error) {
 	}
 	if !validTelemetrySemantics(record) {
 		return TelemetryRecord{}, invalidTelemetry("event contract")
+	}
+	if !validReportDiagnostics(record) {
+		return TelemetryRecord{}, invalidTelemetry("report diagnostics")
 	}
 	if record.Active < 0 || record.Capacity < 0 || record.RequestBytes < 0 ||
 		record.ResponseAttemptedBytes < 0 || record.ResponseBytes < 0 {
@@ -257,6 +281,7 @@ func validTelemetryOutcome(outcome TelemetryOutcome) bool {
 		TelemetryOutcomeInvalidRequest,
 		TelemetryOutcomeRequestTooLarge,
 		TelemetryOutcomeServerCapacity,
+		TelemetryOutcomeBodyCapacity,
 		TelemetryOutcomeCheckerCapacity,
 		TelemetryOutcomeWriteCapacity,
 		TelemetryOutcomePolicy,
@@ -309,12 +334,10 @@ func validTelemetrySemantics(record TelemetryRecord) bool {
 				TelemetryOutcomeUnauthorized, TelemetryOutcomeRateLimited,
 				TelemetryOutcomeInvalidJSON, TelemetryOutcomeInvalidRequest,
 				TelemetryOutcomeRequestTooLarge, TelemetryOutcomeServerCapacity,
-				TelemetryOutcomePolicy)
+				TelemetryOutcomeBodyCapacity, TelemetryOutcomePolicy)
 		case TelemetryEventReportFinish:
 			return outcomeIn(record.Outcome,
-				TelemetryOutcomeOK, TelemetryOutcomeCheckerCapacity,
-				TelemetryOutcomeWriteCapacity, TelemetryOutcomeTimeout,
-				TelemetryOutcomePanicSafeFailure, TelemetryOutcomeSerialization,
+				TelemetryOutcomeOK, TelemetryOutcomeWriteCapacity, TelemetryOutcomeSerialization,
 				TelemetryOutcomeFullSize, TelemetryOutcomeCompactSize,
 				TelemetryOutcomeWriteFailedZero, TelemetryOutcomeWriteFailedPartial)
 		default:
@@ -343,12 +366,46 @@ func validTelemetrySemantics(record TelemetryRecord) bool {
 	case TelemetryOutcomePanicSafeFailure, TelemetryOutcomeSerialization,
 		TelemetryOutcomeFullSize, TelemetryOutcomeCompactSize:
 		return record.Status == 500
-	case TelemetryOutcomeServerCapacity, TelemetryOutcomeWriteCapacity:
+	case TelemetryOutcomeServerCapacity, TelemetryOutcomeBodyCapacity, TelemetryOutcomeWriteCapacity:
 		return record.Status == 503
 	case TelemetryOutcomeCancel:
 		return record.Route == TelemetryRouteReports && record.Status == 499
 	case TelemetryOutcomeWriteFailedZero, TelemetryOutcomeWriteFailedPartial:
 		return true
+	default:
+		return false
+	}
+}
+
+func validReportDiagnostics(record TelemetryRecord) bool {
+	hasValues := record.ReportStatus != "" || record.AnalysisVerdict != "" ||
+		record.TotalResults != 0 || record.FailedResults != 0 || record.FindingCount != 0
+	if !record.reportDiagnosticsPresent {
+		return !hasValues
+	}
+	if record.Event != TelemetryEventReportFinish || record.Outcome != TelemetryOutcomeOK || record.Status != 0 ||
+		record.ResponseAttemptedBytes <= 0 || record.ResponseBytes != record.ResponseAttemptedBytes {
+		return false
+	}
+	if record.TotalResults < 1 || record.TotalResults > diagnostic.MaxTargets ||
+		record.FailedResults < 0 || record.FailedResults > record.TotalResults ||
+		record.FindingCount < 0 || record.FindingCount > maxTelemetryFindings {
+		return false
+	}
+	if record.AnalysisVerdict != diagnostic.VerdictHealthy &&
+		record.AnalysisVerdict != diagnostic.VerdictAttention &&
+		record.AnalysisVerdict != diagnostic.VerdictInconclusive {
+		return false
+	}
+	switch record.ReportStatus {
+	case diagnostic.StatusHealthy:
+		return record.FailedResults == 0
+	case diagnostic.StatusDegraded:
+		// A degraded result is not counted as passed, so an all-degraded report
+		// legitimately has failed_results == total_results.
+		return record.FailedResults > 0
+	case diagnostic.StatusUnreachable:
+		return record.FailedResults == record.TotalResults
 	default:
 		return false
 	}

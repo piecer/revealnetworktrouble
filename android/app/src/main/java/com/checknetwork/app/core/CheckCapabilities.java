@@ -26,6 +26,24 @@ public final class CheckCapabilities {
     private final int maxTimeoutMs;
     private final int maxTracerouteAttempts;
 
+    /** A closed, non-reflecting classification of a valid request/capability mismatch. */
+    public static final class CapabilityMismatchException extends IllegalArgumentException {
+        public enum Reason { CHECK_KIND, TARGET_COUNT, TIMEOUT, TRACEROUTE_ATTEMPTS, TOPOLOGY_MODE }
+
+        private final Reason reason;
+
+        private CapabilityMismatchException(Reason reason) {
+            super("The report request is not supported by the server capabilities.");
+            this.reason = Objects.requireNonNull(reason, "reason");
+        }
+
+        public Reason reason() { return reason; }
+
+        @Override public String toString() {
+            return "CapabilityMismatchException{reason=" + reason + "}";
+        }
+    }
+
     private CheckCapabilities(Set<CheckKind> kinds, Set<ReportRequest.TopologyMode> modes,
             int maxTargets, int minTimeoutMs, int maxTimeoutMs, int maxTracerouteAttempts) {
         this.kinds = immutableKinds(kinds);
@@ -98,19 +116,23 @@ public final class CheckCapabilities {
     /** Rejects a request without reflecting target values or server-provided strings. */
     public void validate(ReportRequest request) {
         Objects.requireNonNull(request, "request");
-        if (request.targets().size() > maxTargets) throw unsupported("target count");
-        if (request.timeoutMs() < minTimeoutMs || request.timeoutMs() > maxTimeoutMs)
-            throw unsupported("timeout");
-        if (request.topologyMode() != null && !supports(request.topologyMode()))
-            throw unsupported("topology mode");
         for (TargetInput target : request.targets()) {
-            if (!supports(target.kind())) throw unsupported("check kind");
+            if (!supports(target.kind())) throw unsupported(CapabilityMismatchException.Reason.CHECK_KIND);
+        }
+        if (request.targets().size() > maxTargets)
+            throw unsupported(CapabilityMismatchException.Reason.TARGET_COUNT);
+        if (request.timeoutMs() < minTimeoutMs || request.timeoutMs() > maxTimeoutMs)
+            throw unsupported(CapabilityMismatchException.Reason.TIMEOUT);
+        for (TargetInput target : request.targets()) {
             if (target.kind() == CheckKind.TRACEROUTE) {
                 int attempts = target.attempts() == null
                         ? ContractLimits.DEFAULT_TRACEROUTE_ATTEMPTS : target.attempts();
-                if (attempts > maxTracerouteAttempts) throw unsupported("traceroute attempts");
+                if (attempts > maxTracerouteAttempts)
+                    throw unsupported(CapabilityMismatchException.Reason.TRACEROUTE_ATTEMPTS);
             }
         }
+        if (request.topologyMode() != null && !supports(request.topologyMode()))
+            throw unsupported(CapabilityMismatchException.Reason.TOPOLOGY_MODE);
     }
 
     public Set<CheckKind> kinds() { return kinds; }
@@ -189,8 +211,8 @@ public final class CheckCapabilities {
         return Collections.unmodifiableSet(copy);
     }
 
-    private static IllegalArgumentException unsupported(String field) {
-        return new IllegalArgumentException("Report request exceeds advertised " + field + " capabilities");
+    private static CapabilityMismatchException unsupported(CapabilityMismatchException.Reason reason) {
+        return new CapabilityMismatchException(reason);
     }
 
     private static IllegalArgumentException invalid() {

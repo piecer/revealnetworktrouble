@@ -26,6 +26,7 @@ import org.robolectric.RobolectricTestRunner;
 public final class CapabilitiesTransportTest {
     private static final String VALID = "{\"kinds\":[\"dns\"],\"topology_modes\":[\"full\"],\"limits\":{"
             + "\"max_targets\":20,\"max_traceroute_attempts\":10,\"timeout_ms_min\":100,\"timeout_ms_max\":30000}}";
+    private enum Boundary { OPEN, CONFIG, RESPONSE, CONTENT_LENGTH, INPUT_OPEN, INPUT_READ, INPUT_CLOSE, HEADER }
 
     @Test public void getsChecksJsonWithHttpsAuthorizationNoRedirectsAndDeadline() throws Exception {
         FakeConnection connection = new FakeConnection(200, bytes(VALID));
@@ -103,6 +104,207 @@ public final class CapabilitiesTransportTest {
         }
     }
 
+    @Test public void sharedSessionBudgetBoundsSchedulerAndSocketTimeouts() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        clock.nanos = TimeUnit.MILLISECONDS.toNanos(312_000L);
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        FakeScheduler scheduler = new FakeScheduler();
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+
+        new CapabilitiesTransport(config, url -> connection, clock, scheduler, deadline).newCall().execute();
+
+        assertEquals(3_000L, scheduler.delayMillis);
+        assertEquals(3_000, connection.connectTimeout);
+        assertEquals(3_000, connection.readTimeout);
+    }
+
+    @Test public void exactSharedExpirySkipsConnectionOpen() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        clock.nanos = TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+        int[] opens = {0};
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(config, url -> {
+            opens[0]++;
+            throw new AssertionError("expired discovery must not open a connection");
+        }, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(0, opens[0]);
+    }
+
+    @Test public void sharedExpiryDuringIoWinsLateNetworkFailure() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        connection.onResponse = () -> clock.nanos =
+                TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+        connection.responseFailure = new IOException("late network failure");
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(
+                config, url -> connection, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(1, connection.disconnects);
+    }
+
+    @Test public void sharedExpiryDuringSocketTimeoutRemainsTimeout() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        connection.onResponse = () -> clock.nanos =
+                TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+        connection.responseFailure = new SocketTimeoutException("late socket timeout");
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(
+                config, url -> connection, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(1, connection.disconnects);
+    }
+
+    @Test public void exactSharedExpiryDuringConfigurationSkipsResponseIo() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        connection.onRequestProperty = () -> clock.nanos =
+                TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(
+                config, url -> connection, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(0, connection.responseRequests);
+        assertEquals(1, connection.disconnects);
+    }
+
+    @Test public void exactSharedExpiryDuringContentLengthSkipsSuccessBodyOpen() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        connection.onContentLength = () -> clock.nanos =
+                TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(
+                config, url -> connection, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(0, connection.inputRequests);
+        assertEquals(1, connection.disconnects);
+    }
+
+    @Test public void exactExpiryAtEverySynchronousBoundaryStopsBeforeTheNextNetworkCall() throws Exception {
+        for (int run = 0; run < 100; run++)
+            for (Boundary boundary : Boundary.values()) assertCapabilitiesBoundary(boundary, 10_000L, true);
+    }
+
+    @Test public void oneMillisecondRemainingAtEverySynchronousBoundaryStillAllowsTheCurrentCall() throws Exception {
+        for (Boundary boundary : Boundary.values()) assertCapabilitiesBoundary(boundary, 9_999L, false);
+    }
+
+    @Test public void sharedExpiryWinnerIsStableAcrossOneHundredRuns() throws Exception {
+        for (int run = 0; run < 100; run++) {
+            FakeClock clock = new FakeClock();
+            OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+            FakeConnection connection = new FakeConnection(200, bytes(VALID));
+            connection.onResponse = () -> clock.nanos =
+                    TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+            connection.responseFailure = new IOException("late network failure");
+            ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+            CapabilitiesTransport transport = new CapabilitiesTransport(
+                    config, url -> connection, clock, new FakeScheduler(), deadline);
+
+            TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+            assertEquals("run " + run, TransportException.Kind.TIMEOUT, timeout.kind());
+            assertEquals("run " + run, 1, connection.disconnects);
+        }
+    }
+
+    @Test public void sharedExpiryDuringConnectionOpenWinsLateNetworkFailure() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(config, url -> {
+            clock.nanos = TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+            throw new IOException("late open failure");
+        }, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+    }
+
+    @Test public void sharedExpiryDuringBodyReadWinsLateNetworkFailure() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        connection.input = new InputStream() {
+            @Override public int read() throws IOException { throw lateFailure(); }
+            @Override public int read(byte[] target, int offset, int length) throws IOException {
+                throw lateFailure();
+            }
+            private IOException lateFailure() {
+                clock.nanos = TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+                return new IOException("late body failure");
+            }
+        };
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(
+                config, url -> connection, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(1, connection.disconnects);
+    }
+
+    @Test public void sharedExpiryAtMalformedParseWinsInvalidResponse() throws Exception {
+        ExpiringReadClock clock = new ExpiringReadClock(21);
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(200, bytes("{malformed"));
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(
+                config, url -> connection, clock, new FakeScheduler(), deadline);
+
+        TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+
+        assertEquals(TransportException.Kind.TIMEOUT, timeout.kind());
+        assertEquals(1, connection.disconnects);
+    }
+
+    @Test public void cancellationWinsWhenSharedExpiryAndLateNetworkFailureAreSimultaneous() throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(200, bytes(VALID));
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport.Call[] holder = new CapabilitiesTransport.Call[1];
+        CapabilitiesTransport transport = new CapabilitiesTransport(
+                config, url -> connection, clock, new FakeScheduler(), deadline);
+        holder[0] = transport.newCall();
+        connection.onResponse = () -> {
+            clock.nanos = TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS);
+            holder[0].cancel();
+        };
+        connection.responseFailure = new IOException("simultaneous late failure");
+
+        TransportException cancelled = assertThrows(TransportException.class, holder[0]::execute);
+
+        assertEquals(TransportException.Kind.CANCELLED, cancelled.kind());
+        assertEquals(1, connection.disconnects);
+    }
+
     @Test public void cleanupFailuresCannotReplaceSuccessOrApiOutcome() throws Exception {
         FakeConnection success = new FakeConnection(200, bytes(VALID));
         success.input = closeFailing(bytes(VALID)); success.disconnectFailure = new IllegalStateException("secret disconnect");
@@ -143,6 +345,49 @@ public final class CapabilitiesTransportTest {
         return error;
     }
 
+    private static void assertCapabilitiesBoundary(Boundary boundary, long elapsedMillis, boolean expires)
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        OperationDeadline deadline = new OperationDeadline(clock, ReportTransport.MAX_DEADLINE_MILLIS);
+        FakeConnection connection = new FakeConnection(boundary == Boundary.HEADER ? 401 : 200, bytes(VALID));
+        Runnable advance = () -> clock.nanos = TimeUnit.MILLISECONDS.toNanos(elapsedMillis);
+        if (boundary == Boundary.CONFIG) connection.onRequestProperty = advance;
+        if (boundary == Boundary.RESPONSE) connection.onResponse = advance;
+        if (boundary == Boundary.CONTENT_LENGTH) connection.onContentLength = advance;
+        if (boundary == Boundary.INPUT_OPEN) connection.onInputOpen = advance;
+        if (boundary == Boundary.INPUT_READ) connection.onInputRead = advance;
+        if (boundary == Boundary.INPUT_CLOSE) connection.onInputClose = advance;
+        if (boundary == Boundary.HEADER) connection.onHeader = advance;
+        ApiConnectionConfig config = ApiConnectionConfig.create("https://api.example.test", false, null);
+        CapabilitiesTransport transport = new CapabilitiesTransport(config, url -> {
+            if (boundary == Boundary.OPEN) advance.run();
+            return connection;
+        }, clock, new FakeScheduler(), deadline);
+
+        if (expires) {
+            TransportException timeout = assertThrows(TransportException.class, transport.newCall()::execute);
+            assertEquals(boundary.name(), TransportException.Kind.TIMEOUT, timeout.kind());
+            switch (boundary) {
+                case OPEN, CONFIG -> assertEquals(boundary.name(), 0, connection.responseRequests);
+                case RESPONSE -> assertEquals(boundary.name(), 0, connection.contentLengthRequests);
+                case CONTENT_LENGTH -> assertEquals(boundary.name(), 0, connection.inputRequests);
+                case INPUT_OPEN -> assertEquals(boundary.name(), 0, connection.readRequests);
+                case INPUT_READ -> {
+                    assertEquals(boundary.name(), 1, connection.readRequests);
+                    assertEquals(boundary.name(), 0, connection.inputCloses);
+                }
+                case INPUT_CLOSE, HEADER -> { }
+            }
+        } else if (boundary == Boundary.HEADER) {
+            TransportException api = assertThrows(TransportException.class, transport.newCall()::execute);
+            assertEquals(boundary.name(), TransportException.Kind.API, api.kind());
+        } else {
+            assertTrue(boundary.name(), transport.newCall().execute().kinds()
+                    .contains(com.checknetwork.app.core.CheckKind.DNS));
+        }
+        assertEquals(boundary.name(), 1, connection.disconnects);
+    }
+
     private static InputStream closeFailing(byte[] value) {
         return new ByteArrayInputStream(value) {
             @Override public void close() throws IOException { throw new IOException("secret close"); }
@@ -151,7 +396,18 @@ public final class CapabilitiesTransportTest {
     private static byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }
 
     private static final class FakeClock implements ReportTransport.Clock {
-        @Override public long nanoTime() { return 0; }
+        long nanos;
+        @Override public long nanoTime() { return nanos; }
+        @Override public Instant now() { return Instant.EPOCH; }
+    }
+    private static final class ExpiringReadClock implements ReportTransport.Clock {
+        private final int expiryRead;
+        private int reads;
+        ExpiringReadClock(int expiryRead) { this.expiryRead = expiryRead; }
+        @Override public long nanoTime() {
+            return ++reads >= expiryRead
+                    ? TimeUnit.MILLISECONDS.toNanos(ReportTransport.MAX_DEADLINE_MILLIS) : 0L;
+        }
         @Override public Instant now() { return Instant.EPOCH; }
     }
     private static final class FakeScheduler implements ReportTransport.Scheduler {
@@ -168,31 +424,45 @@ public final class CapabilitiesTransportTest {
 
     private static class FakeConnection extends HttpURLConnection {
         final Map<String,String> headers = new LinkedHashMap<>();
-        InputStream input; int status; long contentLength = -1; int inputRequests; int bytesRead; int disconnects;
+        InputStream input; int status; long contentLength = -1;
+        int responseRequests; int contentLengthRequests; int inputRequests; int readRequests; int inputCloses;
+        int bytesRead; int disconnects;
         String method; int connectTimeout; int readTimeout; boolean followRedirects = true; boolean doOutput;
         IOException responseFailure; RuntimeException disconnectFailure;
+        Runnable onRequestProperty = () -> {}; Runnable onResponse = () -> {}; Runnable onContentLength = () -> {};
+        Runnable onInputOpen = () -> {}; Runnable onInputRead = () -> {}; Runnable onInputClose = () -> {};
+        Runnable onHeader = () -> {};
         FakeConnection(int status, byte[] body) throws Exception {
             super(new URL("https://fake.invalid")); this.status = status; this.input = counting(body);
         }
         private InputStream counting(byte[] body) {
             return new ByteArrayInputStream(body) {
                 @Override public synchronized int read(byte[] target, int offset, int length) {
-                    int count = super.read(target, offset, length); if (count > 0) bytesRead += count; return count;
+                    readRequests++; int count = super.read(target, offset, length); if (count > 0) bytesRead += count;
+                    onInputRead.run(); return count;
                 }
-                @Override public synchronized int read() { int value = super.read(); if (value >= 0) bytesRead++; return value; }
+                @Override public synchronized int read() {
+                    readRequests++; int value = super.read(); if (value >= 0) bytesRead++; onInputRead.run(); return value;
+                }
+                @Override public void close() throws IOException { inputCloses++; onInputClose.run(); super.close(); }
             };
         }
         @Override public void setRequestMethod(String value) { method = value; }
-        @Override public void setRequestProperty(String key, String value) { headers.put(key, value); }
-        @Override public String getHeaderField(String key) { return headers.get(key); }
+        @Override public void setRequestProperty(String key, String value) { headers.put(key, value); onRequestProperty.run(); }
+        @Override public String getHeaderField(String key) { onHeader.run(); return headers.get(key); }
         @Override public void setConnectTimeout(int value) { connectTimeout = value; }
         @Override public void setReadTimeout(int value) { readTimeout = value; }
         @Override public void setInstanceFollowRedirects(boolean value) { followRedirects = value; }
         @Override public void setDoOutput(boolean value) { doOutput = value; }
-        @Override public int getResponseCode() throws IOException { if (responseFailure != null) throw responseFailure; return status; }
-        @Override public long getContentLengthLong() { return contentLength; }
-        @Override public InputStream getInputStream() { inputRequests++; return input; }
-        @Override public InputStream getErrorStream() { inputRequests++; return input; }
+        @Override public int getResponseCode() throws IOException {
+            responseRequests++;
+            onResponse.run();
+            if (responseFailure != null) throw responseFailure;
+            return status;
+        }
+        @Override public long getContentLengthLong() { contentLengthRequests++; onContentLength.run(); return contentLength; }
+        @Override public InputStream getInputStream() { inputRequests++; onInputOpen.run(); return input; }
+        @Override public InputStream getErrorStream() { inputRequests++; onInputOpen.run(); return input; }
         @Override public void disconnect() { disconnects++; if (disconnectFailure != null) throw disconnectFailure; }
         @Override public boolean usingProxy() { return false; }
         @Override public void connect() {}

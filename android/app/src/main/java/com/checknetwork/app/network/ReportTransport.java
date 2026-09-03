@@ -38,7 +38,7 @@ public final class ReportTransport {
     private static final ScheduledExecutorService DEFAULT_SCHEDULER = Executors.newSingleThreadScheduledExecutor(new DaemonFactory());
 
     public interface ConnectionFactory { HttpURLConnection open(URL url) throws IOException; }
-    public interface Clock { long nanoTime(); Instant now(); }
+    public interface Clock extends OperationDeadline.Clock { Instant now(); }
     public interface Scheduler { Scheduled schedule(Runnable task, long delayMillis); }
     public interface Scheduled { void cancel(); }
 
@@ -46,6 +46,7 @@ public final class ReportTransport {
     private final ConnectionFactory connections;
     private final Clock clock;
     private final Scheduler scheduler;
+    private final OperationDeadline operationDeadline;
 
     public ReportTransport(ApiConnectionConfig config) {
         this(config, url -> (HttpURLConnection) url.openConnection(),
@@ -59,11 +60,35 @@ public final class ReportTransport {
                 });
     }
 
+    public ReportTransport(ApiConnectionConfig config, Clock clock,
+            OperationDeadline operationDeadline) {
+        this(config, url -> (HttpURLConnection) url.openConnection(), clock,
+                (task, delay) -> {
+                    java.util.concurrent.ScheduledFuture<?> future =
+                            DEFAULT_SCHEDULER.schedule(task, delay, TimeUnit.MILLISECONDS);
+                    return () -> future.cancel(false);
+                }, operationDeadline);
+    }
+
     public ReportTransport(ApiConnectionConfig config, ConnectionFactory connections, Clock clock, Scheduler scheduler) {
+        this(config, connections, clock, scheduler, null, true);
+    }
+
+    public ReportTransport(ApiConnectionConfig config, ConnectionFactory connections, Clock clock,
+            Scheduler scheduler, OperationDeadline operationDeadline) {
+        this(config, connections, clock, scheduler,
+                Objects.requireNonNull(operationDeadline, "operationDeadline"), false);
+    }
+
+    private ReportTransport(ApiConnectionConfig config, ConnectionFactory connections, Clock clock,
+            Scheduler scheduler, OperationDeadline operationDeadline, boolean standalone) {
         this.config = Objects.requireNonNull(config, "config");
         this.connections = Objects.requireNonNull(connections, "connections");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        this.operationDeadline = operationDeadline;
+        if (!standalone && operationDeadline.clock() != clock)
+            throw new IllegalArgumentException("operation deadline must use the transport clock");
     }
 
     public Call newCall(ReportRequest request) {
@@ -127,6 +152,7 @@ public final class ReportTransport {
             long startedNanos = clock.nanoTime();
             long budgetMillis = deadlineMillis(request);
             throwIfTerminal();
+            remainingDeadlineOrThrow(startedNanos, budgetMillis);
             byte[] requestBytes = request.toJson().getBytes(StandardCharsets.UTF_8);
             if (requestBytes.length > ContractLimits.MAX_TRANSPORT_BYTES) throw failure(TransportException.Kind.RESPONSE_TOO_LARGE);
             throwIfTerminal();
@@ -142,20 +168,37 @@ public final class ReportTransport {
                 throwIfTerminal();
                 int socketTimeoutMillis = toSocketTimeoutMillis(remainingDeadlineOrThrow(startedNanos, budgetMillis));
                 configure(opened, requestBytes.length, socketTimeoutMillis);
-                try (OutputStream output = opened.getOutputStream()) { output.write(requestBytes); }
+                remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                OutputStream output = opened.getOutputStream();
+                remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                output.write(requestBytes);
+                remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                output.close();
                 throwIfStoppedOrExpired(startedNanos, budgetMillis);
 
+                remainingDeadlineOrThrow(startedNanos, budgetMillis);
                 int status = opened.getResponseCode();
                 throwIfStoppedOrExpired(startedNanos, budgetMillis);
                 if (status < 200 || status >= 300) {
                     String body = readErrorBody(opened, startedNanos, budgetMillis);
+                    remainingDeadlineOrThrow(startedNanos, budgetMillis);
                     String retryAfter;
-                    try { retryAfter = opened.getHeaderField("Retry-After"); }
+                    try {
+                        remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                        retryAfter = opened.getHeaderField("Retry-After");
+                    }
                     catch (RuntimeException ignored) { retryAfter = null; }
-                    throw new TransportException(ApiError.parse(status, body, retryAfter, clock.now()));
+                    remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                    Instant now = clock.now();
+                    remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                    ApiError error = ApiError.parse(status, body, retryAfter, now);
+                    remainingDeadlineOrThrow(startedNanos, budgetMillis);
+                    throw new TransportException(error);
                 }
                 byte[] responseBytes = readSuccessBody(opened, startedNanos, budgetMillis);
+                remainingDeadlineOrThrow(startedNanos, budgetMillis);
                 String raw = decodeUtf8(responseBytes);
+                remainingDeadlineOrThrow(startedNanos, budgetMillis);
                 final Report report;
                 try { report = ReportParser.parse(raw); }
                 catch (RuntimeException malformed) { throw failure(TransportException.Kind.INVALID_RESPONSE); }
@@ -187,31 +230,42 @@ public final class ReportTransport {
         }
 
         private byte[] readSuccessBody(HttpURLConnection opened, long start, long budget) throws IOException, TransportException {
+            remainingDeadlineOrThrow(start, budget);
             long length = opened.getContentLengthLong();
+            remainingDeadlineOrThrow(start, budget);
             if (length > ContractLimits.MAX_TRANSPORT_BYTES) throw failure(TransportException.Kind.RESPONSE_TOO_LARGE);
+            remainingDeadlineOrThrow(start, budget);
             InputStream input = opened.getInputStream();
-            try {
-                return readBounded(input, ContractLimits.MAX_TRANSPORT_BYTES, true, start, budget);
-            } finally {
-                closeInput(input);
-            }
+            remainingDeadlineOrThrow(start, budget);
+            byte[] bytes = readBounded(input, ContractLimits.MAX_TRANSPORT_BYTES, true, start, budget);
+            remainingDeadlineOrThrow(start, budget);
+            closeInput(input);
+            remainingDeadlineOrThrow(start, budget);
+            return bytes;
         }
 
         private String readErrorBody(HttpURLConnection opened, long start, long budget) throws TransportException {
-            InputStream input = null;
             try {
+                remainingDeadlineOrThrow(start, budget);
                 long length = opened.getContentLengthLong();
+                remainingDeadlineOrThrow(start, budget);
                 if (length > MAX_ERROR_BODY_BYTES) return "";
-                input = opened.getErrorStream();
+                remainingDeadlineOrThrow(start, budget);
+                InputStream input = opened.getErrorStream();
+                remainingDeadlineOrThrow(start, budget);
                 if (input == null) return "";
                 byte[] bytes = readBounded(input, MAX_ERROR_BODY_BYTES, false, start, budget);
-                return bytes == null ? "" : decodeUtf8OrEmpty(bytes);
+                remainingDeadlineOrThrow(start, budget);
+                closeInput(input);
+                remainingDeadlineOrThrow(start, budget);
+                if (bytes == null) return "";
+                String body = decodeUtf8OrEmpty(bytes);
+                remainingDeadlineOrThrow(start, budget);
+                return body;
             } catch (TransportException stopped) {
                 throw stopped;
             } catch (IOException | RuntimeException unavailable) {
                 return "";
-            } finally {
-                closeInput(input);
             }
         }
 
@@ -223,6 +277,7 @@ public final class ReportTransport {
             while (true) {
                 throwIfStoppedOrExpired(start, budget);
                 int count = input.read(buffer, 0, Math.min(buffer.length, limit - total + 1));
+                throwIfStoppedOrExpired(start, budget);
                 if (count < 0) break;
                 if (count == 0) continue;
                 total = Math.addExact(total, count);
@@ -238,7 +293,9 @@ public final class ReportTransport {
 
         private long remainingDeadlineOrThrow(long start, long budgetMillis) throws TransportException {
             long measured = boundedDeadlineMillis(start, budgetMillis, clock.nanoTime());
-            long remaining = remainingCeilingMillis.updateAndGet(previous -> Math.min(previous, measured));
+            final long effective = operationDeadline == null ? measured
+                    : Math.min(measured, operationDeadline.remainingMillis());
+            long remaining = remainingCeilingMillis.updateAndGet(previous -> Math.min(previous, effective));
             if (remaining == 0L && terminal.compareAndSet(Terminal.ACTIVE, Terminal.TIMEOUT)) disconnectOnce();
             throwIfTerminal();
             return remaining;
@@ -256,10 +313,12 @@ public final class ReportTransport {
 
         private TransportException winnerOr(TransportException fallback, long start, long budgetMillis) {
             long remaining = boundedDeadlineMillis(start, budgetMillis, clock.nanoTime());
+            if (operationDeadline != null)
+                remaining = Math.min(remaining, operationDeadline.remainingMillis());
             if (remaining == 0L && terminal.compareAndSet(Terminal.ACTIVE, Terminal.TIMEOUT)) disconnectOnce();
             Terminal state = terminal.get();
-            if (state == Terminal.TIMEOUT) return failure(TransportException.Kind.TIMEOUT);
             if (state == Terminal.CANCELLED) return failure(TransportException.Kind.CANCELLED);
+            if (state == Terminal.TIMEOUT) return failure(TransportException.Kind.TIMEOUT);
             return fallback;
         }
 
@@ -309,6 +368,8 @@ public final class ReportTransport {
             case RESPONSE_TOO_LARGE -> "The report response exceeded the byte limit.";
             case INVALID_RESPONSE -> "The server returned an invalid response.";
             case API -> "The server rejected the report request.";
+            case UNSUPPORTED_CAPABILITY -> throw new IllegalArgumentException(
+                    "Report transport cannot create capability mismatch failures");
         };
         return new TransportException(kind, message);
     }

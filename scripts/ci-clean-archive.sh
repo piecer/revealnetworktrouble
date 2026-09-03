@@ -25,7 +25,6 @@ resolved_sha=$(git rev-parse --verify "$requested_sha^{commit}")
     printf 'clean archive accepts only the current exact HEAD SHA\n' >&2
     exit 1
 }
-
 # Refuse tracked or untracked candidates: git archive must never silently omit
 # uncommitted Stage6 files. Run `make ci` before commit, then this postcommit gate.
 dirty=$(git status --porcelain --untracked-files=all)
@@ -53,6 +52,7 @@ preexisting=$(find "$archive_dir" -type d \( -name .git -o -name node_modules -o
     cd "$archive_dir"
     make ci-inner CI_EVIDENCE_DIR="$evidence_dir"
 )
+./scripts/verify-release.sh "$requested_sha" "$tmp/source.tar"
 
 go_tests=$(awk '/"Action":"pass"/ && /"Test":"/ { count++ } END { print count + 0 }' "$evidence_dir/go-test.json")
 [ "$go_tests" -gt 0 ] || {

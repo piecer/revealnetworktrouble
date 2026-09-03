@@ -32,3 +32,24 @@
 - 공개 배포 시 SSRF 방지 정책을 어떤 네트워크 대역 기준으로 적용할 것인가
 - 리포트 영구 보관과 공유 기능을 다음 릴리스에 포함할 것인가
 
+## 6. 현재 단계: Stage 7 runtime admission과 diagnostic truth
+
+초기 단계 목록은 당시의 범위와 의사결정 기록으로 유지한다. 현재 Stage 7은 다음 runtime defects를 구현하고 focused source/contract test 및 blocker/major 0 독립 review로 검증했다.
+
+- [x] pre-handler connection default 128/hard 256/env admission, immediate-close overflow와 interruptible backoff
+- [x] auth/rate 뒤 body-decode effective-report default/hard 64/env admission, declared oversize preflight, decode-only lifetime와 fixed 503
+- [x] exact completion timestamp deadline arbitration/no late healthy 및 HTTP bounded body/read-failure truth
+- [x] unauthenticated/no-rate exact `/livez`와 `/readyz`, fixed startup/ready/drain states, startup-cached traceroute readiness, Compose `/readyz`
+- [x] delivery-only telemetry outcome와 valid complete `report_finish` diagnostic extension; malformed extension omission/base retention/privacy
+- [x] `VERSION=0.1.0`, exact health/startup/OCI identity, pinned/checksummed release inputs, canonical archive 및 deterministic release verifier
+- [x] full topology `latency_delta_ms` producer/Android parity와 invalid `latency_ms` rejection
+- [x] Android exhaustive checker export labels, shared discovery+report 315초 deadline, typed unsupported-capability reasons와 fixed UI
+
+구현된 defect closure와 future capability는 구분한다. Web live capability-driven form, Android topology/Geo UI parity, history/baseline, packet loss/jitter/throughput/MTU/local-link/VPN/proxy facts, multi-vantage/cross-check ranking, metrics exporter, hosted CI/SBOM/signing은 후속 capability 범위이며 Stage 7 runtime defect가 아니다.
+
+다음 acceptance는 현재 자동 완료로 표시하지 않는다.
+
+- [ ] Stage 7 commit 후 clean exact-SHA `make ci-clean-archive` 및 deterministic release verification
+- [ ] physical Android device/emulator, TalkBack/Switch Access, OEM share sheet/cache/network cancellation
+- [ ] 실제 Chrome/Firefox/Safari viewport/screen-reader 및 TLS reverse-proxy HTTP/2 deadline probe
+

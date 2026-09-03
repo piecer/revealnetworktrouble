@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,19 +18,24 @@ import (
 	"github.com/network-troubleshooting-company/checknetwork/backend/diagnostic"
 )
 
-var version = "dev"
+var (
+	version  = "dev"
+	revision = "dev"
+)
 
 const (
-	headerTimeout       = 5 * time.Second
-	bodyReadAllowance   = 30 * time.Second
-	executionTimeout    = diagnostic.MaxRequestBudget
-	responseGrace       = 5 * time.Second
-	shutdownMargin      = 5 * time.Second
-	readTimeout         = headerTimeout + bodyReadAllowance
-	writeTimeout        = bodyReadAllowance + executionTimeout + responseGrace
-	shutdownTimeout     = headerTimeout + bodyReadAllowance + executionTimeout + responseGrace + shutdownMargin
-	normalClientTimeout = 315 * time.Second
-	maxHeaderBytes      = 64 * 1024
+	headerTimeout         = 5 * time.Second
+	bodyReadAllowance     = 30 * time.Second
+	executionTimeout      = diagnostic.MaxRequestBudget
+	responseGrace         = 5 * time.Second
+	shutdownMargin        = 5 * time.Second
+	readTimeout           = headerTimeout + bodyReadAllowance
+	writeTimeout          = bodyReadAllowance + executionTimeout + responseGrace
+	shutdownTimeout       = headerTimeout + bodyReadAllowance + executionTimeout + responseGrace + shutdownMargin
+	normalClientTimeout   = 315 * time.Second
+	maxHeaderBytes        = 64 * 1024
+	defaultMaxConnections = 128
+	maxConnectionsLimit   = 256
 )
 
 type runtimeConfig struct {
@@ -37,6 +43,7 @@ type runtimeConfig struct {
 	geoIPURL            string
 	server              api.ServerConfig
 	maxConcurrentChecks int
+	maxConnections      int
 	writeTimeout        time.Duration
 	shutdownTimeout     time.Duration
 }
@@ -52,6 +59,8 @@ func runMain() int {
 		logger.Error("invalid configuration", "error", err)
 		return 1
 	}
+	config.server.Revision = revision
+	operational := newOperationalState(diagnostic.TracerouteExecutableAvailable())
 	var policy *diagnostic.NetworkPolicy
 	if config.server.Mode == api.ModePublic {
 		policy = diagnostic.NewNetworkPolicy(nil, nil)
@@ -64,17 +73,30 @@ func runMain() int {
 		return 1
 	}
 	runner := newProductionRunner(supervisor, checkers...)
-	handler, err := api.NewServerWithConfig(runner, logger, version, config.server)
+	businessHandler, err := api.NewServerWithConfig(runner, logger, version, config.server)
 	if err != nil {
 		logger.Error("invalid server configuration", "error", err)
 		return 1
 	}
+	handler := newOperationalHandler(operational, businessHandler)
 	server := newHTTPServer(config.addr, handler)
+	rawListener, err := net.Listen("tcp", config.addr)
+	if err != nil {
+		logger.Error("server listen failed", "error", err)
+		return 1
+	}
+	listener, err := newBoundedListener(rawListener, config.maxConnections)
+	if err != nil {
+		_ = rawListener.Close()
+		logger.Error("invalid connection admission configuration", "error", err)
+		return 1
+	}
+	operational.MarkAccepting()
 
 	serveErr := make(chan error, 1)
 	go func() {
-		logger.Info("server started", "address", server.Addr, "version", version)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logServerStarted(logger, listener.Addr().String(), version, revision)
+		if err := serveHTTP(server, listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 			return
 		}
@@ -92,11 +114,15 @@ func runMain() int {
 			exitCode = 1
 		}
 	}
-	if err := shutdownService(context.Background(), config.shutdownTimeout, server, supervisor, logger); err != nil {
+	if err := shutdownService(context.Background(), config.shutdownTimeout, operational, server, supervisor, logger); err != nil {
 		exitCode = 1
 	}
 	logger.Info("server stopped")
 	return exitCode
+}
+
+func logServerStarted(logger *slog.Logger, address, buildVersion, buildRevision string) {
+	logger.Info("server started", "address", address, "version", buildVersion, "revision", buildRevision)
 }
 
 func newProductionRunner(supervisor *diagnostic.CheckerSupervisor, checkers ...diagnostic.Checker) *diagnostic.Runner {
@@ -122,7 +148,8 @@ type shutdownHTTPServer interface {
 // shutdownService drains HTTP first, then always stops checker admission. Both
 // phases share one end-to-end deadline so the process drain stays within the
 // container stop grace period even when HTTP consumes the entire budget.
-func shutdownService(parent context.Context, timeout time.Duration, server shutdownHTTPServer, supervisor *diagnostic.CheckerSupervisor, logger *slog.Logger) error {
+func shutdownService(parent context.Context, timeout time.Duration, operational *operationalState, server shutdownHTTPServer, supervisor *diagnostic.CheckerSupervisor, logger *slog.Logger) error {
+	operational.BeginDrain()
 	drainCtx, cancelDrain := context.WithTimeout(parent, timeout)
 	defer cancelDrain()
 	httpErr := server.Shutdown(drainCtx)
@@ -149,9 +176,26 @@ func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
 	if maxConcurrent > api.MaxConcurrentReportsLimit {
 		return runtimeConfig{}, fmt.Errorf("CHECKNETWORK_MAX_CONCURRENT_REPORTS must not exceed %d", api.MaxConcurrentReportsLimit)
 	}
+	maxBodyDecodes, err := optionalPositiveInt(lookup("CHECKNETWORK_MAX_CONCURRENT_BODY_DECODES"), "CHECKNETWORK_MAX_CONCURRENT_BODY_DECODES")
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	if maxBodyDecodes > api.MaxConcurrentBodyDecodesLimit {
+		return runtimeConfig{}, fmt.Errorf("CHECKNETWORK_MAX_CONCURRENT_BODY_DECODES must not exceed %d", api.MaxConcurrentBodyDecodesLimit)
+	}
 	rateLimit, err := optionalPositiveInt(lookup("CHECKNETWORK_RATE_LIMIT_PER_MINUTE"), "CHECKNETWORK_RATE_LIMIT_PER_MINUTE")
 	if err != nil {
 		return runtimeConfig{}, err
+	}
+	maxConnections := defaultMaxConnections
+	if value := strings.TrimSpace(lookup("CHECKNETWORK_MAX_CONNECTIONS")); value != "" {
+		maxConnections, err = optionalPositiveInt(value, "CHECKNETWORK_MAX_CONNECTIONS")
+		if err != nil {
+			return runtimeConfig{}, err
+		}
+		if maxConnections > maxConnectionsLimit {
+			return runtimeConfig{}, fmt.Errorf("CHECKNETWORK_MAX_CONNECTIONS must not exceed %d", maxConnectionsLimit)
+		}
 	}
 	maxConcurrentChecks := diagnostic.DefaultCheckerCapacity
 	if value := strings.TrimSpace(lookup("CHECKNETWORK_MAX_CONCURRENT_CHECKS")); value != "" {
@@ -167,12 +211,14 @@ func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
 		addr:                envFrom(lookup, "CHECKNETWORK_ADDR", "127.0.0.1:8080"),
 		geoIPURL:            envFrom(lookup, "CHECKNETWORK_GEOIP_URL", "https://ipwho.is/"),
 		maxConcurrentChecks: maxConcurrentChecks,
+		maxConnections:      maxConnections,
 		server: api.ServerConfig{
-			AllowedOrigins:       splitCSV(envFrom(lookup, "CHECKNETWORK_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
-			MaxConcurrentReports: maxConcurrent,
-			Mode:                 mode,
-			APIKey:               strings.TrimSpace(lookup("CHECKNETWORK_API_KEY")),
-			RateLimitPerMinute:   rateLimit,
+			AllowedOrigins:           splitCSV(envFrom(lookup, "CHECKNETWORK_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")),
+			MaxConcurrentReports:     maxConcurrent,
+			MaxConcurrentBodyDecodes: maxBodyDecodes,
+			Mode:                     mode,
+			APIKey:                   strings.TrimSpace(lookup("CHECKNETWORK_API_KEY")),
+			RateLimitPerMinute:       rateLimit,
 		},
 		writeTimeout:    writeTimeout,
 		shutdownTimeout: shutdownTimeout,

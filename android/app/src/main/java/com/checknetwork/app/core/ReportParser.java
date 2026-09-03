@@ -197,7 +197,8 @@ public final class ReportParser {
             if(!ids.contains(from)||!ids.contains(to))throw error(path+".links["+i+"]","references unknown node");
             String status=text(link,"status",path+".links["+i+"].status",true,32);
             if(!Set.of("healthy","degraded","unknown","failure").contains(status))throw error(path+".links["+i+"].status","unsupported value");
-            if(link.has("latency_ms")&&!link.isNull("latency_ms"))finite(link,"latency_ms",path+".links["+i+"].latency_ms",0,ContractLimits.MAX_TIMEOUT_MS);
+            if(link.has("latency_ms"))throw error(path+".links["+i+"].latency_ms","unsupported link field; expected latency_delta_ms");
+            if(link.has("latency_delta_ms"))finite(link,"latency_delta_ms",path+".links["+i+"].latency_delta_ms",0,ContractLimits.MAX_TIMEOUT_MS);
         }
     }
 
