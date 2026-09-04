@@ -2,6 +2,10 @@ package diagnostic
 
 import (
 	"context"
+	"crypto/tls"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"reflect"
@@ -68,6 +72,96 @@ func TestRunnerKeepsAllDegradedResultsDegraded(t *testing.T) {
 	}
 	if report.Status != StatusDegraded || report.Summary.Failed != 1 {
 		t.Fatalf("unexpected report: %+v", report)
+	}
+}
+
+func TestRunnerRedirectFinalStatusContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/start" {
+			http.Redirect(w, request, "/final", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	checker := HTTPChecker{Client: server.Client()}
+	for _, test := range []struct {
+		expected  int
+		status    Status
+		errorCode string
+	}{
+		{http.StatusNoContent, StatusHealthy, ""},
+		{http.StatusFound, StatusUnreachable, "unexpected_status"},
+	} {
+		result := checker.Check(context.Background(), Target{Kind: KindHTTP, Address: server.URL + "/start", ExpectedStatus: test.expected})
+		if result.Status != test.status || result.ErrorCode != test.errorCode || result.Details["status_code"] != http.StatusNoContent {
+			t.Errorf("expected=%d result=%+v", test.expected, result)
+		}
+	}
+}
+
+func TestRunnerRedirectFinalStatusRevalidatesEveryHTTPSHop(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.Host {
+		case "first.test":
+			http.Redirect(w, request, "https://second.test/middle", http.StatusFound)
+		case "second.test":
+			http.Redirect(w, request, "https://third.test/final", http.StatusTemporaryRedirect)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	resolver := &resolverSequence{addresses: [][]net.IPAddr{
+		ipAnswers("93.184.216.31"), ipAnswers("93.184.216.32"), ipAnswers("93.184.216.33"),
+		ipAnswers("93.184.216.34"), ipAnswers("93.184.216.35"),
+	}}
+	dialer := &mappingDialer{target: server.Listener.Addr().String()}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	checker := HTTPSChecker{Client: client, Policy: NewNetworkPolicy(resolver, dialer)}
+	result := checker.Check(context.Background(), Target{Kind: KindHTTPS, Address: "https://first.test/start", ExpectedStatus: http.StatusNoContent})
+	if result.Status != StatusHealthy || result.ErrorCode != "" || result.Details["status_code"] != http.StatusNoContent {
+		t.Fatalf("final HTTPS response result=%+v", result)
+	}
+	if resolver.calls != 5 || len(dialer.calls) != 3 {
+		t.Fatalf("redirect revalidation resolver_calls=%d dialer_calls=%v", resolver.calls, dialer.calls)
+	}
+}
+
+func TestRunnerExpectedStatusContract(t *testing.T) {
+	kinds := []Kind{KindDNS, KindTCP, KindHTTP, KindHTTPS, KindTraceroute, KindSSH, KindSMTP, KindSubmission, KindSMTPS, KindIMAP, KindIMAPS, KindPOP3, KindPOP3S}
+	checkers := make([]Checker, 0, len(kinds))
+	for _, kind := range kinds {
+		checkers = append(checkers, fakeChecker{kind: kind, status: StatusHealthy})
+	}
+	runner := NewRunner(checkers...)
+
+	for _, kind := range kinds {
+		if err := runner.Validate(Request{Targets: []Target{{Kind: kind, Address: "example.test"}}}); err != nil {
+			t.Errorf("omitted expected_status rejected for %s: %v", kind, err)
+		}
+	}
+	for _, kind := range []Kind{KindHTTP, KindHTTPS} {
+		for _, status := range []int{100, 599} {
+			if err := runner.Validate(Request{Targets: []Target{{Kind: kind, Address: "https://example.test", ExpectedStatus: status}}}); err != nil {
+				t.Errorf("expected_status=%d rejected for %s: %v", status, kind, err)
+			}
+		}
+	}
+	for _, test := range []struct {
+		kind   Kind
+		status int
+	}{
+		{KindHTTP, 99}, {KindHTTP, 600}, {KindHTTPS, 99}, {KindHTTPS, 600},
+		{KindDNS, 200}, {KindTCP, 200}, {KindTraceroute, 200}, {KindSSH, 200},
+		{KindSMTP, 200}, {KindSubmission, 200}, {KindSMTPS, 200}, {KindIMAP, 200},
+		{KindIMAPS, 200}, {KindPOP3, 200}, {KindPOP3S, 200},
+	} {
+		if err := runner.Validate(Request{Targets: []Target{{Kind: test.kind, Address: "example.test", ExpectedStatus: test.status}}}); err == nil {
+			t.Errorf("expected_status=%d accepted for %s", test.status, test.kind)
+		}
 	}
 }
 
@@ -679,7 +773,7 @@ func TestCheckerSupervisorShutdownIsBoundedAndReportsRemaining(t *testing.T) {
 	}
 }
 
-func TestCheckerSupervisorShutdownSynchronouslyMarksActiveLeasesStuck(t *testing.T) {
+func TestCheckerSupervisorShutdownSnapshotSynchronouslyCapturesActiveLeases(t *testing.T) {
 	supervisor := mustSupervisor(t, 1)
 	lease := supervisor.acquire()
 	if lease == nil {
@@ -687,11 +781,8 @@ func TestCheckerSupervisorShutdownSynchronouslyMarksActiveLeasesStuck(t *testing
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if remaining := supervisor.Shutdown(ctx); remaining != 1 {
-		t.Fatalf("remaining=%d", remaining)
-	}
-	if snapshot := supervisor.Snapshot(); snapshot.Active != 1 || snapshot.Stuck != 1 {
-		t.Fatalf("shutdown returned before active lease became observably stuck: %+v", snapshot)
+	if snapshot := supervisor.ShutdownSnapshot(ctx); snapshot.Active != 1 || snapshot.Stuck != 1 || snapshot.Capacity != 1 {
+		t.Fatalf("shutdown snapshot=%+v", snapshot)
 	}
 	supervisor.release(lease)
 	if snapshot := supervisor.Snapshot(); snapshot.Active != 0 || snapshot.Stuck != 0 {

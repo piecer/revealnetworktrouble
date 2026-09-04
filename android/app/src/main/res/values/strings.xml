@@ -16,11 +16,19 @@
     <string name="raw_share_warning_message">This raw JSON may contain sensitive target addresses and diagnostic details. After confirmation, Android’s share sheet controls which recipient receives it, and recipient apps may retain a copy.</string>
     <string name="raw_share_confirm">Share raw JSON</string><string name="raw_share_cancel">Cancel</string>
     <string name="raw_share_error">The raw report could not be prepared safely.</string>
+    <string name="raw_share_busy">A raw report share is already being prepared.</string>
+    <string name="raw_share_state_cleaning">Cleaning previous raw share</string>
+    <string name="raw_share_state_preparing">Preparing raw report</string>
+    <string name="raw_share_state_materialized">Raw report prepared</string>
+    <string name="raw_share_state_granted">Raw report shared</string>
+    <string name="raw_share_state_retired">Raw report share retired</string>
+    <string name="raw_share_state_disposed">Raw share runtime disposed</string>
     <string name="raw_results_show">Show raw results</string><string name="raw_results_hide">Hide raw results</string>
     <string name="raw_results_collapsed">Collapsed</string><string name="raw_results_expanded">Expanded</string>
-    <string name="state_idle">Idle</string><string name="state_loading">Loading diagnostics</string><string name="state_ready">Report ready</string><string name="state_error">Diagnostics failed</string><string name="state_cancelled">Diagnostics cancelled</string>
+    <string name="state_idle">Idle</string><string name="state_loading">Loading diagnostics</string><string name="state_ready">Report ready</string><string name="state_error">Diagnostics failed</string><string name="state_cancelled">Diagnostics cancelled</string><string name="state_render_error">Report display failed</string>
+    <string name="error_render_report">The report could not be displayed safely. Retry to rebuild it.</string>
     <string name="address_label">Address</string><string name="expected_status_label">Expected HTTP status</string><string name="expected_status_hint">100 to 599</string>
-    <string name="attempts_label">Traceroute attempts</string><string name="attempts_hint">1 to 10</string><string name="remove_target">Remove target %1$d, %2$s, %3$s</string><string name="remove_symbol">×</string>
+    <string name="attempts_label">Traceroute attempts</string><string name="attempts_hint">1 to 10</string><string name="remove_target_with_address">Remove target %1$d, %2$s, %3$s</string><string name="remove_target_without_address">Remove target %1$d, %2$s</string><string name="remove_symbol">×</string>
     <string name="error_api_base">Enter an allowed API origin. Release builds require HTTPS.</string><string name="error_timeout">Timeout must be 100 to 30000 ms.</string><string name="error_target">Check target %1$d: %2$s</string>
     <string name="error_network">Could not reach the API. Check the address and network.</string><string name="error_timeout_request">The diagnostics request timed out.</string><string name="error_response_large">The report was too large to display safely.</string><string name="error_invalid_response">The server returned an invalid report.</string>
     <string name="error_capability_check_kind">This server does not support one or more selected check types.</string>
@@ -29,6 +37,23 @@
     <string name="error_capability_traceroute_attempts">This server supports fewer traceroute attempts. Reduce attempts and try again.</string>
     <string name="error_capability_topology_mode">This server does not support the selected topology mode.</string>
     <string name="accessibility_error_state">Error</string>
+    <string name="api_error_body_decode_capacity_unavailable">The service cannot accept a diagnostic request right now.</string>
+    <string name="api_error_compact_response_too_large">The server could not return the compact report within its size limit.</string>
+    <string name="api_error_full_response_too_large">The server could not return the full report within its size limit.</string>
+    <string name="api_error_internal_error">The server could not generate the diagnostic report.</string>
+    <string name="api_error_invalid_json">The server rejected the diagnostic request format.</string>
+    <string name="api_error_invalid_request">The server rejected the diagnostic request. Review the inputs.</string>
+    <string name="api_error_method_not_allowed">This API route does not accept the diagnostic request method.</string>
+    <string name="api_error_network_policy_blocked">One or more targets are not allowed by the server policy.</string>
+    <string name="api_error_rate_limited">Too many requests were sent. Wait before retrying.</string>
+    <string name="api_error_request_too_large">The diagnostic request is too large for the server.</string>
+    <string name="api_error_response_serialization_failed">The server could not prepare the diagnostic response.</string>
+    <string name="api_error_route_not_found">The diagnostics API route was not found.</string>
+    <string name="api_error_server_busy">The diagnostics service is temporarily busy.</string>
+    <string name="api_error_server_draining">The diagnostics service is temporarily unavailable while shutting down.</string>
+    <string name="api_error_unauthorized">Authentication was rejected. Check the bearer credential.</string>
+    <string name="api_error_write_capacity_unavailable">The server cannot send the diagnostic response right now.</string>
+    <string name="api_error_invalid_server_response">The server returned an invalid error response.</string>
     <string name="error_401">Authentication was rejected. Check the bearer credential.</string><string name="error_422">The targets or options were rejected. Review the highlighted inputs.</string><string name="error_429">Too many requests. Wait before retrying.</string><string name="error_503">The diagnostics service is temporarily busy.</string><string name="error_500">The server could not complete diagnostics.</string><string name="error_http">The server rejected the diagnostics request (HTTP %1$d).</string>
     <string name="retry_after">Try again after %1$s.</string>
     <string name="report_heading">Report</string>

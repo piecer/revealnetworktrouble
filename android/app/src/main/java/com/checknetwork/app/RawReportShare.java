@@ -6,12 +6,16 @@ import android.net.Uri;
 import androidx.core.content.FileProvider;
 import com.checknetwork.app.core.ContractLimits;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -35,6 +39,9 @@ final class RawReportShare {
     private Uri issuedUri;
     private File activeTemp;
     private String lastToken;
+
+    /** Stage-11 core entry point; Activity adoption is intentionally a separate integration slice. */
+    static RawShareRuntime processRuntime(Context context){return RawShareRuntime.forApplication(context);}
 
     RawReportShare(Context context){
         Context app=Objects.requireNonNull(context,"context").getApplicationContext();
@@ -111,9 +118,18 @@ final class RawReportShare {
 
     static AtomicWriter systemAtomicWriter(){
         return (temporary,destination,bytes)->{
-            try(FileOutputStream output=new FileOutputStream(temporary,false)){output.write(bytes);output.flush();output.getFD().sync();}
-            try{Files.move(temporary.toPath(),destination.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);}
+            if(!temporary.toPath().getParent().equals(destination.toPath().getParent()))throw new IOException("Raw report paths have different parents");
+            BasicFileAttributes directory=Files.readAttributes(temporary.toPath().getParent(),BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);
+            if(!directory.isDirectory()||directory.isSymbolicLink())throw new IOException("Raw report parent is unsafe");
+            try(FileChannel output=FileChannel.open(temporary.toPath(),StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)){
+                ByteBuffer data=ByteBuffer.wrap(bytes);while(data.hasRemaining())output.write(data);output.force(true);
+            }
+            if(Files.exists(destination.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("Raw report destination already exists");
+            try{Files.move(temporary.toPath(),destination.toPath(),StandardCopyOption.ATOMIC_MOVE);}
             catch(AtomicMoveNotSupportedException unsupported){throw new IOException("Cache does not support atomic raw report replacement",unsupported);}
+            BasicFileAttributes written=Files.readAttributes(destination.toPath(),BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);
+            if(!written.isRegularFile()||written.isSymbolicLink())throw new IOException("Raw report destination is unsafe");
+            try(FileChannel parent=FileChannel.open(destination.toPath().getParent(),StandardOpenOption.READ)){parent.force(true);}
         };
     }
 

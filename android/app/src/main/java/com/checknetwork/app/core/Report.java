@@ -12,12 +12,58 @@ public final class Report {
     public enum Status { HEALTHY, DEGRADED, UNREACHABLE }
     public enum Verdict { HEALTHY, ATTENTION, INCONCLUSIVE }
     public enum FindingCode {
-        DNS_RESOLUTION_FAILED, ENDPOINT_CONNECT_FAILED, HTTP_UNEXPECTED_STATUS, INVALID_TARGET,
-        EXECUTION_TIMEOUT, EXECUTION_CANCELLED, TLS_DOWNGRADE, TLS_CERTIFICATE_EXPIRED,
-        TLS_CERTIFICATE_EXPIRING, TLS_HANDSHAKE_FAILED, TARGET_POLICY_BLOCKED,
-        TRACEROUTE_UNREACHABLE, TRACEROUTE_PARTIAL_REACHABILITY, TRACEROUTE_PATH_DEGRADED,
-        TRACEROUTE_PATH_UNSTABLE, TRACEROUTE_EXECUTION_FAILED, CHECKER_PANIC,
-        CHECKER_CAPACITY_UNAVAILABLE
+        CHECKER_CAPACITY_UNAVAILABLE,
+        CHECKER_PANIC,
+        DNS_RESOLUTION_FAILED,
+        ENDPOINT_CONNECT_FAILED,
+        EXECUTION_CANCELLED,
+        EXECUTION_TIMEOUT,
+        HTTP_UNEXPECTED_STATUS,
+        INVALID_TARGET,
+        SERVICE_GREETING_UNVERIFIED,
+        TARGET_POLICY_BLOCKED,
+        TLS_CERTIFICATE_EXPIRED,
+        TLS_CERTIFICATE_EXPIRING,
+        TLS_CERTIFICATE_NOT_YET_VALID,
+        TLS_DOWNGRADE,
+        TLS_HANDSHAKE_FAILED,
+        TLS_HOSTNAME_MISMATCH,
+        TLS_UNTRUSTED,
+        TRACEROUTE_EXECUTION_FAILED,
+        TRACEROUTE_PARTIAL_REACHABILITY,
+        TRACEROUTE_PATH_DEGRADED,
+        TRACEROUTE_PATH_UNSTABLE,
+        TRACEROUTE_UNAVAILABLE,
+        TRACEROUTE_UNREACHABLE;
+
+        static FindingCode fromWire(String value) {
+            return switch (value) {
+                case "checker_capacity_unavailable" -> CHECKER_CAPACITY_UNAVAILABLE;
+                case "checker_panic" -> CHECKER_PANIC;
+                case "dns_resolution_failed" -> DNS_RESOLUTION_FAILED;
+                case "endpoint_connect_failed" -> ENDPOINT_CONNECT_FAILED;
+                case "execution_cancelled" -> EXECUTION_CANCELLED;
+                case "execution_timeout" -> EXECUTION_TIMEOUT;
+                case "http_unexpected_status" -> HTTP_UNEXPECTED_STATUS;
+                case "invalid_target" -> INVALID_TARGET;
+                case "service_greeting_unverified" -> SERVICE_GREETING_UNVERIFIED;
+                case "target_policy_blocked" -> TARGET_POLICY_BLOCKED;
+                case "tls_certificate_expired" -> TLS_CERTIFICATE_EXPIRED;
+                case "tls_certificate_expiring" -> TLS_CERTIFICATE_EXPIRING;
+                case "tls_certificate_not_yet_valid" -> TLS_CERTIFICATE_NOT_YET_VALID;
+                case "tls_downgrade" -> TLS_DOWNGRADE;
+                case "tls_handshake_failed" -> TLS_HANDSHAKE_FAILED;
+                case "tls_hostname_mismatch" -> TLS_HOSTNAME_MISMATCH;
+                case "tls_untrusted" -> TLS_UNTRUSTED;
+                case "traceroute_execution_failed" -> TRACEROUTE_EXECUTION_FAILED;
+                case "traceroute_partial_reachability" -> TRACEROUTE_PARTIAL_REACHABILITY;
+                case "traceroute_path_degraded" -> TRACEROUTE_PATH_DEGRADED;
+                case "traceroute_path_unstable" -> TRACEROUTE_PATH_UNSTABLE;
+                case "traceroute_unavailable" -> TRACEROUTE_UNAVAILABLE;
+                case "traceroute_unreachable" -> TRACEROUTE_UNREACHABLE;
+                default -> throw new IllegalArgumentException("unsupported finding code");
+            };
+        }
     }
     public enum Severity { CRITICAL, WARNING, INFO }
     public enum Category { NAME_RESOLUTION, CONNECTIVITY, APPLICATION, SECURITY, ROUTING, EXECUTION, INPUT }

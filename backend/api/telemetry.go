@@ -43,6 +43,7 @@ const (
 	TelemetryOutcomeInvalidRequest     TelemetryOutcome = "invalid_request"
 	TelemetryOutcomeRequestTooLarge    TelemetryOutcome = "request_too_large"
 	TelemetryOutcomeServerCapacity     TelemetryOutcome = "server_capacity_unavailable"
+	TelemetryOutcomeServerDraining     TelemetryOutcome = "server_draining"
 	TelemetryOutcomeBodyCapacity       TelemetryOutcome = "body_decode_capacity_unavailable"
 	TelemetryOutcomeCheckerCapacity    TelemetryOutcome = "checker_capacity_unavailable"
 	TelemetryOutcomeWriteCapacity      TelemetryOutcome = "write_capacity_unavailable"
@@ -281,6 +282,7 @@ func validTelemetryOutcome(outcome TelemetryOutcome) bool {
 		TelemetryOutcomeInvalidRequest,
 		TelemetryOutcomeRequestTooLarge,
 		TelemetryOutcomeServerCapacity,
+		TelemetryOutcomeServerDraining,
 		TelemetryOutcomeBodyCapacity,
 		TelemetryOutcomeCheckerCapacity,
 		TelemetryOutcomeWriteCapacity,
@@ -334,10 +336,10 @@ func validTelemetrySemantics(record TelemetryRecord) bool {
 				TelemetryOutcomeUnauthorized, TelemetryOutcomeRateLimited,
 				TelemetryOutcomeInvalidJSON, TelemetryOutcomeInvalidRequest,
 				TelemetryOutcomeRequestTooLarge, TelemetryOutcomeServerCapacity,
-				TelemetryOutcomeBodyCapacity, TelemetryOutcomePolicy)
+				TelemetryOutcomeBodyCapacity, TelemetryOutcomeServerDraining, TelemetryOutcomePolicy)
 		case TelemetryEventReportFinish:
 			return outcomeIn(record.Outcome,
-				TelemetryOutcomeOK, TelemetryOutcomeWriteCapacity, TelemetryOutcomeSerialization,
+				TelemetryOutcomeOK, TelemetryOutcomePanicSafeFailure, TelemetryOutcomeWriteCapacity, TelemetryOutcomeSerialization,
 				TelemetryOutcomeFullSize, TelemetryOutcomeCompactSize,
 				TelemetryOutcomeWriteFailedZero, TelemetryOutcomeWriteFailedPartial)
 		default:
@@ -363,10 +365,13 @@ func validTelemetrySemantics(record TelemetryRecord) bool {
 		return record.Status == 422
 	case TelemetryOutcomeRateLimited:
 		return record.Status == 429
-	case TelemetryOutcomePanicSafeFailure, TelemetryOutcomeSerialization,
-		TelemetryOutcomeFullSize, TelemetryOutcomeCompactSize:
+	case TelemetryOutcomePanicSafeFailure:
+		// Recovery preserves a status whose write was already attempted; it must
+		// not append a replacement 500 after that boundary.
+		return true
+	case TelemetryOutcomeSerialization, TelemetryOutcomeFullSize, TelemetryOutcomeCompactSize:
 		return record.Status == 500
-	case TelemetryOutcomeServerCapacity, TelemetryOutcomeBodyCapacity, TelemetryOutcomeWriteCapacity:
+	case TelemetryOutcomeServerCapacity, TelemetryOutcomeServerDraining, TelemetryOutcomeBodyCapacity, TelemetryOutcomeWriteCapacity:
 		return record.Status == 503
 	case TelemetryOutcomeCancel:
 		return record.Route == TelemetryRouteReports && record.Status == 499

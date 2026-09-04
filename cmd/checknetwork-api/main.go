@@ -60,19 +60,21 @@ func runMain() int {
 		return 1
 	}
 	config.server.Revision = revision
-	operational := newOperationalState(diagnostic.TracerouteExecutableAvailable())
+	tracerouteCapability, _ := diagnostic.ProbeTracerouteCapability()
+	operational := newOperationalState(tracerouteCapability != nil)
 	var policy *diagnostic.NetworkPolicy
 	if config.server.Mode == api.ModePublic {
 		policy = diagnostic.NewNetworkPolicy(nil, nil)
 	}
 	geoIP := diagnostic.NewIPWhoIsLookupWithPolicy(nil, config.geoIPURL, policy)
-	checkers := buildCheckers(config.server.Mode, policy, geoIP)
+	checkers := buildCheckers(config.server.Mode, policy, geoIP, tracerouteCapability)
 	supervisor, err := diagnostic.NewCheckerSupervisor(config.maxConcurrentChecks)
 	if err != nil {
 		logger.Error("invalid checker supervisor configuration", "error", err)
 		return 1
 	}
 	runner := newProductionRunner(supervisor, checkers...)
+	config.server.DrainingProvider = operational
 	businessHandler, err := api.NewServerWithConfig(runner, logger, version, config.server)
 	if err != nil {
 		logger.Error("invalid server configuration", "error", err)
@@ -114,8 +116,13 @@ func runMain() int {
 			exitCode = 1
 		}
 	}
-	if err := shutdownService(context.Background(), config.shutdownTimeout, operational, server, supervisor, logger); err != nil {
-		exitCode = 1
+	shutdownErr := shutdownService(context.Background(), config.shutdownTimeout, operational, server, supervisor, logger)
+	return finishRun(exitCode, shutdownErr, logger)
+}
+
+func finishRun(exitCode int, shutdownErr error, logger *slog.Logger) int {
+	if shutdownErr != nil {
+		return 1
 	}
 	logger.Info("server stopped")
 	return exitCode
@@ -145,6 +152,10 @@ type shutdownHTTPServer interface {
 	Shutdown(context.Context) error
 }
 
+var errCheckerDrainIncomplete = errors.New("checker drain incomplete")
+
+const shutdownFailureReason = "shutdown_incomplete"
+
 // shutdownService drains HTTP first, then always stops checker admission. Both
 // phases share one end-to-end deadline so the process drain stays within the
 // container stop grace period even when HTTP consumes the entire budget.
@@ -153,15 +164,20 @@ func shutdownService(parent context.Context, timeout time.Duration, operational 
 	drainCtx, cancelDrain := context.WithTimeout(parent, timeout)
 	defer cancelDrain()
 	httpErr := server.Shutdown(drainCtx)
-	remaining := supervisor.Shutdown(drainCtx)
-	snapshot := supervisor.Snapshot()
+	snapshot := supervisor.ShutdownSnapshot(drainCtx)
+	remaining := snapshot.Active
 	fields := []any{"active", snapshot.Active, "stuck", snapshot.Stuck, "remaining", remaining}
-	if httpErr != nil {
-		logger.Error("service shutdown completed with HTTP drain failure", append([]any{"error", httpErr}, fields...)...)
+	var checkerErr error
+	if remaining != 0 || snapshot.Active != 0 || snapshot.Stuck != 0 {
+		checkerErr = errCheckerDrainIncomplete
+	}
+	shutdownErr := errors.Join(httpErr, checkerErr)
+	if shutdownErr != nil {
+		logger.Error("service shutdown failed", append([]any{"reason", shutdownFailureReason}, fields...)...)
 	} else {
 		logger.Info("service shutdown completed", fields...)
 	}
-	return httpErr
+	return shutdownErr
 }
 
 func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
@@ -234,7 +250,7 @@ func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
 	return config, nil
 }
 
-func buildCheckers(mode api.DeploymentMode, policy *diagnostic.NetworkPolicy, geoIP diagnostic.GeoIPLookup) []diagnostic.Checker {
+func buildCheckers(mode api.DeploymentMode, policy *diagnostic.NetworkPolicy, geoIP diagnostic.GeoIPLookup, tracerouteCapability *diagnostic.TracerouteCapability) []diagnostic.Checker {
 	if mode != api.ModePublic {
 		policy = nil
 	}
@@ -243,7 +259,7 @@ func buildCheckers(mode api.DeploymentMode, policy *diagnostic.NetworkPolicy, ge
 		diagnostic.TCPChecker{Policy: policy},
 		diagnostic.HTTPChecker{Policy: policy},
 		diagnostic.HTTPSChecker{Policy: policy},
-		diagnostic.TracerouteChecker{GeoIP: geoIP, Policy: policy},
+		diagnostic.NewTracerouteChecker(tracerouteCapability, geoIP, policy),
 	}
 	for _, checker := range diagnostic.DefaultServiceCheckers() {
 		service := checker.(diagnostic.ServiceChecker)

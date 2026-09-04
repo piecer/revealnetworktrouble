@@ -97,6 +97,15 @@ type Result struct {
 	Details   map[string]any `json:"details,omitempty"`
 }
 
+const (
+	ResultErrorServiceGreetingUnverified = "service_greeting_unverified"
+	ResultErrorTLSCertificateExpired     = "tls_certificate_expired"
+	ResultErrorTLSCertificateNotYetValid = "tls_certificate_not_yet_valid"
+	ResultErrorTLSHostnameMismatch       = "tls_hostname_mismatch"
+	ResultErrorTLSUntrusted              = "tls_untrusted"
+	ResultErrorTLSHandshakeFailed        = "tls_handshake_failed"
+)
+
 type Report struct {
 	ID              string           `json:"id"`
 	Status          Status           `json:"status"`
@@ -145,6 +154,7 @@ const (
 	FindingDNSResolutionFailed           FindingCode = "dns_resolution_failed"
 	FindingEndpointConnectFailed         FindingCode = "endpoint_connect_failed"
 	FindingHTTPUnexpectedStatus          FindingCode = "http_unexpected_status"
+	FindingServiceGreetingUnverified     FindingCode = "service_greeting_unverified"
 	FindingInvalidTarget                 FindingCode = "invalid_target"
 	FindingExecutionTimeout              FindingCode = "execution_timeout"
 	FindingExecutionCancelled            FindingCode = "execution_cancelled"
@@ -152,7 +162,10 @@ const (
 	FindingCheckerCapacityUnavailable    FindingCode = "checker_capacity_unavailable"
 	FindingTLSDowngrade                  FindingCode = "tls_downgrade"
 	FindingTLSCertificateExpired         FindingCode = "tls_certificate_expired"
+	FindingTLSCertificateNotYetValid     FindingCode = "tls_certificate_not_yet_valid"
 	FindingTLSCertificateExpiring        FindingCode = "tls_certificate_expiring"
+	FindingTLSHostnameMismatch           FindingCode = "tls_hostname_mismatch"
+	FindingTLSUntrusted                  FindingCode = "tls_untrusted"
 	FindingTLSHandshakeFailed            FindingCode = "tls_handshake_failed"
 	FindingTargetPolicyBlocked           FindingCode = "target_policy_blocked"
 	FindingTracerouteUnreachable         FindingCode = "traceroute_unreachable"
@@ -160,6 +173,7 @@ const (
 	FindingTraceroutePathDegraded        FindingCode = "traceroute_path_degraded"
 	FindingTraceroutePathUnstable        FindingCode = "traceroute_path_unstable"
 	FindingTracerouteExecutionFailed     FindingCode = "traceroute_execution_failed"
+	FindingTracerouteUnavailable         FindingCode = "traceroute_unavailable"
 )
 
 type FindingSeverity string

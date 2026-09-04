@@ -50,11 +50,28 @@ const COMPACT_MAX_ROUTES = SCHEMA_LIMITS.results * 10;
 const COMPACT_LIMITS = Object.freeze({ nodes: 500, links: 1000, maxResponseBytesExclusive: 1 << 20, maxGeoBundleBytes: 4096 });
 const FINDING_CODES = new Set([
   'dns_resolution_failed', 'endpoint_connect_failed', 'http_unexpected_status', 'invalid_target',
-  'execution_timeout', 'execution_cancelled', 'tls_downgrade', 'tls_certificate_expired',
-  'tls_certificate_expiring', 'tls_handshake_failed', 'target_policy_blocked',
+  'execution_timeout', 'execution_cancelled', 'service_greeting_unverified', 'tls_downgrade', 'tls_certificate_expired',
+  'tls_certificate_expiring', 'tls_certificate_not_yet_valid', 'tls_handshake_failed',
+  'tls_hostname_mismatch', 'tls_untrusted', 'target_policy_blocked',
   'traceroute_unreachable', 'traceroute_partial_reachability', 'traceroute_path_degraded',
-  'traceroute_path_unstable', 'traceroute_execution_failed', 'checker_panic',
+  'traceroute_path_unstable', 'traceroute_execution_failed', 'traceroute_unavailable', 'checker_panic',
   'checker_capacity_unavailable'
+]);
+const COMMON_TERMINAL_RESULT_ERRORS = new Set([
+  'cancelled', 'checker_capacity_unavailable', 'checker_panic',
+  'connection_failed', 'network_policy_blocked', 'timeout'
+]);
+const SERVICE_KINDS = new Set(['imap', 'imaps', 'pop3', 'pop3s', 'smtp', 'smtps', 'ssh', 'submission']);
+const PLAIN_SERVICE_KINDS = new Set(['imap', 'pop3', 'smtp', 'ssh', 'submission']);
+const TLS_SERVICE_KINDS = new Set(['imaps', 'pop3s', 'smtps']);
+const TLS_FAILURE_KINDS = new Set(['https', 'imaps', 'pop3s', 'smtps']);
+const TLS_FAILURE_CODES = new Set([
+  'tls_certificate_expired', 'tls_certificate_not_yet_valid', 'tls_handshake_failed',
+  'tls_hostname_mismatch', 'tls_untrusted'
+]);
+const INVALID_ADDRESS_RESULT_KINDS = new Set(['imaps', 'pop3s', 'smtps', 'traceroute']);
+const TRACEROUTE_DETAILED_ERRORS = new Set([
+  '', 'destination_unreached', 'timeout', 'traceroute_execution_incomplete', 'traceroute_failed'
 ]);
 const FINDING_PRESENTATIONS = Object.freeze({
   checker_panic: Object.freeze({
@@ -64,12 +81,178 @@ const FINDING_PRESENTATIONS = Object.freeze({
   checker_capacity_unavailable: Object.freeze({
     title: 'Checker capacity was unavailable',
     summary: 'The bounded checker supervisor had no execution slot, so service health was not established.'
+  }),
+  traceroute_unavailable: Object.freeze({
+    title: 'Traceroute unavailable',
+    summary: 'No functional traceroute capability was established at startup, so route health was not observed.'
   })
 });
-const API_ERROR_CODES = new Set([
-  'invalid_json', 'invalid_request', 'server_busy', 'internal_error',
-  'network_policy_blocked', 'unauthorized', 'rate_limited'
-]);
+const API_ERROR_REGISTRY = new Map([
+  [503, 'body_decode_capacity_unavailable', true, true, 'request body decode capacity is temporarily unavailable'],
+  [500, 'compact_response_too_large', true, false, 'compact report response exceeds the size limit'],
+  [500, 'full_response_too_large', true, false, 'full report response exceeds the size limit'],
+  [500, 'internal_error', true, false, 'report could not be generated'],
+  [400, 'invalid_json', false, false, 'request body must be a valid JSON report request'],
+  [422, 'invalid_request', false, false, 'request is invalid'],
+  [405, 'unmatched', false, false, 'route not found'],
+  [422, 'network_policy_blocked', false, false, 'target is not allowed in public mode'],
+  [429, 'rate_limited', true, true, 'per-client request limit exceeded'],
+  [413, 'request_too_large', false, false, 'request body exceeds the size limit'],
+  [500, 'response_serialization_failed', true, false, 'report response could not be serialized'],
+  [404, 'unmatched', false, false, 'route not found'],
+  [503, 'server_busy', true, true, 'report capacity is temporarily unavailable'],
+  [503, 'server_draining', true, true, 'server is draining and temporarily unavailable'],
+  [401, 'unauthorized', false, false, 'valid API credentials are required'],
+  [503, 'write_capacity_unavailable', true, false, 'report response write capacity is temporarily unavailable']
+].map(([status, code, retryable, retryAfter, message]) => [
+  `${status}\u0000${code}`, Object.freeze({ status, code, retryable, retryAfter, message })
+]));
+const INVALID_SERVER_ERROR = Object.freeze({
+  code: 'invalid_server_response', message: 'The server returned an invalid error response.'
+});
+const API_ERROR_WIRE_LIMITS = Object.freeze({
+  bodyUTF16Units: 64 * 1024,
+  depth: 2,
+  tokens: 10,
+  properties: 3,
+  stringUTF16Units: 128
+});
+
+function parseStrictAPIErrorJSON(body) {
+  if (typeof body !== 'string' || body.length > API_ERROR_WIRE_LIMITS.bodyUTF16Units) throw new SyntaxError('invalid API error JSON');
+  let index = 0;
+  let depth = 0;
+  let tokens = 0;
+  let properties = 0;
+  const malformed = () => { throw new SyntaxError('invalid API error JSON'); };
+  const countToken = () => { if (++tokens > API_ERROR_WIRE_LIMITS.tokens) malformed(); };
+  const skipWhitespace = () => {
+    while (index < body.length) {
+      const code = body.charCodeAt(index);
+      if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) break;
+      index++;
+    }
+  };
+  const expect = character => {
+    skipWhitespace();
+    if (body[index] !== character) malformed();
+    index++;
+  };
+  const hexUnit = at => {
+    if (at + 4 > body.length) malformed();
+    let value = 0;
+    for (let offset = 0; offset < 4; offset++) {
+      const code = body.charCodeAt(at + offset);
+      const digit = code >= 48 && code <= 57 ? code - 48
+        : code >= 65 && code <= 70 ? code - 55
+          : code >= 97 && code <= 102 ? code - 87 : -1;
+      if (digit < 0) malformed();
+      value = value * 16 + digit;
+    }
+    return value;
+  };
+  const readString = () => {
+    skipWhitespace();
+    countToken();
+    if (body[index++] !== '"') malformed();
+    const parts = [];
+    let units = 0;
+    const appendUnit = value => {
+      if (++units > API_ERROR_WIRE_LIMITS.stringUTF16Units) malformed();
+      parts.push(String.fromCharCode(value));
+    };
+    while (index < body.length) {
+      let unit = body.charCodeAt(index++);
+      if (unit === 0x22) return parts.join('');
+      if (unit < 0x20) malformed();
+      if (unit === 0x5c) {
+        if (index >= body.length) malformed();
+        const escape = body[index++];
+        const simple = { '"': 0x22, '\\': 0x5c, '/': 0x2f, b: 0x08, f: 0x0c, n: 0x0a, r: 0x0d, t: 0x09 };
+        if (Object.hasOwn(simple, escape)) {
+          unit = simple[escape];
+        } else if (escape === 'u') {
+          unit = hexUnit(index);
+          index += 4;
+          if (unit >= 0xd800 && unit <= 0xdbff) {
+            if (body[index] !== '\\' || body[index + 1] !== 'u') malformed();
+            const low = hexUnit(index + 2);
+            if (low < 0xdc00 || low > 0xdfff) malformed();
+            index += 6;
+            appendUnit(unit);
+            appendUnit(low);
+            continue;
+          }
+          if (unit >= 0xdc00 && unit <= 0xdfff) malformed();
+        } else malformed();
+      } else if (unit >= 0xd800 && unit <= 0xdbff) {
+        if (index >= body.length) malformed();
+        const low = body.charCodeAt(index++);
+        if (low < 0xdc00 || low > 0xdfff) malformed();
+        appendUnit(unit);
+        appendUnit(low);
+        continue;
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) malformed();
+      appendUnit(unit);
+    }
+    malformed();
+  };
+  const beginObject = () => {
+    skipWhitespace();
+    countToken();
+    if (body[index++] !== '{' || ++depth > API_ERROR_WIRE_LIMITS.depth) malformed();
+  };
+  const endObject = () => {
+    skipWhitespace();
+    countToken();
+    if (body[index++] !== '}' || depth-- <= 0) malformed();
+  };
+  const readName = seen => {
+    const name = readString();
+    if (++properties > API_ERROR_WIRE_LIMITS.properties || seen.has(name)) malformed();
+    seen.add(name);
+    expect(':');
+    return name;
+  };
+
+  beginObject();
+  const rootNames = new Set();
+  let parsed = null;
+  skipWhitespace();
+  if (body[index] !== '}') {
+    while (true) {
+      const name = readName(rootNames);
+      if (name !== 'error') malformed();
+      beginObject();
+      const errorNames = new Set();
+      let code;
+      let message;
+      skipWhitespace();
+      if (body[index] !== '}') {
+        while (true) {
+          const field = readName(errorNames);
+          if (field === 'code') code = readString();
+          else if (field === 'message') message = readString();
+          else malformed();
+          skipWhitespace();
+          if (body[index] !== ',') break;
+          index++;
+        }
+      }
+      endObject();
+      if (code === undefined || message === undefined) malformed();
+      parsed = { code, message };
+      skipWhitespace();
+      if (body[index] !== ',') break;
+      index++;
+    }
+  }
+  endObject();
+  skipWhitespace();
+  countToken();
+  if (index !== body.length || parsed === null || depth !== 0) malformed();
+  return parsed;
+}
 
 function schemaError(path, message) {
   return new TypeError(`invalid response schema at ${path}: ${message}`);
@@ -79,7 +262,8 @@ function rejectAccessors(value, path, arrayPath = false) {
   const descriptors = Object.getOwnPropertyDescriptors(value);
   for (const key of Reflect.ownKeys(descriptors)) {
     if (arrayPath && key === 'length') continue;
-    if (!Object.hasOwn(descriptors[key], 'value')) {
+    const descriptor = Object.getOwnPropertyDescriptor(descriptors, key).value;
+    if (!Object.hasOwn(descriptor, 'value')) {
       const suffix = typeof key === 'symbol' ? `[${String(key)}]` : arrayPath ? `[${key}]` : `.${key}`;
       throw schemaError(`${path}${suffix}`, 'accessor properties are not supported');
     }
@@ -135,6 +319,23 @@ function boolean(value, path) {
 function timestamp(value, path) {
   const result = text(value, path);
   if (!Number.isFinite(Date.parse(result))) throw schemaError(path, 'expected timestamp');
+  return result;
+}
+
+function utcTimestamp(value, path, canonicalSeconds = false) {
+  const result = text(value, path);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/.exec(result);
+  if (!match || (canonicalSeconds && match[7] !== undefined) || !Number.isFinite(Date.parse(result))) {
+    throw schemaError(path, 'expected canonical UTC timestamp');
+  }
+  const [, year, month, day, hour, minute, second] = match.map((part, index) => index === 0 || part === undefined ? part : Number(part));
+  const parsed = new Date(0);
+  parsed.setUTCFullYear(year, month - 1, day);
+  parsed.setUTCHours(hour, minute, second, 0);
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day ||
+      parsed.getUTCHours() !== hour || parsed.getUTCMinutes() !== minute || parsed.getUTCSeconds() !== second) {
+    throw schemaError(path, 'expected canonical UTC timestamp');
+  }
   return result;
 }
 
@@ -269,17 +470,15 @@ function clientTimeoutMS(payload) {
 
 function parseRetryAfter(value, nowMS = Date.now()) {
   if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) {
-    const seconds = Number(trimmed);
-    return Number.isSafeInteger(seconds) ? nowMS + seconds * 1000 : null;
-  }
-  const parsed = Date.parse(trimmed);
-  return Number.isFinite(parsed) && parsed >= nowMS ? parsed : null;
+  if (!/^[1-9]\d{0,3}$/.test(value)) return null;
+  const seconds = Number(value);
+  return seconds <= 3600 && Number.isFinite(nowMS) ? nowMS + seconds * 1000 : null;
 }
 
 function normalizedError(kind, code, { status = null, message, retryAt = null, retryable = false } = {}) {
-  return { kind, code, status, message, retryAt, retryable };
+  const normalized = { kind, code, status, message, retryable };
+  if (Number.isFinite(retryAt)) normalized.retryAt = retryAt;
+  return normalized;
 }
 
 function normalizeRequestError(input) {
@@ -311,37 +510,31 @@ function parseResponse(response, bodyText, nowMS = Date.now()) {
   const status = Number.isInteger(response?.status) ? response.status : 0;
   const ok = typeof response?.ok === 'boolean' ? response.ok : status >= 200 && status < 300;
   const body = typeof bodyText === 'string' ? bodyText : '';
-  let parsed;
-  if (body.trim()) {
-    try { parsed = JSON.parse(body); } catch {
-      if (ok) return { ok: false, error: normalizedError('invalid-response', 'invalid_response', { status, message: 'The server returned malformed JSON.' }) };
-    }
-  }
   if (ok) {
+    let parsed;
+    if (body.trim()) {
+      try { parsed = JSON.parse(body); } catch {
+        return { ok: false, error: normalizedError('invalid-response', 'invalid_response', { status, message: 'The server returned malformed JSON.' }) };
+      }
+    }
     if (parsed === undefined) return { ok: false, error: normalizedError('invalid-response', 'invalid_response', { status, message: 'The server returned an empty response.' }) };
     try { return { ok: true, report: normalizeReport(parsed), error: null }; }
     catch { return { ok: false, error: normalizedError('invalid-response', 'invalid_response', { status, message: 'The server response did not match the expected schema.' }) }; }
   }
-  const defaults = {
-    401: ['unauthorized', false], 422: ['unprocessable_entity', false],
-    429: ['rate_limited', true], 503: ['server_busy', true]
-  };
-  let [code, retryable] = defaults[status] ?? [`http_${status || 'error'}`, status >= 500];
-  const stableMessages = {
-    401: 'Authorization credential was rejected (HTTP 401).',
-    422: 'The request could not be processed (HTTP 422).',
-    429: 'The request was rate limited (HTTP 429).',
-    503: 'The server is busy (HTTP 503).'
-  };
-  const message = stableMessages[status] ?? (body.trim()
-    ? `The server returned a non-JSON error response (HTTP ${status}).`
-    : `The server returned an error (HTTP ${status}).`);
-  const structured = parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.error && typeof parsed.error === 'object' && !Array.isArray(parsed.error) ? parsed.error : null;
-  if (structured && typeof structured.code === 'string' && API_ERROR_CODES.has(structured.code)) code = structured.code;
-  if (code === 'network_policy_blocked') retryable = false;
-  if (code === 'rate_limited' || code === 'server_busy') retryable = true;
-  const retryAt = retryable ? parseRetryAfter(header(response, 'Retry-After'), nowMS) : null;
-  return { ok: false, error: normalizedError('http', code, { status, message, retryAt, retryable }) };
+  let structured;
+  try { structured = parseStrictAPIErrorJSON(body); } catch { structured = null; }
+  const definition = structured
+    ? API_ERROR_REGISTRY.get(`${status}\u0000${structured.code}`)
+    : undefined;
+  if (!definition || structured.message !== definition.message) {
+    return { ok: false, error: normalizedError('invalid-response', INVALID_SERVER_ERROR.code, {
+      status, message: INVALID_SERVER_ERROR.message
+    }) };
+  }
+  const retryAt = definition.retryAfter ? parseRetryAfter(header(response, 'Retry-After'), nowMS) : null;
+  return { ok: false, error: normalizedError('http', definition.code, {
+    status, message: definition.message, retryAt, retryable: definition.retryable
+  }) };
 }
 
 function normalizeStringArray(value, path, max = SCHEMA_LIMITS.coverage) {
@@ -360,9 +553,27 @@ function normalizeCoverageIssue(value, path) {
 }
 
 function exactFields(value, expected, path) {
-  const keys = Reflect.ownKeys(value);
-  if (keys.length !== expected.length || expected.some(key => !Object.hasOwn(value, key)) || keys.some(key => typeof key !== 'string' || !expected.includes(key))) {
-    throw schemaError(path, 'expected exact fields');
+  allowedFields(value, expected, [], path);
+}
+
+function allowedFields(value, required, optional, path) {
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const allowed = new Set([...required, ...optional]);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = Object.getOwnPropertyDescriptor(descriptors, key).value;
+    if (typeof key !== 'string' || !allowed.has(key) || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw schemaError(path, 'expected exact enumerable data fields');
+    }
+  }
+  requireFields(value, required, path);
+}
+
+function requireFields(value, required, path) {
+  for (const key of required) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw schemaError(`${path}.${key}`, 'required own enumerable data field is missing');
+    }
   }
 }
 
@@ -492,7 +703,14 @@ function normalizeTopology(value, path = 'topology') {
   }
   const links = array(source.links, `${path}.links`, SCHEMA_LIMITS.topologyLinks).map((entry, index) => {
     const itemPath = `${path}.links[${index}]`; const item = object(entry, itemPath);
-    const normalized = { from: text(item.from, `${itemPath}.from`), to: text(item.to, `${itemPath}.to`), status: enumValue(item.status, TOPOLOGY_STATUSES, `${itemPath}.status`), latency_delta_ms: finite(item.latency_delta_ms ?? 0, `${itemPath}.latency_delta_ms`, -Number.MAX_VALUE) };
+    allowedFields(item, ['from', 'to', 'status'], ['latency_delta_ms'], itemPath);
+    const normalized = {
+      from: text(item.from, `${itemPath}.from`), to: text(item.to, `${itemPath}.to`),
+      status: enumValue(item.status, TOPOLOGY_STATUSES, `${itemPath}.status`)
+    };
+    if (Object.hasOwn(item, 'latency_delta_ms')) {
+      normalized.latency_delta_ms = finite(ownValue(item, 'latency_delta_ms'), `${itemPath}.latency_delta_ms`, 0, 30000);
+    }
     if (!nodeIDs.has(normalized.from) || !nodeIDs.has(normalized.to)) throw schemaError(itemPath, 'link references an unknown node');
     return normalized;
   });
@@ -501,6 +719,7 @@ function normalizeTopology(value, path = 'topology') {
 
 function normalizeCompactCount(value, path, max = SCHEMA_LIMITS.reportTopologyLinks) {
   const source = object(value, path);
+  exactFields(source, ['total', 'displayed', 'omitted'], path);
   const normalized = {
     total: integer(source.total, `${path}.total`, 0, max),
     displayed: integer(source.displayed, `${path}.displayed`, 0, max),
@@ -512,6 +731,7 @@ function normalizeCompactCount(value, path, max = SCHEMA_LIMITS.reportTopologyLi
 
 function normalizeCompactRouteCount(value, path) {
   const source = object(value, path);
+  exactFields(source, ['total', 'displayed', 'complete', 'partial', 'omitted'], path);
   const normalized = {
     total: integer(source.total, `${path}.total`, 0, COMPACT_MAX_ROUTES),
     displayed: integer(source.displayed, `${path}.displayed`, 0, COMPACT_MAX_ROUTES),
@@ -527,6 +747,10 @@ function normalizeCompactRouteCount(value, path) {
 
 function ownValue(value, key) {
   return Object.getOwnPropertyDescriptor(value, key)?.value;
+}
+
+function setOwnValue(value, key, fieldValue) {
+  Object.defineProperty(value, key, { value: fieldValue, enumerable: true, configurable: true, writable: true });
 }
 
 function goJSONStringBytes(value, path) {
@@ -592,10 +816,14 @@ function compactGeoBundleBytes(hasGeo, city, region, country, countryCode, latit
 
 function normalizeCompactTopology(value, path = 'compact_topology', reportResults = null) {
   const source = object(value, path);
+  allowedFields(source,
+    ['schema', 'selection', 'limits', 'nodes', 'links', 'routes', 'stats', 'result_stats', 'geo', 'truncated'],
+    ['truncation_reasons'], path);
   if (source.schema !== 'compact-v1') throw schemaError(`${path}.schema`, 'unsupported value');
   if (source.selection !== 'fair-complete-prefix-v1') throw schemaError(`${path}.selection`, 'unsupported value');
 
   const limitSource = object(source.limits, `${path}.limits`);
+  exactFields(limitSource, ['nodes', 'links', 'max_response_bytes_exclusive', 'max_geo_bundle_bytes'], `${path}.limits`);
   const limits = {
     nodes: integer(limitSource.nodes, `${path}.limits.nodes`, 0, COMPACT_LIMITS.nodes),
     links: integer(limitSource.links, `${path}.limits.links`, 0, COMPACT_LIMITS.links),
@@ -610,25 +838,33 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
   const nodes = array(source.nodes, `${path}.nodes`, COMPACT_LIMITS.nodes).map((entry, index) => {
     const itemPath = `${path}.nodes[${index}]`;
     const item = object(entry, itemPath);
+    allowedFields(item, ['id', 'kind', 'status', 'hop_min', 'hop_max', 'observations'],
+      ['address', 'latency_ms_avg', 'public_ip', 'geolocation', 'asn'], itemPath);
     const normalized = {
       id: text(item.id, `${itemPath}.id`),
       kind: enumValue(item.kind, COMPACT_NODE_KINDS, `${itemPath}.kind`),
-      address: optionalText(item.address, `${itemPath}.address`),
       status: enumValue(item.status, TOPOLOGY_STATUSES, `${itemPath}.status`),
       hop_min: integer(item.hop_min, `${itemPath}.hop_min`, 0, 255),
       hop_max: integer(item.hop_max, `${itemPath}.hop_max`, 0, 255),
       observations: integer(item.observations, `${itemPath}.observations`, 1, SCHEMA_LIMITS.reportTopologyNodes)
     };
-    const publicIP = ownValue(item, 'public_ip');
-    if (publicIP !== undefined) normalized.public_ip = boolean(publicIP, `${itemPath}.public_ip`);
+    if (Object.hasOwn(item, 'address')) setOwnValue(normalized, 'address', text(ownValue(item, 'address'), `${itemPath}.address`));
+    const hasPublicIP = Object.hasOwn(item, 'public_ip');
+    if (hasPublicIP) {
+      if (boolean(ownValue(item, 'public_ip'), `${itemPath}.public_ip`) !== true) throw schemaError(`${itemPath}.public_ip`, 'present value must be true');
+      setOwnValue(normalized, 'public_ip', true);
+    }
     if (normalized.hop_min > normalized.hop_max) throw schemaError(itemPath, 'hop_min exceeds hop_max');
-    const latency = ownValue(item, 'latency_ms_avg');
-    if (latency !== undefined) normalized.latency_ms_avg = finite(latency, `${itemPath}.latency_ms_avg`, 0, Number.MAX_SAFE_INTEGER);
+    const hasLatency = Object.hasOwn(item, 'latency_ms_avg');
+    if (hasLatency) {
+      const latency = finite(ownValue(item, 'latency_ms_avg'), `${itemPath}.latency_ms_avg`, 0, Number.MAX_SAFE_INTEGER);
+      setOwnValue(normalized, 'latency_ms_avg', latency);
+    }
     const geolocationValue = ownValue(item, 'geolocation');
     const asnValue = ownValue(item, 'asn');
-    const hasGeo = geolocationValue !== undefined && geolocationValue !== null;
-    const hasASN = asnValue !== undefined && asnValue !== null;
-    if ((hasGeo || hasASN) && normalized.public_ip !== true) throw schemaError(itemPath, 'Geo bundle requires public_ip true');
+    const hasGeo = Object.hasOwn(item, 'geolocation');
+    const hasASN = Object.hasOwn(item, 'asn');
+    if ((hasGeo || hasASN) && ownValue(normalized, 'public_ip') !== true) throw schemaError(itemPath, 'Geo bundle requires public_ip true');
     let city = '';
     let region = '';
     let country = '';
@@ -639,20 +875,30 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
     let organization = '';
     if (hasGeo) {
       const geo = object(geolocationValue, `${itemPath}.geolocation`);
-      city = optionalText(ownValue(geo, 'city'), `${itemPath}.geolocation.city`);
-      region = optionalText(ownValue(geo, 'region'), `${itemPath}.geolocation.region`);
-      country = optionalText(ownValue(geo, 'country'), `${itemPath}.geolocation.country`);
-      countryCode = optionalText(ownValue(geo, 'country_code'), `${itemPath}.geolocation.country_code`);
+      allowedFields(geo, ['latitude', 'longitude'], ['city', 'region', 'country', 'country_code'], `${itemPath}.geolocation`);
+      city = Object.hasOwn(geo, 'city') ? text(ownValue(geo, 'city'), `${itemPath}.geolocation.city`) : '';
+      region = Object.hasOwn(geo, 'region') ? text(ownValue(geo, 'region'), `${itemPath}.geolocation.region`) : '';
+      country = Object.hasOwn(geo, 'country') ? text(ownValue(geo, 'country'), `${itemPath}.geolocation.country`) : '';
+      countryCode = Object.hasOwn(geo, 'country_code') ? text(ownValue(geo, 'country_code'), `${itemPath}.geolocation.country_code`) : '';
       latitude = finite(ownValue(geo, 'latitude'), `${itemPath}.geolocation.latitude`, -90, 90);
       longitude = finite(ownValue(geo, 'longitude'), `${itemPath}.geolocation.longitude`, -180, 180);
-      normalized.geolocation = { city, region, country, country_code: countryCode, latitude, longitude };
+      const normalizedGeo = { latitude, longitude };
+      if (Object.hasOwn(geo, 'city')) setOwnValue(normalizedGeo, 'city', city);
+      if (Object.hasOwn(geo, 'region')) setOwnValue(normalizedGeo, 'region', region);
+      if (Object.hasOwn(geo, 'country')) setOwnValue(normalizedGeo, 'country', country);
+      if (Object.hasOwn(geo, 'country_code')) setOwnValue(normalizedGeo, 'country_code', countryCode);
+      setOwnValue(normalized, 'geolocation', normalizedGeo);
     }
     if (hasASN) {
       const asn = object(asnValue, `${itemPath}.asn`);
-      const rawASNNumber = ownValue(asn, 'number');
-      asnNumber = integer(rawASNNumber === undefined ? 0 : rawASNNumber, `${itemPath}.asn.number`, 0, 4294967295);
-      organization = optionalText(ownValue(asn, 'organization'), `${itemPath}.asn.organization`);
-      normalized.asn = { number: asnNumber, organization };
+      allowedFields(asn, [], ['number', 'organization'], `${itemPath}.asn`);
+      asnNumber = Object.hasOwn(asn, 'number') ? integer(ownValue(asn, 'number'), `${itemPath}.asn.number`, 1, 4294967295) : 0;
+      organization = Object.hasOwn(asn, 'organization') ? text(ownValue(asn, 'organization'), `${itemPath}.asn.organization`) : '';
+      if (asnNumber === 0 && organization === '') throw schemaError(`${itemPath}.asn`, 'empty ASN is not canonical');
+      const normalizedASN = {};
+      if (Object.hasOwn(asn, 'number')) setOwnValue(normalizedASN, 'number', asnNumber);
+      if (Object.hasOwn(asn, 'organization')) setOwnValue(normalizedASN, 'organization', organization);
+      setOwnValue(normalized, 'asn', normalizedASN);
     }
     if (compactGeoBundleBytes(
       hasGeo, city, region, country, countryCode, latitude, longitude,
@@ -668,6 +914,7 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
   const links = array(source.links, `${path}.links`, COMPACT_LIMITS.links).map((entry, index) => {
     const itemPath = `${path}.links[${index}]`;
     const item = object(entry, itemPath);
+    exactFields(item, ['from', 'to', 'status', 'observations'], itemPath);
     const normalized = {
       from: text(item.from, `${itemPath}.from`), to: text(item.to, `${itemPath}.to`),
       status: enumValue(item.status, TOPOLOGY_STATUSES, `${itemPath}.status`),
@@ -688,6 +935,7 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
   const routes = array(source.routes, `${path}.routes`, COMPACT_MAX_ROUTES).map((entry, index) => {
     const itemPath = `${path}.routes[${index}]`;
     const item = object(entry, itemPath);
+    exactFields(item, ['result_index', 'attempt', 'status', 'reached', 'complete', 'node_ids'], itemPath);
     const rawNodeIDs = array(item.node_ids, `${itemPath}.node_ids`, 32).map((id, nodeIndex) => text(id, `${itemPath}.node_ids[${nodeIndex}]`));
     if (rawNodeIDs.length === 0 || rawNodeIDs.some(id => !nodeIDs.has(id))) throw schemaError(itemPath, 'route references an unknown node');
     if (rawNodeIDs.some((id, nodeIndex) => nodeIndex > 0 && id === rawNodeIDs[nodeIndex - 1])) {
@@ -700,19 +948,22 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
     if (reportResults && (!reportResults[result_index] || reportResults[result_index].kind !== 'traceroute')) {
       throw schemaError(`${itemPath}.result_index`, 'route requires a traceroute result');
     }
+    const attempt = integer(item.attempt, `${itemPath}.attempt`, 1, 10);
+    if (reportResults) validateResultAttemptReference(reportResults[result_index], attempt, `${itemPath}.attempt`);
     const status = enumValue(item.status, STATUSES, `${itemPath}.status`);
     const reached = boolean(item.reached, `${itemPath}.reached`);
     if (reached !== (status !== 'unreachable')) throw schemaError(itemPath, 'reached contradicts status');
     routeObservationCounts.push({ result_index, nodes: rawNodeIDs.length, links: Math.max(0, rawNodeIDs.length - 1) });
     return {
       result_index,
-      attempt: integer(item.attempt, `${itemPath}.attempt`, 1, 10),
+      attempt,
       status,
       reached, complete: boolean(item.complete, `${itemPath}.complete`), node_ids: rawNodeIDs
     };
   });
 
   const statsSource = object(source.stats, `${path}.stats`);
+  exactFields(statsSource, ['nodes', 'links', 'routes', 'node_observations', 'link_observations'], `${path}.stats`);
   const stats = {
     nodes: normalizeCompactCount(statsSource.nodes, `${path}.stats.nodes`, SCHEMA_LIMITS.reportTopologyNodes),
     links: normalizeCompactCount(statsSource.links, `${path}.stats.links`, SCHEMA_LIMITS.reportTopologyLinks),
@@ -726,8 +977,9 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
     throw schemaError(`${path}.stats`, 'displayed counts do not match compact arrays');
   }
 
-  const result_stats = array(source.result_stats ?? [], `${path}.result_stats`, SCHEMA_LIMITS.results).map((entry, index) => {
+  const result_stats = array(source.result_stats, `${path}.result_stats`, SCHEMA_LIMITS.results).map((entry, index) => {
     const itemPath = `${path}.result_stats[${index}]`; const item = object(entry, itemPath);
+    exactFields(item, ['result_index', 'routes', 'node_observations', 'link_observations'], itemPath);
     return {
       result_index: integer(item.result_index, `${itemPath}.result_index`, 0, SCHEMA_LIMITS.results - 1),
       routes: normalizeCompactRouteCount(item.routes, `${itemPath}.routes`),
@@ -776,6 +1028,7 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
   }
 
   const geoSource = object(source.geo, `${path}.geo`);
+  exactFields(geoSource, ['eligible', 'available', 'included', 'omitted', 'unavailable'], `${path}.geo`);
   const geo = {
     eligible: integer(geoSource.eligible, `${path}.geo.eligible`, 0, COMPACT_LIMITS.nodes),
     available: integer(geoSource.available, `${path}.geo.available`, 0, COMPACT_LIMITS.nodes),
@@ -783,20 +1036,25 @@ function normalizeCompactTopology(value, path = 'compact_topology', reportResult
     omitted: integer(geoSource.omitted, `${path}.geo.omitted`, 0, COMPACT_LIMITS.nodes),
     unavailable: integer(geoSource.unavailable, `${path}.geo.unavailable`, 0, COMPACT_LIMITS.nodes)
   };
-  const eligible = nodes.filter(node => node.public_ip).length;
-  const included = nodes.filter(node => node.public_ip && (node.geolocation || node.asn)).length;
+  const eligible = nodes.filter(node => ownValue(node, 'public_ip') === true).length;
+  const included = nodes.filter(node => ownValue(node, 'public_ip') === true &&
+    (Object.hasOwn(node, 'geolocation') || Object.hasOwn(node, 'asn'))).length;
   if (geo.eligible !== eligible || geo.eligible !== geo.available + geo.unavailable || geo.available !== geo.included + geo.omitted || geo.included !== included) {
     throw schemaError(`${path}.geo`, 'Geo counts do not match nodes');
   }
 
-  const reasons = array(source.truncation_reasons ?? [], `${path}.truncation_reasons`, COMPACT_TRUNCATION_REASONS.length)
+  const hasReasons = Object.hasOwn(source, 'truncation_reasons');
+  const reasons = (hasReasons ? array(ownValue(source, 'truncation_reasons'), `${path}.truncation_reasons`, COMPACT_TRUNCATION_REASONS.length) : [])
     .map((reason, index) => enumValue(reason, new Set(COMPACT_TRUNCATION_REASONS), `${path}.truncation_reasons[${index}]`));
+  if (hasReasons && reasons.length === 0) throw schemaError(`${path}.truncation_reasons`, 'present array must not be empty');
   if (new Set(reasons).size !== reasons.length || reasons.some((reason, index) => index > 0 && COMPACT_TRUNCATION_REASONS.indexOf(reason) <= COMPACT_TRUNCATION_REASONS.indexOf(reasons[index - 1]))) {
     throw schemaError(`${path}.truncation_reasons`, 'reasons must be unique and in fixed order');
   }
   const truncated = boolean(source.truncated, `${path}.truncated`);
   if (truncated !== (reasons.length > 0)) throw schemaError(`${path}.truncated`, 'does not match truncation reasons');
-  return { schema: 'compact-v1', selection: 'fair-complete-prefix-v1', limits, nodes, links, routes, stats, result_stats, geo, truncated, truncation_reasons: reasons };
+  const normalized = { schema: 'compact-v1', selection: 'fair-complete-prefix-v1', limits, nodes, links, routes, stats, result_stats, geo, truncated };
+  if (hasReasons) setOwnValue(normalized, 'truncation_reasons', reasons);
+  return normalized;
 }
 
 function normalizedTopologyStatus(topology) {
@@ -834,6 +1092,25 @@ function normalizeDetails(value, path) {
   return result;
 }
 
+function validateResultAttemptReference(result, attempt, path) {
+  if (!result || result.kind !== 'traceroute') {
+    throw schemaError(path, 'attempt requires a traceroute result');
+  }
+  const details = result.details;
+  if (details && Object.hasOwn(details, 'attempts')) {
+    if (!details.attempts.some(item => item.attempt === attempt)) {
+      throw schemaError(path, 'attempt is absent from the result attempt inventory');
+    }
+    return;
+  }
+  const attemptsTotal = details && Object.hasOwn(details, 'attempts_total')
+    ? ownValue(details, 'attempts_total')
+    : undefined;
+  if (!Number.isSafeInteger(attemptsTotal) || attemptsTotal < 1 || attemptsTotal > 10 || attempt > attemptsTotal) {
+    throw schemaError(path, 'attempt cannot be verified against the result');
+  }
+}
+
 function normalizeJSON(value, path, depth = 0) {
   if (depth > SCHEMA_LIMITS.detailDepth) throw schemaError(path, 'nested too deeply');
   if (value === null || typeof value === 'boolean') return value;
@@ -852,15 +1129,167 @@ function normalizeJSON(value, path, depth = 0) {
   return result;
 }
 
+function normalizeExactResultDetails(source, path, required, optional = {}) {
+  const details = object(ownValue(source, 'details'), `${path}.details`);
+  allowedFields(details, Object.keys(required), Object.keys(optional), `${path}.details`);
+  const normalized = {};
+  for (const [key, validator] of Object.entries(required)) {
+    if (!Object.hasOwn(details, key)) throw schemaError(`${path}.details.${key}`, 'required field is missing');
+    normalized[key] = validator(ownValue(details, key), `${path}.details.${key}`);
+  }
+  for (const [key, validator] of Object.entries(optional)) {
+    if (Object.hasOwn(details, key)) normalized[key] = validator(ownValue(details, key), `${path}.details.${key}`);
+  }
+  return normalized;
+}
+
+function nonEmptyResultText(value, path) {
+  const normalized = text(value, path);
+  if (normalized.trim().length === 0) throw schemaError(path, 'must not be blank');
+  return normalized;
+}
+
+const HTTP_RESULT_DETAIL_VALIDATORS = Object.freeze({
+  certificate_expires_at: (value, path) => utcTimestamp(value, path),
+  certificate_subject: (value, path) => text(value, path, { required: false }),
+  cipher_suite: (value, path) => text(value, path, { required: false }),
+  content_type: (value, path) => text(value, path, { required: false }),
+  expected_status: (value, path) => integer(value, path),
+  protocol: (value, path) => text(value, path, { required: false }),
+  status_code: (value, path) => integer(value, path),
+  tls_version: nonEmptyResultText
+});
+
+const TRACE_RESULT_DETAIL_VALIDATORS = Object.freeze({
+  attempts_cancelled: (value, path) => integer(value, path, 0, 10),
+  attempts_execution_failed: (value, path) => integer(value, path, 0, 10),
+  attempts_failed: (value, path) => integer(value, path, 0, 10),
+  attempts_reached: (value, path) => integer(value, path, 0, 10),
+  attempts_timed_out: (value, path) => integer(value, path, 0, 10),
+  attempts_total: (value, path) => integer(value, path, 0, 10),
+  attempts_unreached: (value, path) => integer(value, path, 0, 10),
+  attempts: (value, path) => array(value, path, 10).map((entry, index) => normalizeTraceAttempt(entry, `${path}[${index}]`)),
+  geoip_enrichment: (value, path) => normalizeEnrichment([value], path)[0],
+  geoip_provider_failures: (value, path) => integer(value, path),
+  topology: (value, path) => normalizeTopology(value, path)
+});
+
+function enforceProducerResultShape(source, normalized, path) {
+  const hasDetails = Object.hasOwn(source, 'details');
+  const hasErrorCode = Object.hasOwn(source, 'error_code');
+  const code = normalized.error_code;
+  const noDetails = !hasDetails;
+  const validNoDetailsTerminal = normalized.status === 'unreachable' && hasErrorCode && noDetails && (
+    COMMON_TERMINAL_RESULT_ERRORS.has(code) ||
+    (code === 'invalid_address' && INVALID_ADDRESS_RESULT_KINDS.has(normalized.kind)) ||
+    (code === 'invalid_url' && (normalized.kind === 'http' || normalized.kind === 'https')) ||
+    (code === 'response_read_failed' && (normalized.kind === 'http' || normalized.kind === 'https')) ||
+    (code === 'service_greeting_unverified' && SERVICE_KINDS.has(normalized.kind) && normalized.status === 'degraded') ||
+    (code === 'tls_downgrade' && normalized.kind === 'https') ||
+    (TLS_FAILURE_CODES.has(code) && !['tls_certificate_expired', 'tls_certificate_not_yet_valid'].includes(code) && TLS_FAILURE_KINDS.has(normalized.kind)) ||
+    (code === 'traceroute_unavailable' && normalized.kind === 'traceroute')
+  );
+  if (validNoDetailsTerminal) return;
+
+  if ((normalized.kind === 'dns' || normalized.kind === 'tcp') && normalized.status === 'unreachable' &&
+      hasErrorCode && code !== 'cancelled' && COMMON_TERMINAL_RESULT_ERRORS.has(code) && hasDetails) {
+    // Legacy reports retained checker details on DNS/TCP terminal outcomes.
+    // The semantic tuple is still closed; only the inert detail payload is kept.
+    return;
+  }
+
+  if (normalized.kind === 'dns' && normalized.status === 'healthy' && !hasErrorCode && hasDetails) {
+    // Legacy v1 DNS reports may carry additional checker observations. They
+    // still require a details object, while the tuple itself remains closed.
+    return;
+  }
+
+  if (normalized.kind === 'tcp' && normalized.status === 'healthy' && !hasErrorCode) {
+    normalized.details = normalizeExactResultDetails(source, path, {
+      local_address: (value, fieldPath) => text(value, fieldPath, { required: false }),
+      remote_address: (value, fieldPath) => text(value, fieldPath, { required: false })
+    });
+    return;
+  }
+
+  if ((normalized.kind === 'http' || normalized.kind === 'https') && (
+    (normalized.status === 'healthy' && !hasErrorCode) ||
+    (normalized.status === 'unreachable' && hasErrorCode && code === 'unexpected_status')
+  )) {
+    if (hasDetails) normalized.details = normalizeExactResultDetails(source, path, {}, HTTP_RESULT_DETAIL_VALIDATORS);
+    return;
+  }
+
+  if (SERVICE_KINDS.has(normalized.kind) && normalized.status === 'degraded' &&
+      hasErrorCode && code === 'service_greeting_unverified' && noDetails) return;
+
+  if (PLAIN_SERVICE_KINDS.has(normalized.kind) && normalized.status === 'healthy' && !hasErrorCode) {
+    normalized.details = normalizeExactResultDetails(source, path, {
+      verification_scope: (value, fieldPath) => {
+        if (value !== 'server_greeting') throw schemaError(fieldPath, 'unsupported verification scope');
+        return value;
+      }
+    });
+    return;
+  }
+
+  if (TLS_SERVICE_KINDS.has(normalized.kind) && normalized.status === 'healthy' && !hasErrorCode) {
+    normalized.details = normalizeExactResultDetails(source, path, {
+      verification_scope: (value, fieldPath) => {
+        if (value !== 'server_greeting') throw schemaError(fieldPath, 'unsupported verification scope');
+        return value;
+      }
+    }, {
+      certificate_expires_at: (value, fieldPath) => utcTimestamp(value, fieldPath),
+      certificate_subject: (value, fieldPath) => text(value, fieldPath, { required: false }),
+      cipher_suite: (value, fieldPath) => text(value, fieldPath, { required: false }),
+      tls_version: nonEmptyResultText
+    });
+    return;
+  }
+
+  if (TLS_FAILURE_KINDS.has(normalized.kind) && normalized.status === 'unreachable' && hasErrorCode &&
+      (code === 'tls_certificate_expired' || code === 'tls_certificate_not_yet_valid')) {
+    normalized.details = normalizeExactResultDetails(source, path, {
+      certificate_not_after: (value, fieldPath) => utcTimestamp(value, fieldPath, true),
+      certificate_not_before: (value, fieldPath) => utcTimestamp(value, fieldPath, true)
+    });
+    if (Date.parse(normalized.details.certificate_not_before) >= Date.parse(normalized.details.certificate_not_after)) {
+      throw schemaError(`${path}.details`, 'certificate validity range is invalid');
+    }
+    return;
+  }
+
+  const detailedTraceCodeValid = normalized.kind === 'traceroute' && hasDetails && (
+    ((normalized.status === 'healthy' || normalized.status === 'degraded') && !hasErrorCode && code === '') ||
+    (normalized.status === 'unreachable' && hasErrorCode && TRACEROUTE_DETAILED_ERRORS.has(code) && code !== '')
+  );
+  if (detailedTraceCodeValid) {
+    // Legacy full reports may contain a subset of traceroute observations.
+    // Keep that omission compatibility while closing the detail-key set.
+    const optional = { ...TRACE_RESULT_DETAIL_VALIDATORS };
+    normalized.details = normalizeExactResultDetails(source, path, {}, optional);
+    return;
+  }
+
+  throw schemaError(path, 'unsupported result kind, status, error code, and details combination');
+}
+
 function normalizeResult(value, index = 0) {
   const path = `results[${index}]`; const source = object(value, path);
+  allowedFields(source, ['kind', 'address', 'status', 'latency_ms', 'started_at'], ['error_code', 'message', 'details'], path);
+  const hasErrorCode = Object.hasOwn(source, 'error_code');
+  const hasMessage = Object.hasOwn(source, 'message');
+  const hasDetails = Object.hasOwn(source, 'details');
   const normalized = {
     kind: enumValue(source.kind, KINDS, `${path}.kind`), address: text(source.address, `${path}.address`, { required: false }),
     status: enumValue(source.status, STATUSES, `${path}.status`), latency_ms: integer(source.latency_ms, `${path}.latency_ms`),
-    started_at: timestamp(source.started_at, `${path}.started_at`), error_code: optionalText(source.error_code, `${path}.error_code`, { max: SCHEMA_LIMITS.errorCode }),
-    message: optionalText(source.message, `${path}.message`)
+    started_at: timestamp(source.started_at, `${path}.started_at`),
+    error_code: hasErrorCode ? text(ownValue(source, 'error_code'), `${path}.error_code`, { required: false, max: SCHEMA_LIMITS.errorCode }) : '',
+    message: hasMessage ? text(ownValue(source, 'message'), `${path}.message`, { required: false }) : ''
   };
-  if (source.details !== undefined && source.details !== null) normalized.details = normalizeDetails(source.details, `${path}.details`);
+  if (hasDetails) normalized.details = normalizeDetails(ownValue(source, 'details'), `${path}.details`);
+  enforceProducerResultShape(source, normalized, path);
   return normalized;
 }
 
@@ -892,8 +1321,10 @@ function enforceReportBudget(value) {
 function normalizeReport(value) {
   enforceReportBudget(value);
   const source = object(value, 'report');
+  requireFields(source, ['id', 'status', 'started_at', 'duration_ms', 'summary', 'results'], 'report');
   const results = array(source.results, 'report.results', SCHEMA_LIMITS.results).map(normalizeResult);
   const summarySource = object(source.summary, 'report.summary');
+  requireFields(summarySource, ['total', 'passed', 'failed'], 'report.summary');
   const summary = { total: integer(summarySource.total, 'report.summary.total', 0, SCHEMA_LIMITS.results), passed: integer(summarySource.passed, 'report.summary.passed', 0, SCHEMA_LIMITS.results), failed: integer(summarySource.failed, 'report.summary.failed', 0, SCHEMA_LIMITS.results) };
   if (summary.total !== results.length || summary.passed + summary.failed !== summary.total) throw schemaError('report.summary', 'counts do not match results');
   const passed = results.filter(result => result.status === 'healthy').length;
@@ -903,7 +1334,9 @@ function normalizeReport(value) {
   const expectedStatus = summary.failed === 0 ? 'healthy' : (hasDegraded || summary.passed > 0 ? 'degraded' : 'unreachable');
   if (status !== expectedStatus) throw schemaError('report.status', 'contradicts result statuses');
   const normalizedAnalysis = source.analysis === undefined || source.analysis === null ? null : normalizeAnalysis(source.analysis);
-  const compactTopology = source.compact_topology === undefined ? null : normalizeCompactTopology(source.compact_topology, 'report.compact_topology', results);
+  const compactTopology = Object.hasOwn(source, 'compact_topology')
+    ? normalizeCompactTopology(ownValue(source, 'compact_topology'), 'report.compact_topology', results)
+    : null;
   if (compactTopology) {
     if (compactTopology.result_stats.length !== results.length || compactTopology.result_stats.some((item, index) => item.result_index !== index)) {
       throw schemaError('report.compact_topology.result_stats', 'must contain one ordered entry per result');
@@ -912,10 +1345,17 @@ function normalizeReport(value) {
   }
   if (normalizedAnalysis) {
     for (const evidence of normalizedAnalysis.evidence) {
-      if (evidence.result_index >= results.length) throw schemaError('report.analysis.evidence', 'references unknown result');
+      const result = results[evidence.result_index];
+      if (!result) throw schemaError('report.analysis.evidence', 'references unknown result');
+      if (evidence.kind !== result.kind) throw schemaError('report.analysis.evidence.kind', 'does not match referenced result');
+      if (Object.hasOwn(evidence, 'attempt')) {
+        validateResultAttemptReference(result, evidence.attempt, 'report.analysis.evidence.attempt');
+      }
     }
     for (const issue of [...normalizedAnalysis.coverage.provider_failures, ...normalizedAnalysis.coverage.limitations]) {
-      if (issue.result_index >= results.length) throw schemaError('report.analysis.coverage', 'references unknown result');
+      const result = results[issue.result_index];
+      if (!result) throw schemaError('report.analysis.coverage', 'references unknown result');
+      if (issue.kind !== result.kind) throw schemaError('report.analysis.coverage.kind', 'does not match referenced result');
     }
   }
   return {

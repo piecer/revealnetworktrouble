@@ -182,12 +182,7 @@ public final class ReportTransport {
                 if (status < 200 || status >= 300) {
                     String body = readErrorBody(opened, startedNanos, budgetMillis);
                     remainingDeadlineOrThrow(startedNanos, budgetMillis);
-                    String retryAfter;
-                    try {
-                        remainingDeadlineOrThrow(startedNanos, budgetMillis);
-                        retryAfter = opened.getHeaderField("Retry-After");
-                    }
-                    catch (RuntimeException ignored) { retryAfter = null; }
+                    String retryAfter = RetryAfterHeaderExtractor.extract(opened);
                     remainingDeadlineOrThrow(startedNanos, budgetMillis);
                     Instant now = clock.now();
                     remainingDeadlineOrThrow(startedNanos, budgetMillis);

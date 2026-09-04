@@ -160,15 +160,20 @@ func (s *CheckerSupervisor) Snapshot() CheckerSupervisorSnapshot {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+func (s *CheckerSupervisor) snapshotLocked() CheckerSupervisorSnapshot {
 	return CheckerSupervisorSnapshot{Active: s.active, Capacity: s.capacity, Stuck: s.stuck}
 }
 
-// Shutdown permanently stops admission, cancels the shared checker context,
-// and waits only until ctx expires or all actual workers return. Its return
-// value is the number still running; Go cannot forcibly terminate them.
-func (s *CheckerSupervisor) Shutdown(ctx context.Context) int {
+// ShutdownSnapshot permanently stops admission, cancels the shared checker
+// context, and waits only until ctx expires or all actual workers return. It
+// captures all terminal counts at one moment after the wait; Go cannot forcibly
+// terminate workers that have not returned.
+func (s *CheckerSupervisor) ShutdownSnapshot(ctx context.Context) CheckerSupervisorSnapshot {
 	if s == nil {
-		return 0
+		return CheckerSupervisorSnapshot{}
 	}
 	s.mu.Lock()
 	s.admit = false
@@ -185,7 +190,15 @@ func (s *CheckerSupervisor) Shutdown(ctx context.Context) int {
 	case <-drained:
 	case <-ctx.Done():
 	}
-	return s.Snapshot().Active
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+// Shutdown is the compatibility form of ShutdownSnapshot. Its return value is
+// the number of workers still running at the captured shutdown moment.
+func (s *CheckerSupervisor) Shutdown(ctx context.Context) int {
+	return s.ShutdownSnapshot(ctx).Active
 }
 
 var defaultCheckerSupervisor = func() *CheckerSupervisor {
@@ -260,6 +273,14 @@ func (r *Runner) Validate(req Request) error {
 		}
 		if target.Attempts != 0 && target.Kind != KindTraceroute {
 			return fmt.Errorf("targets[%d].attempts is only supported for traceroute", i)
+		}
+		if target.ExpectedStatus != 0 {
+			if target.Kind != KindHTTP && target.Kind != KindHTTPS {
+				return fmt.Errorf("targets[%d].expected_status is only supported for HTTP and HTTPS", i)
+			}
+			if target.ExpectedStatus < 100 || target.ExpectedStatus > 599 {
+				return fmt.Errorf("targets[%d].expected_status must be between 100 and 599", i)
+			}
 		}
 	}
 	return nil

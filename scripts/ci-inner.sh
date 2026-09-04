@@ -41,6 +41,7 @@ run_gate go-race "$CI_EVIDENCE_DIR/go-race.log" go test -count=1 -race ./...
 run_gate go-vet "$CI_EVIDENCE_DIR/go-vet.log" go vet ./...
 run_gate go-build "$CI_EVIDENCE_DIR/go-build.log" go build -trimpath -o "$CI_EVIDENCE_DIR/checknetwork-api" ./cmd/checknetwork-api
 run_gate android-wrapper "$CI_EVIDENCE_DIR/android-wrapper.log" ./scripts/verify-android-wrapper.sh
+run_gate android-env-bootstrap "$CI_EVIDENCE_DIR/android-env-bootstrap.log" ./scripts/test-android-env-bootstrap.sh
 run_gate android-env "$CI_EVIDENCE_DIR/android-env.log" ./scripts/verify-android-env.sh
 rm -rf -- android/app/build/test-results/testDebugUnitTest android/app/build/test-results/testReleaseUnitTest
 run_gate android-test "$CI_EVIDENCE_DIR/android-test.log" sh -c 'cd android && ./gradlew --no-daemon --console=plain :app:testDebugUnitTest :app:testReleaseUnitTest'

@@ -94,6 +94,16 @@ public final class RawReportShareTest {
         assertEquals("content",first.getScheme());assertEquals("content",second.getScheme());assertNotEquals(first,second);share.clear();
     }
 
+    @Test public void atomicWriterUsesCreateNewAndNeverReplacesTempOrDestinationCollision() throws Exception {
+        File directory=temporary.newFolder("create-new"),temp=new File(directory,".raw-aaaaaaaaaaaaaaaa.tmp"),destination=new File(directory,"raw-aaaaaaaaaaaaaaaa.json");
+        Files.write(temp.toPath(),"temp-canary".getBytes(StandardCharsets.UTF_8));
+        assertThrows(IOException.class,()->RawReportShare.systemAtomicWriter().write(temp,destination,"new".getBytes(StandardCharsets.UTF_8)));
+        assertArrayEquals("temp-canary".getBytes(StandardCharsets.UTF_8),Files.readAllBytes(temp.toPath()));
+        Files.delete(temp.toPath());Files.write(destination.toPath(),"destination-canary".getBytes(StandardCharsets.UTF_8));
+        assertThrows(IOException.class,()->RawReportShare.systemAtomicWriter().write(temp,destination,"new".getBytes(StandardCharsets.UTF_8)));
+        assertArrayEquals("destination-canary".getBytes(StandardCharsets.UTF_8),Files.readAllBytes(destination.toPath()));
+    }
+
     private static RawReportShare share(File cache,ArrayDeque<String> tokens,List<Uri> revoked){
         return new RawReportShare(cache,file->Uri.parse("content://provider/shared_reports/"+file.getName()),RawReportShare.systemAtomicWriter(),tokens::removeFirst,revoked::add);
     }

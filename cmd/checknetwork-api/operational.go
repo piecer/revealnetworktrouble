@@ -18,7 +18,6 @@ const (
 	startingBody          = "{\"status\":\"not_ready\",\"reason\":\"starting\"}\n"
 	drainingBody          = "{\"status\":\"not_ready\",\"reason\":\"draining\"}\n"
 	tracerouteMissingBody = "{\"status\":\"not_ready\",\"reason\":\"traceroute_unavailable\"}\n"
-	businessDrainingBody  = "{\"status\":\"unavailable\",\"reason\":\"draining\"}\n"
 
 	reasonStarting              operationalReason = "starting"
 	reasonDraining              operationalReason = "draining"
@@ -57,6 +56,12 @@ func (state *operationalState) BeginDrain() {
 	state.phase.Store(operationalPhaseDraining)
 }
 
+// IsDraining implements api.DrainingProvider using the same atomic phase that
+// drives process readiness.
+func (state *operationalState) IsDraining() bool {
+	return state.phase.Load() == operationalPhaseDraining
+}
+
 func (state *operationalState) Snapshot() operationalSnapshot {
 	switch state.phase.Load() {
 	case operationalPhaseStarting:
@@ -91,10 +96,6 @@ func (handler *operationalHandler) ServeHTTP(writer http.ResponseWriter, request
 	exactPath := request.URL.EscapedPath() == path
 	if exactPath && (path == "/livez" || path == "/readyz") {
 		handler.serveOperational(writer, request, path)
-		return
-	}
-	if handler.state.phase.Load() == operationalPhaseDraining {
-		writeOperationalJSON(writer, request.Method, http.StatusServiceUnavailable, businessDrainingBody)
 		return
 	}
 	handler.business.ServeHTTP(writer, request)

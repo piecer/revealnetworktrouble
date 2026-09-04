@@ -68,3 +68,55 @@ func TestRequestTopologyModeOmittedFromJSON(t *testing.T) {
 		t.Fatalf("empty topology mode was serialized: %s", encoded)
 	}
 }
+
+func TestTLSResultAndFindingCodeEnumsAreClosed(t *testing.T) {
+	resultCodes := []string{
+		ResultErrorTLSCertificateExpired,
+		ResultErrorTLSCertificateNotYetValid,
+		ResultErrorTLSHostnameMismatch,
+		ResultErrorTLSUntrusted,
+		ResultErrorTLSHandshakeFailed,
+	}
+	wantResultCodes := []string{
+		"tls_certificate_expired",
+		"tls_certificate_not_yet_valid",
+		"tls_hostname_mismatch",
+		"tls_untrusted",
+		"tls_handshake_failed",
+	}
+	for index := range wantResultCodes {
+		if resultCodes[index] != wantResultCodes[index] {
+			t.Fatalf("result code[%d] = %q, want %q", index, resultCodes[index], wantResultCodes[index])
+		}
+	}
+
+	for _, code := range []FindingCode{
+		FindingTLSCertificateExpired,
+		FindingTLSCertificateNotYetValid,
+		FindingTLSHostnameMismatch,
+		FindingTLSUntrusted,
+		FindingTLSHandshakeFailed,
+	} {
+		if !validFindingCode(code) {
+			t.Fatalf("TLS finding code %q is not registered", code)
+		}
+	}
+	if validFindingCode(FindingCode("tls_HOSTILE_CANARY")) {
+		t.Fatal("unknown TLS finding code was accepted")
+	}
+}
+
+func TestServiceGreetingResultAndFindingCodeEnumsAreClosed(t *testing.T) {
+	if ResultErrorServiceGreetingUnverified != "service_greeting_unverified" {
+		t.Fatalf("result code = %q", ResultErrorServiceGreetingUnverified)
+	}
+	if FindingServiceGreetingUnverified != FindingCode("service_greeting_unverified") {
+		t.Fatalf("finding code = %q", FindingServiceGreetingUnverified)
+	}
+	if !validFindingCode(FindingServiceGreetingUnverified) {
+		t.Fatal("service greeting finding code is not registered")
+	}
+	if validFindingCode(FindingCode("service_greeting_unverified_HOSTILE_CANARY")) {
+		t.Fatal("unknown service greeting finding code was accepted")
+	}
+}

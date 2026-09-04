@@ -56,7 +56,6 @@ const compactTopology = (overrides = {}) => ({
   }],
   geo: { eligible: 1, available: 1, included: 1, omitted: 0, unavailable: 0 },
   truncated: false,
-  truncation_reasons: [],
   ...overrides
 });
 
@@ -78,6 +77,160 @@ const emptyCompactTopology = result_stats => compactTopology({
   },
   geo: { eligible: 0, available: 0, included: 0, omitted: 0, unavailable: 0 }
 });
+
+async function findingContractFixture() {
+  return JSON.parse(await readFile(new URL('../testdata/finding-contract.json', import.meta.url), 'utf8'));
+}
+
+async function apiErrorContractFixture() {
+  return JSON.parse(await readFile(new URL('../testdata/api-error-contract.json', import.meta.url), 'utf8'));
+}
+
+function resultDetailValue(detail) {
+  if (detail.const !== undefined) return detail.const;
+  switch (detail.type) {
+    case 'string': return 'fixture';
+    case 'nonempty_string': return 'TLS 1.3';
+    case 'canonical_utc_rfc3339':
+    case 'utc_timestamp': return started;
+    case 'nonnegative_integer': return 0;
+    case 'string_array': return ['192.0.2.1'];
+    case 'trace_attempts': return [];
+    case 'topology': return { reached: true, nodes: [], links: [] };
+    case 'enrichment': return {
+      provider: 'geoip', source: 'none', cache_hits: 0, upstream_fetches: 0, max_age_ms: 0, failures: []
+    };
+    default: throw new TypeError(`unsupported fixture detail type: ${detail.type}`);
+  }
+}
+
+function resultDetailsForShape(shape) {
+  const fields = [...shape.required_details, ...shape.optional_details];
+  if (fields.length === 0) return undefined;
+  const details = Object.fromEntries(fields.map(detail => [detail.key, resultDetailValue(detail)]));
+  if (Object.hasOwn(details, 'certificate_not_before')) details.certificate_not_before = '2025-09-01T12:00:00Z';
+  if (Object.hasOwn(details, 'certificate_not_after')) details.certificate_not_after = '2027-09-01T12:00:00Z';
+  return details;
+}
+
+function resultShapeReport(shape, kind = shape.kinds[0]) {
+  const details = resultDetailsForShape(shape);
+  const value = result({
+    kind,
+    status: shape.status,
+    ...(shape.error_code === undefined ? {} : { error_code: shape.error_code }),
+    ...(details === undefined ? { details: undefined } : { details })
+  });
+  if (details === undefined) delete value.details;
+  return legacyReport({
+    status: shape.status,
+    summary: { total: 1, passed: shape.status === 'healthy' ? 1 : 0, failed: shape.status === 'healthy' ? 0 : 1 },
+    results: [value]
+  });
+}
+
+function fixtureAllowsResult(contract, value) {
+  const code = Object.hasOwn(value, 'error_code') ? value.error_code : undefined;
+  return contract.result_shapes.some(shape => {
+    if (!shape.kinds.includes(value.kind) || shape.status !== value.status || shape.error_code !== code) return false;
+    const required = shape.required_details.map(detail => detail.key);
+    const allowed = new Set([...required, ...shape.optional_details.map(detail => detail.key)]);
+    if (!Object.hasOwn(value, 'details')) return required.length === 0;
+    if (value.details === null || typeof value.details !== 'object' || Array.isArray(value.details)) return false;
+    const keys = Object.keys(value.details);
+    return required.every(key => Object.hasOwn(value.details, key)) && keys.every(key => allowed.has(key));
+  });
+}
+
+function semanticCompatibilityAllowsResult(contract, value) {
+  if (fixtureAllowsResult(contract, value)) return true;
+  const code = Object.hasOwn(value, 'error_code') ? value.error_code : undefined;
+  if ((value.kind === 'dns' || value.kind === 'tcp') && value.status === 'unreachable' &&
+      ['checker_capacity_unavailable', 'checker_panic', 'connection_failed', 'network_policy_blocked', 'timeout'].includes(code) &&
+      Object.hasOwn(value, 'details') && value.details !== null && typeof value.details === 'object' && !Array.isArray(value.details)) {
+    return true;
+  }
+  if (value.kind === 'dns' && value.status === 'healthy' && code === undefined &&
+      Object.hasOwn(value, 'details') && value.details !== null && typeof value.details === 'object' && !Array.isArray(value.details)) {
+    return true;
+  }
+  if (value.kind !== 'traceroute' || !Object.hasOwn(value, 'details') || value.details === null ||
+      typeof value.details !== 'object' || Array.isArray(value.details)) return false;
+  const tupleAllowed = ((value.status === 'healthy' || value.status === 'degraded') && code === undefined) ||
+    (value.status === 'unreachable' && ['destination_unreached', 'timeout', 'traceroute_execution_incomplete', 'traceroute_failed'].includes(code));
+  const allowed = new Set([
+    'attempts_cancelled', 'attempts_execution_failed', 'attempts_failed', 'attempts_reached',
+    'attempts_timed_out', 'attempts_total', 'attempts_unreached', 'attempts',
+    'geoip_enrichment', 'geoip_provider_failures', 'topology'
+  ]);
+  return tupleAllowed && Object.keys(value.details).every(key => allowed.has(key));
+}
+
+function fixtureDerivedResultMutationCorpus(contract) {
+  const rows = contract.result_shapes.flatMap(shape => shape.kinds.map(kind => ({ shape, kind })));
+  const knownKinds = [...new Set(rows.map(({ kind }) => kind))];
+  const knownStatuses = [...new Set(contract.result_shapes.map(shape => shape.status))];
+  const knownCodes = [undefined, ...new Set(contract.result_shapes.map(shape => shape.error_code).filter(code => code !== undefined))];
+  const knownDetails = contract.result_shapes.map(shape => resultDetailsForShape(shape));
+  const mutations = [];
+
+  const addFirstIncompatible = (shape, kind, dimension, candidates, apply, describe) => {
+    const original = resultShapeReport(shape, kind);
+    for (const candidate of candidates) {
+      const report = structuredClone(original);
+      apply(report, candidate);
+      if (!semanticCompatibilityAllowsResult(contract, report.results[0])) {
+        mutations.push({ name: `${shape.name}/${kind}: incompatible ${dimension} ${describe(candidate)}`, report, dimension });
+        return;
+      }
+    }
+  };
+
+  for (const { shape, kind } of rows) {
+    addFirstIncompatible(shape, kind, 'status', knownStatuses.filter(value => value !== shape.status), (report, status) => {
+      report.results[0].status = status;
+      report.status = status;
+      report.summary = { total: 1, passed: status === 'healthy' ? 1 : 0, failed: status === 'healthy' ? 0 : 1 };
+    }, String);
+    // Runner-owned terminal codes are valid for every kind. Only emit a kind
+    // mutation when the fixture proves that the selected known kind is incompatible.
+    addFirstIncompatible(shape, kind, 'kind', knownKinds.filter(value => value !== kind),
+      (report, candidate) => { report.results[0].kind = candidate; }, String);
+    addFirstIncompatible(shape, kind, 'error_code', knownCodes.filter(value => value !== shape.error_code), (report, candidate) => {
+      if (candidate === undefined) delete report.results[0].error_code;
+      else report.results[0].error_code = candidate;
+    }, value => value ?? '<absent>');
+    const semanticallyRelatedDetails = [
+      ...contract.result_shapes.filter(candidateShape => candidateShape.kinds.includes(kind)).map(resultDetailsForShape),
+      ...knownDetails
+    ];
+    addFirstIncompatible(shape, kind, 'details', semanticallyRelatedDetails, (report, candidate) => {
+      if (candidate === undefined) delete report.results[0].details;
+      else report.results[0].details = structuredClone(candidate);
+    }, value => value === undefined ? '<absent>' : Object.keys(value).join(','));
+  }
+  return mutations;
+}
+
+function validResultForKind(kind) {
+  if (['ssh', 'smtp', 'submission', 'smtps', 'imap', 'imaps', 'pop3', 'pop3s'].includes(kind)) {
+    const details = { verification_scope: 'server_greeting' };
+    if (['smtps', 'imaps', 'pop3s'].includes(kind)) Object.assign(details, {
+      certificate_expires_at: started,
+      certificate_subject: 'CN=fixture',
+      cipher_suite: 'TLS_AES_128_GCM_SHA256',
+      tls_version: 'TLS 1.3'
+    });
+    return result({ kind, details });
+  }
+  if (kind === 'tcp') return result({ kind, details: { local_address: '192.0.2.1:1', remote_address: '192.0.2.2:2' } });
+  if (kind === 'http' || kind === 'https') {
+    const value = result({ kind });
+    delete value.details;
+    return value;
+  }
+  return result({ kind });
+}
 
 function response(status, headers = {}) {
   const normalized = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
@@ -213,6 +366,362 @@ test('normalizes serialized Go checker execution findings into privacy-safe gene
   assert.throws(() => normalizeReport(hostile), /findings.*code|unsupported/i);
 });
 
+test('Web finding allowlist accepts every producer-fixture code and rejects closed-version mutations', async () => {
+  const contract = await findingContractFixture();
+  assert.equal(contract.schema, 'finding-contract-v1');
+  assert.equal(contract.findings.length, 23);
+  assert.deepEqual(contract.findings.map(item => item.code), [...contract.findings.map(item => item.code)].sort());
+
+  for (const { code } of contract.findings) {
+    const source = analysis({ findings: [{ ...analysis().findings[0], code }] });
+    const normalized = normalizeAnalysis(source);
+    assert.equal(normalized.findings[0].code, code);
+    assert.deepEqual(normalized.findings[0].evidence_ids, ['e-1']);
+    assert.deepEqual(normalized.findings[0].action_ids, ['a-1']);
+  }
+
+  const mutations = [
+    'future_finding', '', null, 7,
+    'x'.repeat(SCHEMA_LIMITS.string + 1),
+    '<img src=x onerror=alert("HOSTILE_FINDING_CANARY")>'
+  ];
+  for (const code of mutations) {
+    const report = legacyReport({ analysis: analysis({ findings: [{ ...analysis().findings[0], code }] }) });
+    assert.throws(() => normalizeReport(report), /findings.*code|unsupported|schema/i);
+    const parsed = parseResponse(response(200), JSON.stringify(report), 0);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error.code, 'invalid_response');
+    assert.doesNotMatch(JSON.stringify(parsed), /future_finding|HOSTILE_FINDING_CANARY/);
+  }
+});
+
+test('healthy DNS with a known connection failure rejects atomically without retaining hostile prose', () => {
+  const report = legacyReport({ results: [result({
+    status: 'healthy',
+    error_code: 'connection_failed',
+    message: 'HOSTILE_RESULT_PROSE_CANARY'
+  })] });
+  assert.throws(() => normalizeReport(report), /result|status|error|schema/i);
+
+  const parsed = parseResponse(response(200), JSON.stringify(report), 0);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error.code, 'invalid_response');
+  assert.doesNotMatch(JSON.stringify(parsed), /HOSTILE_RESULT_PROSE_CANARY/);
+});
+
+test('Web result parser consumes all 136 producer-fixture matrix rows repeatedly', async () => {
+  const contract = await findingContractFixture();
+  const rows = contract.result_shapes.flatMap(shape => shape.kinds.map(kind => ({ shape, kind })));
+  assert.equal(contract.result_shapes.length, 31);
+  assert.equal(contract.result_matrix_rows, 136);
+  assert.equal(rows.length, contract.result_matrix_rows);
+  assert.deepEqual(contract.verification_scopes, ['server_greeting']);
+  for (let repetition = 0; repetition < 100; repetition++) {
+    for (const { shape, kind } of rows) {
+      const source = resultShapeReport(shape, kind);
+      assert.equal(fixtureAllowsResult(contract, source.results[0]), true, `${shape.name}/${kind}`);
+      const normalized = normalizeReport(source);
+      assert.equal(normalized.results[0].kind, kind);
+      assert.equal(normalized.results[0].status, shape.status);
+      assert.equal(normalized.results[0].error_code, shape.error_code ?? '');
+      const expectedDetails = resultDetailsForShape(shape);
+      if (expectedDetails === undefined) {
+        assert.equal(Object.hasOwn(normalized.results[0], 'details'), false, `${shape.name}/${kind}`);
+      } else {
+        assert.deepEqual(Object.keys(normalized.results[0].details).sort(), Object.keys(expectedDetails).sort(), `${shape.name}/${kind}`);
+      }
+    }
+  }
+});
+
+test('all eight producer traceroute witnesses normalize with only completed attempts projected', async () => {
+  const fixtureNames = [
+    'traceroute-timeout-full-report.json',
+    'traceroute-timeout-compact-report.json',
+    'traceroute-command-failure-full-report.json',
+    'traceroute-command-failure-compact-report.json',
+    'traceroute-failed-reached-parse-full-report.json',
+    'traceroute-failed-reached-parse-compact-report.json',
+    'traceroute-mixed-completed-failed-full-report.json',
+    'traceroute-mixed-completed-failed-compact-report.json'
+  ];
+  const normalized = new Map();
+  for (const fixtureName of fixtureNames) {
+    const serialized = await readFile(new URL(`../testdata/${fixtureName}`, import.meta.url), 'utf8');
+    assert.equal(serialized.endsWith('\n'), true, fixtureName);
+    normalized.set(fixtureName, normalizeReport(JSON.parse(serialized)));
+  }
+  assert.equal(normalized.size, 8);
+
+  for (const fixtureName of ['traceroute-timeout-full-report.json', 'traceroute-command-failure-full-report.json']) {
+    const trace = normalized.get(fixtureName).results[0];
+    assert.equal(Object.hasOwn(trace.details, 'topology'), true, fixtureName);
+    assert.equal(trace.details.topology.reached, false, fixtureName);
+    assert.deepEqual(trace.details.attempts.map(attempt => attempt.attempt), [1, 2], fixtureName);
+  }
+
+  const failedReachedFull = normalized.get('traceroute-failed-reached-parse-full-report.json');
+  const failedReachedCompact = normalized.get('traceroute-failed-reached-parse-compact-report.json');
+  assert.equal(failedReachedFull.results[0].details.attempts[0].topology.reached, true);
+  assert.deepEqual(failedReachedCompact.compact_topology.routes, []);
+  assert.deepEqual(failedReachedCompact.compact_topology.stats.routes, {
+    total: 0, displayed: 0, complete: 0, partial: 0, omitted: 0
+  });
+
+  for (const stem of ['traceroute-timeout', 'traceroute-command-failure']) {
+    const compact = normalized.get(`${stem}-compact-report.json`);
+    assert.deepEqual(compact.compact_topology.routes.map(route => route.attempt), [1], stem);
+    assert.equal(compact.results[0].details.attempts_execution_failed, 1, stem);
+  }
+
+  const mixedFull = normalized.get('traceroute-mixed-completed-failed-full-report.json');
+  const mixedCompact = normalized.get('traceroute-mixed-completed-failed-compact-report.json');
+  const completedAttempts = mixedFull.results[0].details.attempts
+    .filter(attempt => !attempt.error_code)
+    .map(attempt => attempt.attempt);
+  assert.deepEqual(completedAttempts, [1]);
+  assert.deepEqual(mixedCompact.compact_topology.routes.map(route => route.attempt), completedAttempts);
+  assert.equal(mixedCompact.compact_topology.stats.routes.total, completedAttempts.length);
+  assert.equal(mixedCompact.compact_topology.result_stats[0].routes.total, completedAttempts.length);
+});
+
+test('fixture-derived known-shape mutation corpus rejects every incompatible semantic tuple without reflection', async () => {
+  const contract = await findingContractFixture();
+  const mutations = fixtureDerivedResultMutationCorpus(contract);
+  const mutationNames = mutations.map(({ name }) => name);
+  assert.equal(new Set(mutationNames).size, mutations.length, 'mutation names must uniquely identify fixture-derived coverage');
+  assert.equal(mutations.length, 456);
+  assert.deepEqual(Object.fromEntries(['status', 'kind', 'error_code', 'details'].map(dimension => [
+    dimension, mutations.filter(mutation => mutation.dimension === dimension).length
+  ])), { status: 136, kind: 58, error_code: 136, details: 126 });
+  assert.deepEqual([...new Set(mutations.map(({ dimension }) => dimension))].sort(), ['details', 'error_code', 'kind', 'status']);
+
+  const rejected = [];
+  for (const { name, report } of mutations) {
+    assert.equal(semanticCompatibilityAllowsResult(contract, report.results[0]), false, `${name}: compatibility precondition`);
+    report.results[0].message = 'HOSTILE_RESULT_PROSE_CANARY';
+    assert.throws(() => normalizeReport(report), /result|details|status|kind|error|schema|timestamp/i, name);
+    const parsed = parseResponse(response(200), JSON.stringify(report), 0);
+    assert.equal(parsed.ok, false, name);
+    assert.equal(parsed.error.code, 'invalid_response', name);
+    assert.doesNotMatch(JSON.stringify(parsed), /HOSTILE_RESULT_PROSE_CANARY/, name);
+    rejected.push(name);
+  }
+  assert.deepEqual(rejected, mutationNames, 'every generated mutation must be asserted rejected');
+
+  const cancelledDetailMutations = mutations.filter(mutation =>
+    mutation.dimension === 'details' && mutation.name.startsWith('cancelled/'));
+  assert.equal(cancelledDetailMutations.length, 13, 'cancelled details must reject for every fixture kind');
+
+  for (const code of ['connection_failed', 'network_policy_blocked', 'checker_panic', 'checker_capacity_unavailable']) {
+    for (const kind of ['dns', 'tcp']) {
+      const shape = contract.result_shapes.find(candidate => candidate.name === code);
+      const report = resultShapeReport(shape, kind);
+      report.results[0].details = { witness: `${code}/${kind}` };
+      const normalized = normalizeReport(report);
+      assert.deepEqual(normalized.results[0].details, { witness: `${code}/${kind}` });
+    }
+  }
+});
+
+test('HTTP and service no-detail outcomes follow the producer fixture instead of a Cartesian allowlist', async () => {
+  const contract = await findingContractFixture();
+  const rows = contract.result_shapes.flatMap(shape => shape.kinds
+    .filter(kind => kind === 'http' || kind === 'https' || ['imap', 'imaps', 'pop3', 'pop3s', 'smtp', 'smtps', 'ssh', 'submission'].includes(kind))
+    .filter(() => shape.required_details.length === 0 && shape.optional_details.length === 0)
+    .map(kind => ({ shape, kind })));
+  assert.ok(rows.length > 0);
+  for (const { shape, kind } of rows) {
+    const report = resultShapeReport(shape, kind);
+    assert.equal(fixtureAllowsResult(contract, report.results[0]), true, `${shape.name}/${kind}`);
+    assert.equal(normalizeReport(report).results[0].error_code, shape.error_code, `${shape.name}/${kind}`);
+  }
+});
+
+test('unknown TLS error codes reject the whole report without reflecting the hostile canary', async () => {
+  const contract = await findingContractFixture();
+  const shapes = contract.result_shapes.filter(shape => shape.name.startsWith('tls_'));
+  assert.equal(shapes.length, 6);
+  for (const shape of shapes) {
+    const report = resultShapeReport(shape);
+    report.results[0].error_code = 'HOSTILE_ERROR_CODE_CANARY';
+    assert.throws(() => normalizeReport(report), /error|result|schema/i, shape.name);
+    const parsed = parseResponse(response(200), JSON.stringify(report), 0);
+    assert.equal(parsed.ok, false, shape.name);
+    assert.doesNotMatch(JSON.stringify(parsed), /HOSTILE_ERROR_CODE_CANARY/, shape.name);
+  }
+});
+
+test('compact-v1 rejects unknown fields at every compact object boundary', () => {
+  const boundaries = [
+    ['root', value => value],
+    ['limits', value => value.limits],
+    ['node', value => value.nodes[0]],
+    ['link', value => value.links[0]],
+    ['route', value => value.routes[0]],
+    ['stats', value => value.stats],
+    ['count stats', value => value.stats.nodes],
+    ['route stats', value => value.stats.routes],
+    ['result stats', value => value.result_stats[0]],
+    ['geo stats', value => value.geo],
+    ['Geo', value => value.nodes[1].geolocation],
+    ['ASN', value => value.nodes[1].asn]
+  ];
+  for (const [name, select] of boundaries) {
+    const value = structuredClone(compactTopology());
+    select(value).unknown_canary = 'HOSTILE_COMPACT_CANARY';
+    assert.throws(() => normalizeCompactTopology(value), /exact|field|schema|compact/i, name);
+  }
+});
+
+test('compact-v1 required-field mutation matrix rejects missing and null at every structural object', () => {
+  const objects = [
+    ['root', value => value, ['schema', 'selection', 'limits', 'nodes', 'links', 'routes', 'stats', 'result_stats', 'geo', 'truncated']],
+    ['limits', value => value.limits, ['nodes', 'links', 'max_response_bytes_exclusive', 'max_geo_bundle_bytes']],
+    ['node', value => value.nodes[0], ['id', 'kind', 'status', 'hop_min', 'hop_max', 'observations']],
+    ['link', value => value.links[0], ['from', 'to', 'status', 'observations']],
+    ['route', value => value.routes[0], ['result_index', 'attempt', 'status', 'reached', 'complete', 'node_ids']],
+    ['stats', value => value.stats, ['nodes', 'links', 'routes', 'node_observations', 'link_observations']],
+    ['count stats', value => value.stats.nodes, ['total', 'displayed', 'omitted']],
+    ['route stats', value => value.stats.routes, ['total', 'displayed', 'complete', 'partial', 'omitted']],
+    ['result stats', value => value.result_stats[0], ['result_index', 'routes', 'node_observations', 'link_observations']],
+    ['result count stats', value => value.result_stats[0].node_observations, ['total', 'displayed', 'omitted']],
+    ['result route stats', value => value.result_stats[0].routes, ['total', 'displayed', 'complete', 'partial', 'omitted']],
+    ['geo stats', value => value.geo, ['eligible', 'available', 'included', 'omitted', 'unavailable']],
+    ['geolocation', value => value.nodes[1].geolocation, ['latitude', 'longitude']]
+  ];
+  let mutations = 0;
+  for (const [objectName, select, required] of objects) {
+    for (const key of required) {
+      for (const replacement of ['missing', null]) {
+        const value = structuredClone(compactTopology());
+        const target = select(value);
+        if (replacement === 'missing') delete target[key];
+        else target[key] = null;
+        assert.throws(
+          () => normalizeCompactTopology(value),
+          /schema|field|object|array|string|boolean|integer|number|bounded|compact/i,
+          `${objectName}.${key}: ${replacement}`
+        );
+        mutations++;
+      }
+    }
+  }
+  assert.equal(mutations, objects.reduce((total, [, , fields]) => total + fields.length * 2, 0));
+});
+
+test('compact-v1 requires own enumerable data fields without invoking inherited mandatory getters', () => {
+  const value = structuredClone(compactTopology());
+  delete value.schema;
+  const saved = Object.getOwnPropertyDescriptor(Object.prototype, 'schema');
+  let invoked = 0;
+  try {
+    Object.defineProperty(Object.prototype, 'schema', {
+      configurable: true,
+      get() { invoked++; return 'compact-v1'; }
+    });
+    assert.throws(() => normalizeCompactTopology(value), /schema|own|field/i);
+    assert.equal(invoked, 0);
+  } finally {
+    if (saved) Object.defineProperty(Object.prototype, 'schema', saved);
+    else delete Object.prototype.schema;
+  }
+
+  const nonEnumerable = structuredClone(compactTopology());
+  Object.defineProperty(nonEnumerable.limits, 'nodes', { value: 500, enumerable: false });
+  assert.throws(() => normalizeCompactTopology(nonEnumerable), /nodes|field|schema/i);
+});
+
+test('accepts the three exact compact producer fixtures, rejects empty ASN, and requires array presence', async () => {
+  for (const name of ['compact-empty-asn-report.json', 'compact-zero-node-attempt-report.json', 'compact-zero-route-report.json']) {
+    const serialized = await readFile(new URL(`../testdata/${name}`, import.meta.url), 'utf8');
+    assert.doesNotThrow(() => normalizeReport(JSON.parse(serialized)), name);
+  }
+
+  const emptyASN = structuredClone(compactTopology());
+  emptyASN.nodes[1].asn = {};
+  delete emptyASN.nodes[1].geolocation;
+  emptyASN.geo = { eligible: 1, available: 1, included: 1, omitted: 0, unavailable: 0 };
+  assert.throws(() => normalizeCompactTopology(emptyASN), /asn|canonical|schema/i);
+
+  for (const key of ['nodes', 'links', 'routes', 'result_stats']) {
+    for (const replacement of [null, undefined]) {
+      const missing = structuredClone(compactTopology());
+      if (replacement === undefined) delete missing[key];
+      else missing[key] = replacement;
+      assert.throws(() => normalizeCompactTopology(missing), new RegExp(key, 'i'));
+    }
+  }
+  for (const replacement of [null, undefined]) {
+    const invalidReasons = structuredClone(compactTopology());
+    invalidReasons.truncation_reasons = replacement;
+    assert.throws(() => normalizeCompactTopology(invalidReasons), /truncation_reasons|array|schema/i);
+  }
+});
+
+test('compact optional fields accept absence but reject present null and undefined', () => {
+  const cases = [
+    ['truncation_reasons', value => value, 'truncation_reasons'],
+    ['node address', value => value.nodes[0], 'address'],
+    ['node latency', value => value.nodes[1], 'latency_ms_avg'],
+    ['node public IP', value => value.nodes[0], 'public_ip'],
+    ['node geolocation', value => value.nodes[1], 'geolocation'],
+    ['node ASN', value => value.nodes[1], 'asn'],
+    ['Geo city', value => value.nodes[1].geolocation, 'city'],
+    ['Geo region', value => value.nodes[1].geolocation, 'region'],
+    ['Geo country', value => value.nodes[1].geolocation, 'country'],
+    ['Geo country code', value => value.nodes[1].geolocation, 'country_code'],
+    ['ASN number', value => value.nodes[1].asn, 'number'],
+    ['ASN organization', value => value.nodes[1].asn, 'organization']
+  ];
+  for (const [name, target, key] of cases) {
+    const absent = structuredClone(compactTopology());
+    delete target(absent)[key];
+    assert.doesNotThrow(() => normalizeCompactTopology(absent), `${name}: absent`);
+    for (const malformed of [null, undefined]) {
+      const present = structuredClone(compactTopology());
+      target(present)[key] = malformed;
+      assert.throws(() => normalizeCompactTopology(present), /schema|compact|array|string|number|boolean|object/i, `${name}: ${malformed}`);
+    }
+  }
+
+  const absentTopology = legacyReport();
+  assert.doesNotThrow(() => normalizeReport(absentTopology));
+  for (const malformed of [null, undefined]) {
+    const presentTopology = legacyReport();
+    presentTopology.compact_topology = malformed;
+    assert.throws(() => normalizeReport(presentTopology), /compact_topology|schema/i);
+  }
+});
+
+test('compact omitempty fields accept absence and reject every present noncanonical zero value', () => {
+  const cases = [
+    ['node address', value => value.nodes[0], 'address', ''],
+    ['node public IP', value => value.nodes[0], 'public_ip', false],
+    ['Geo city', value => value.nodes[1].geolocation, 'city', ''],
+    ['Geo region', value => value.nodes[1].geolocation, 'region', ''],
+    ['Geo country', value => value.nodes[1].geolocation, 'country', ''],
+    ['Geo country code', value => value.nodes[1].geolocation, 'country_code', ''],
+    ['ASN number', value => value.nodes[1].asn, 'number', 0],
+    ['ASN organization', value => value.nodes[1].asn, 'organization', '']
+  ];
+  for (const [name, target, key, zero] of cases) {
+    const absent = structuredClone(compactTopology());
+    delete target(absent)[key];
+    assert.doesNotThrow(() => normalizeCompactTopology(absent), `${name}: absent`);
+    const present = structuredClone(compactTopology());
+    target(present)[key] = zero;
+    assert.throws(() => normalizeCompactTopology(present), /canonical|empty|zero|public_ip|schema/i, `${name}: present zero`);
+  }
+
+  const absentReasons = structuredClone(compactTopology());
+  delete absentReasons.truncation_reasons;
+  assert.doesNotThrow(() => normalizeCompactTopology(absentReasons));
+  const emptyReasons = structuredClone(compactTopology());
+  emptyReasons.truncation_reasons = [];
+  assert.throws(() => normalizeCompactTopology(emptyReasons), /truncation_reasons|canonical|empty|schema/i);
+});
+
 test('request lane replaces owners and rejects stale completion/finalize', () => {
   const idle = createRequestLane('diagnostics');
   assert.equal(idle.phase, 'idle');
@@ -273,12 +782,20 @@ test('client timeout is 15 seconds beyond the longest target and capped at 315 s
   assert.equal(clientTimeoutMS({ targets: [{ kind: 'traceroute', attempts: 999 }], timeout_ms: Number.MAX_SAFE_INTEGER }), 315000);
 });
 
-test('Retry-After parses delta seconds and HTTP dates', () => {
+test('Retry-After accepts only one canonical bounded ASCII delta-seconds value', async () => {
   const now = Date.parse('2026-09-01T12:00:00Z');
-  assert.equal(parseRetryAfter('12', now), now + 12000);
-  assert.equal(parseRetryAfter('Tue, 01 Sep 2026 12:01:00 GMT', now), now + 60000);
-  assert.equal(parseRetryAfter('-1', now), null);
-  assert.equal(parseRetryAfter('nonsense', now), null);
+  const contract = await apiErrorContractFixture();
+  assert.equal(contract.retry_after_cases.length, 13);
+  for (const fixture of contract.retry_after_cases) {
+    assert.equal(
+      parseRetryAfter(fixture.header, now),
+      fixture.valid ? now + fixture.seconds * 1000 : null,
+      fixture.name
+    );
+  }
+  for (const malformed of ['', '12x', '１２', '1\t', '1\n', '1,2', '1, 1']) {
+    assert.equal(parseRetryAfter(malformed, now), null, JSON.stringify(malformed));
+  }
 });
 
 test('request errors distinguish network, timeout, and caller cancellation', () => {
@@ -288,28 +805,115 @@ test('request errors distinguish network, timeout, and caller cancellation', () 
   assert.equal(normalizeRequestError({ name: 'TimeoutError' }).kind, 'timeout');
 });
 
-test('parseResponse handles empty/non-JSON errors and empty/malformed successes', () => {
-  assert.equal(parseResponse(response(500), '<html>proxy secret</html>', 0).error.code, 'http_500');
-  assert.doesNotMatch(parseResponse(response(500), '<html>proxy secret</html>', 0).error.message, /proxy secret/);
-  assert.equal(parseResponse(response(500), '', 0).error.code, 'http_500');
+test('parseResponse classifies every untyped HTTP failure as one fixed invalid server response', () => {
+  const expected = {
+    kind: 'invalid-response', code: 'invalid_server_response', status: 500,
+    message: 'The server returned an invalid error response.', retryable: false
+  };
+  for (const body of ['<html>proxy secret</html>', '', '{oops', JSON.stringify({ error: null })]) {
+    const parsed = parseResponse(response(500, { 'Retry-After': '30' }), body, 0);
+    assert.deepEqual(parsed.error, expected);
+    assert.equal(Object.hasOwn(parsed.error, 'retryAt'), false);
+    assert.doesNotMatch(JSON.stringify(parsed), /proxy secret|Retry-After/i);
+  }
   assert.equal(parseResponse(response(200), '', 0).error.code, 'invalid_response');
   assert.equal(parseResponse(response(200), '{oops', 0).error.code, 'invalid_response');
 });
 
-test('parseResponse normalizes 401/422/429/503 and Retry-After', () => {
+test('parseResponse consumes every exact producer API error body with local policy only', async () => {
   const now = Date.parse('2026-09-01T12:00:00Z');
-  const cases = [
-    [401, 'unauthorized', false], [422, 'network_policy_blocked', false],
-    [429, 'rate_limited', true], [503, 'server_busy', true]
-  ];
-  for (const [status, code, retryable] of cases) {
-    const parsed = parseResponse(response(status, { 'Retry-After': '30' }), JSON.stringify({ error: { code, message: `message ${status}` } }), now);
+  const contract = await apiErrorContractFixture();
+  assert.equal(contract.errors.length, 16);
+  const exercised = [];
+  for (const fixture of contract.errors) {
+    const parsed = parseResponse(
+      response(fixture.status, { 'Retry-After': '30' }),
+      fixture.body,
+      now
+    );
     assert.equal(parsed.ok, false);
-    assert.equal(parsed.error.code, code);
-    assert.equal(parsed.error.status, status);
-    assert.equal(parsed.error.retryable, retryable);
-    assert.equal(parsed.error.retryAt, status >= 429 ? now + 30000 : null);
+    assert.equal(parsed.error.kind, 'http', fixture.key);
+    assert.equal(parsed.error.code, fixture.code, fixture.key);
+    assert.equal(parsed.error.status, fixture.status, fixture.key);
+    assert.equal(parsed.error.message, fixture.message, fixture.key);
+    assert.equal(parsed.error.retryable, fixture.retryable, fixture.key);
+    assert.equal(Object.hasOwn(parsed.error, 'retryAt'), fixture.retry_after, fixture.key);
+    if (fixture.retry_after) assert.equal(parsed.error.retryAt, now + 30000, fixture.key);
+    assert.equal(fixture.body.endsWith('\n'), true, fixture.key);
+    exercised.push(fixture.key);
   }
+  assert.deepEqual(exercised, contract.errors.map(fixture => fixture.key));
+});
+
+test('API error mutation corpus has one identical invalid-server-response outcome', async () => {
+  const contract = await apiErrorContractFixture();
+  const expectedFor = status => ({
+    kind: 'invalid-response', code: 'invalid_server_response', status,
+    message: 'The server returned an invalid error response.', retryable: false
+  });
+  assert.equal(contract.schema, 'api-error-wire-v1');
+  assert.deepEqual(contract.limits, {
+    body_utf16_units: 65536, depth: 2, tokens: 10, properties: 3, string_utf16_units: 128
+  });
+  assert.equal(contract.structural_mutations.length, 35 + contract.errors.length * 3 + 2);
+  assert.equal(contract.structural_mutations.length, 85);
+  assert.equal(new Set(contract.structural_mutations.map(mutation => mutation.name)).size, contract.structural_mutations.length);
+  for (const mutation of contract.structural_mutations) {
+    assert.equal(mutation.valid, false, mutation.name);
+    const parsed = parseResponse(
+      response(mutation.status, { 'Retry-After': '30' }),
+      mutation.body,
+      0
+    );
+    assert.deepEqual(parsed.error, expectedFor(mutation.status), mutation.name);
+    assert.equal(Object.hasOwn(parsed.error, 'retryAt'), false, mutation.name);
+    assert.doesNotMatch(JSON.stringify(parsed), /HOSTILE|server_busy|rate_limited|valid API credentials/, mutation.name);
+  }
+});
+
+test('Retry-After fixture corpus applies only to registry rows that permit it', async () => {
+  const now = Date.parse('2026-09-01T12:00:00Z');
+  const contract = await apiErrorContractFixture();
+  for (const fixture of contract.errors) {
+    for (const retryCase of contract.retry_after_cases) {
+      const headers = retryCase.header === null ? {} : { 'Retry-After': retryCase.header };
+      const parsed = parseResponse(
+        response(fixture.status, headers),
+        fixture.body,
+        now
+      );
+      const applicable = fixture.retry_after && retryCase.valid;
+      assert.equal(Object.hasOwn(parsed.error, 'retryAt'), applicable, `${fixture.key}/${retryCase.name}`);
+      if (applicable) assert.equal(parsed.error.retryAt, now + retryCase.seconds * 1000, `${fixture.key}/${retryCase.name}`);
+      assert.equal(parsed.error.code, fixture.code, `${fixture.key}/${retryCase.name}`);
+      assert.equal(parsed.error.retryable, fixture.retryable, `${fixture.key}/${retryCase.name}`);
+    }
+  }
+});
+
+test('Retry-After handles canonicalized and combined values exposed by real Web Headers', () => {
+  for (const [raw, exposed, retryAt] of [[' 1 ', '1', 2000], ['3600', '3600', 3601000], ['0', '0', undefined], ['3601', '3601', undefined]]) {
+    const headers = new Headers({ 'Retry-After': raw });
+    assert.equal(headers.get('Retry-After'), exposed);
+    const parsed = parseResponse(
+      { status: 429, ok: false, headers },
+      '{"error":{"code":"rate_limited","message":"per-client request limit exceeded"}}\n',
+      1000
+    );
+    assert.equal(parsed.error.retryAt, retryAt, raw);
+  }
+
+  const headers = new Headers();
+  headers.append('Retry-After', '1');
+  headers.append('Retry-After', '2');
+  assert.match(headers.get('Retry-After'), /,/);
+  const parsed = parseResponse(
+    { status: 429, ok: false, headers },
+    '{"error":{"code":"rate_limited","message":"per-client request limit exceeded"}}\n',
+    1000
+  );
+  assert.equal(parsed.error.code, 'rate_limited');
+  assert.equal(Object.hasOwn(parsed.error, 'retryAt'), false);
 });
 
 test('normalizers copy valid report/analysis/result/topology into inert plain data', () => {
@@ -344,7 +948,9 @@ test('compact topology is optional and valid compact data is deeply copied into 
   assert.equal(absent.compact_topology, null);
 
   const source = compactTopology();
-  const normalized = normalizeReport(legacyReport({ results: [result({ kind: 'traceroute' })], compact_topology: source }));
+  const normalized = normalizeReport(legacyReport({
+    results: [result({ kind: 'traceroute', details: { attempts_total: 1 } })], compact_topology: source
+  }));
   assert.notStrictEqual(normalized.compact_topology, source);
   assert.notStrictEqual(normalized.compact_topology.nodes, source.nodes);
   assert.notStrictEqual(normalized.compact_topology.nodes[1].geolocation, source.nodes[1].geolocation);
@@ -355,6 +961,20 @@ test('compact topology is optional and valid compact data is deeply copied into 
   assert.equal(normalized.compact_topology.routes[0].node_ids[0], 'n000001');
   assert.equal(Object.getPrototypeOf(normalized.compact_topology), Object.prototype);
   assert.equal(Object.getPrototypeOf(normalized.compact_topology.nodes), Array.prototype);
+
+  const optionalSource = compactTopology();
+  delete optionalSource.nodes[0].address;
+  delete optionalSource.nodes[1].geolocation.city;
+  delete optionalSource.nodes[1].geolocation.region;
+  delete optionalSource.nodes[1].asn.organization;
+
+  const once = normalizeCompactTopology(optionalSource);
+  assert.equal(Object.hasOwn(once, 'truncation_reasons'), false);
+  assert.equal(Object.hasOwn(once.nodes[0], 'address'), false);
+  assert.equal(Object.hasOwn(once.nodes[1].geolocation, 'city'), false);
+  assert.equal(Object.hasOwn(once.nodes[1].geolocation, 'region'), false);
+  assert.equal(Object.hasOwn(once.nodes[1].asn, 'organization'), false);
+  assert.deepEqual(normalizeCompactTopology(once), once);
 });
 
 test('present malformed compact topology rejects the report without legacy fallback', () => {
@@ -471,6 +1091,22 @@ test('compact Geo bundle applies Go U+2028 and U+2029 escaping at the exact boun
   }
 });
 
+test('producer exact Geo boundary fixture is accepted byte-for-byte and named invalid-wire 4097 rejects', async () => {
+  const serialized = await readFile(new URL('../testdata/compact-geo-exact-boundary-report.json', import.meta.url), 'utf8');
+  assert.equal(serialized.endsWith('\n'), true);
+  for (const escaped of ['\\u003c', '\\u003e', '\\u0026', '\\u2028', '\\u2029']) {
+    assert.equal(serialized.split(escaped).length - 1, 135, escaped);
+  }
+  const exact = JSON.parse(serialized);
+  const organization = exact.compact_topology.nodes[1].asn.organization;
+  assert.equal(organization, '<>&\u2028\u2029'.repeat(135) + 'boundary!');
+  assert.equal(normalizeReport(exact).compact_topology.nodes[1].asn.organization, organization);
+
+  const invalidWire4097 = structuredClone(exact);
+  invalidWire4097.compact_topology.nodes[1].asn.organization += 'x';
+  assert.throws(() => normalizeReport(invalidWire4097), /Geo bundle|byte limit/i, 'invalid-wire-geo-bundle-4097');
+});
+
 test('compact Geo strings reject lone UTF-16 surrogates but accept valid scalar pairs', () => {
   for (const malformed of ['\ud800', '\udfff', `ok\ud800x`, `ok\udfffx`]) {
     const value = structuredClone(compactTopology());
@@ -532,7 +1168,7 @@ test('compact Geo counting invokes no inherited Object conversion hook', () => {
   }
 });
 
-test('compact Geo counting invokes no own conversion hook', () => {
+test('compact Geo closure rejects own conversion hooks without invoking them', () => {
   const value = structuredClone(compactTopology());
   let invoked = 0;
   const canary = () => { invoked++; throw new Error('own conversion canary invoked'); };
@@ -541,26 +1177,38 @@ test('compact Geo counting invokes no own conversion hook', () => {
       Object.defineProperty(bundle, name, { configurable: true, enumerable: true, value: canary });
     }
   }
-  assert.doesNotThrow(() => normalizeCompactTopology(value));
+  assert.throws(() => normalizeCompactTopology(value), /exact|field|schema/i);
   assert.equal(invoked, 0);
 });
 
 test('compact Geo normalization performs no inherited optional-field accessor lookup', () => {
-  const value = structuredClone(compactTopology());
-  delete value.nodes[1].latency_ms_avg;
-  delete value.nodes[1].geolocation.city;
-  delete value.nodes[1].asn.organization;
-  const names = ['latency_ms_avg', 'city', 'organization'];
-  const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(Object.prototype, name)]);
+  const cases = [
+    ['truncation_reasons', value => delete value.truncation_reasons],
+    ['address', value => delete value.nodes[0].address],
+    ['latency_ms_avg', value => delete value.nodes[1].latency_ms_avg],
+    ['public_ip', () => {}],
+    ['geolocation', value => delete value.nodes[1].geolocation],
+    ['asn', value => delete value.nodes[1].asn],
+    ['city', value => delete value.nodes[1].geolocation.city],
+    ['region', value => delete value.nodes[1].geolocation.region],
+    ['country', value => delete value.nodes[1].geolocation.country],
+    ['country_code', value => delete value.nodes[1].geolocation.country_code],
+    ['number', value => delete value.nodes[1].asn.number],
+    ['organization', value => delete value.nodes[1].asn.organization]
+  ];
+  const saved = cases.map(([name]) => [name, Object.getOwnPropertyDescriptor(Object.prototype, name)]);
   let invoked = 0;
   try {
-    for (const name of names) {
+    for (const [name, removeOwnField] of cases) {
+      const value = structuredClone(compactTopology());
+      removeOwnField(value);
       Object.defineProperty(Object.prototype, name, {
         configurable: true,
         get() { invoked++; throw new Error('inherited accessor canary invoked'); }
       });
+      assert.doesNotThrow(() => normalizeCompactTopology(value), name);
+      delete Object.prototype[name];
     }
-    assert.doesNotThrow(() => normalizeCompactTopology(value));
     assert.equal(invoked, 0);
   } finally {
     for (const [name, descriptor] of saved) {
@@ -570,15 +1218,32 @@ test('compact Geo normalization performs no inherited optional-field accessor lo
   }
 });
 
+test('compact metadata validation does not invoke inherited public_ip accessors', () => {
+  const value = structuredClone(compactTopology());
+  delete value.nodes[1].public_ip;
+  const saved = Object.getOwnPropertyDescriptor(Object.prototype, 'public_ip');
+  let invoked = 0;
+  try {
+    Object.defineProperty(Object.prototype, 'public_ip', {
+      configurable: true,
+      get() { invoked++; throw new Error('inherited public_ip accessor invoked'); }
+    });
+    assert.throws(() => normalizeCompactTopology(value), /public_ip|schema/i);
+    assert.equal(invoked, 0);
+  } finally {
+    if (saved) Object.defineProperty(Object.prototype, 'public_ip', saved);
+    else delete Object.prototype.public_ip;
+  }
+});
+
 test('compact Geo counting matches Go omitempty and number rendering fixtures', () => {
   const cases = [
-    { geolocation: { city: '', region: '', country: '', country_code: '', latitude: -0, longitude: 1e-7 }, expectedPadding: 4039 },
-    { geolocation: { latitude: 1e-7, longitude: 1e-6 }, expectedPadding: 4033 },
-    { geolocation: { latitude: 37.5, longitude: 127 }, expectedPadding: 4038 },
-    { geolocation: { latitude: -90, longitude: 180 }, expectedPadding: 4039 },
-    { asn: { number: 0, organization: '' }, expectedPadding: 4070 },
-    { asn: { organization: '' }, expectedPadding: 4070 },
-    { asn: { number: 4294967295, organization: '' }, expectedPadding: 4050 }
+    { geolocation: { latitude: -0, longitude: 1e-7 }, target: 'city', expectedPadding: 4039 },
+    { geolocation: { latitude: 1e-7, longitude: 1e-6 }, target: 'city', expectedPadding: 4033 },
+    { geolocation: { latitude: 37.5, longitude: 127 }, target: 'city', expectedPadding: 4038 },
+    { geolocation: { latitude: -90, longitude: 180 }, target: 'city', expectedPadding: 4039 },
+    { asn: {}, target: 'organization', expectedPadding: 4070 },
+    { asn: { number: 4294967295 }, target: 'organization', expectedPadding: 4050 }
   ];
   for (const fixture of cases) {
     const exact = structuredClone(compactTopology());
@@ -586,14 +1251,119 @@ test('compact Geo counting matches Go omitempty and number rendering fixtures', 
     delete exact.nodes[1].asn;
     Object.assign(exact.nodes[1], structuredClone(fixture));
     delete exact.nodes[1].expectedPadding;
+    delete exact.nodes[1].target;
     const target = exact.nodes[1].geolocation ?? exact.nodes[1].asn;
-    if (exact.nodes[1].geolocation) target.city = 'x'.repeat(fixture.expectedPadding);
-    else target.organization = 'x'.repeat(fixture.expectedPadding);
+    target[fixture.target] = 'x'.repeat(fixture.expectedPadding);
     assert.doesNotThrow(() => normalizeCompactTopology(exact));
-    if (exact.nodes[1].geolocation) target.city += 'x';
-    else target.organization += 'x';
+    target[fixture.target] += 'x';
     assert.throws(() => normalizeCompactTopology(exact), /Geo bundle|byte limit/i);
   }
+});
+
+test('reviewer seven-case result-indexed semantic-linkage corpus rejects atomically without reflection', () => {
+  const hostile = /HOSTILE_(?:REASON|OBSERVED)_CANARY|tcp/;
+  const linkedAnalysis = (kind, evidenceOverrides = {}, coverageOverrides = {}) => analysis({
+    evidence: [{ ...analysis().evidence[0], kind, ...evidenceOverrides }],
+    coverage: { ...analysis().coverage, ...coverageOverrides }
+  });
+  const reportFor = (resultValue, analysisValue, compact_topology) => legacyReport({
+    results: [resultValue], analysis: analysisValue,
+    ...(compact_topology === undefined ? {} : { compact_topology })
+  });
+  const traceResult = details => result({ kind: 'traceroute', details });
+  const issue = {
+    code: 'missing_details', result_index: 0, kind: 'tcp', signal: 'fixture',
+    reason: 'HOSTILE_REASON_CANARY'
+  };
+  const cases = [
+    ['evidence kind mismatch', reportFor(result(), linkedAnalysis('tcp', { observed: 'HOSTILE_OBSERVED_CANARY' }))],
+    ['coverage kind mismatch', reportFor(result(), linkedAnalysis('dns', {}, { limitations: [issue] }))],
+    ['attempt on non-traceroute', reportFor(result(), linkedAnalysis('dns', { attempt: 1, observed: 'HOSTILE_OBSERVED_CANARY' }))],
+    ['attempt absent from inventory despite larger attempts_total', reportFor(
+      traceResult({ attempts: [{ attempt: 2, status: 'unreachable', error_code: 'timeout' }], attempts_total: 10 }),
+      linkedAnalysis('traceroute', { attempt: 1, observed: 'HOSTILE_OBSERVED_CANARY' })
+    )],
+    ['attempt without inventory or attempts_total', reportFor(
+      traceResult({}), linkedAnalysis('traceroute', { attempt: 1, observed: 'HOSTILE_OBSERVED_CANARY' })
+    )],
+    ['compact route attempt absent from inventory despite larger attempts_total', reportFor(
+      traceResult({ attempts: [{ attempt: 2, status: 'unreachable', error_code: 'timeout' }], attempts_total: 10 }),
+      linkedAnalysis('traceroute'), compactTopology()
+    )],
+    ['compact route attempt without inventory or attempts_total', reportFor(
+      traceResult({}), linkedAnalysis('traceroute'), compactTopology()
+    )]
+  ];
+
+  assert.equal(cases.length, 7);
+  const accepted = [];
+  const parsedAsValid = [];
+  for (const [name, report] of cases) {
+    try {
+      normalizeReport(report);
+      accepted.push(name);
+    } catch (error) {
+      assert.match(error.message, /analysis|coverage|evidence|attempt|route|result|schema/i, name);
+      assert.doesNotMatch(error.message, hostile, `${name}: thrown error`);
+    }
+    const parsed = parseResponse(response(200), JSON.stringify(report), 0);
+    if (parsed.ok) {
+      parsedAsValid.push(name);
+    } else {
+      assert.deepEqual(parsed.error, {
+        kind: 'invalid-response', code: 'invalid_response', status: 200,
+        message: 'The server response did not match the expected schema.', retryable: false
+      }, name);
+      assert.doesNotMatch(JSON.stringify(parsed), hostile, `${name}: normalized response`);
+    }
+  }
+  assert.deepEqual(accepted, [], 'every reviewer mutation must reject directly');
+  assert.deepEqual(parsedAsValid, [], 'every reviewer mutation must reject through parseResponse');
+});
+
+test('producer-valid semantic links preserve duplicate attempt inventory and producer ordering', () => {
+  const attempts = [2, 2, 1].map(attempt => ({ attempt, status: 'unreachable', error_code: 'timeout' }));
+  const trace = result({ kind: 'traceroute', details: { attempts, attempts_total: 1 } });
+  const validIssue = {
+    code: 'missing_details', result_index: 0, kind: 'traceroute', signal: 'fixture', reason: 'producer reason'
+  };
+  const validAnalysis = analysis({
+    evidence: [{ ...analysis().evidence[0], result_index: 0, kind: 'traceroute', attempt: 2 }],
+    coverage: {
+      ...analysis().coverage,
+      provider_failures: [validIssue],
+      limitations: [{ ...validIssue, code: 'unsupported_details' }]
+    }
+  });
+  const linked = normalizeReport(legacyReport({ results: [trace], analysis: validAnalysis }));
+  assert.deepEqual(linked.results[0].details.attempts.map(item => item.attempt), [2, 2, 1]);
+  assert.equal(linked.analysis.evidence[0].attempt, 2, 'inventory takes precedence over attempts_total');
+  assert.deepEqual([
+    linked.analysis.coverage.provider_failures[0].kind,
+    linked.analysis.coverage.limitations[0].kind
+  ], ['traceroute', 'traceroute']);
+
+  const totalFallback = normalizeReport(legacyReport({
+    results: [result({ kind: 'traceroute', details: { attempts_total: 3 } })],
+    analysis: analysis({ evidence: [{ ...analysis().evidence[0], kind: 'traceroute', attempt: 3 }] })
+  }));
+  assert.equal(totalFallback.analysis.evidence[0].attempt, 3);
+
+  const topology = structuredClone(compactTopology());
+  topology.routes = [
+    { ...topology.routes[0], attempt: 2 },
+    { ...structuredClone(topology.routes[0]), attempt: 2, complete: false, node_ids: ['n000001'] },
+    { ...structuredClone(topology.routes[0]), attempt: 1, complete: false, node_ids: ['n000001'] }
+  ];
+  topology.nodes[0].observations = 3;
+  topology.stats.routes = { total: 3, displayed: 3, complete: 1, partial: 2, omitted: 0 };
+  topology.stats.node_observations = { total: 4, displayed: 4, omitted: 0 };
+  topology.result_stats[0].routes = structuredClone(topology.stats.routes);
+  topology.result_stats[0].node_observations = structuredClone(topology.stats.node_observations);
+  const compactLinked = normalizeReport(legacyReport({
+    results: [trace], analysis: validAnalysis, compact_topology: topology
+  }));
+  assert.deepEqual(compactLinked.compact_topology.routes.map(route => route.attempt), [2, 2, 1]);
 });
 
 test('compact routes must reference traceroute results', () => {
@@ -602,10 +1372,13 @@ test('compact routes must reference traceroute results', () => {
 
 test('compact route result references reject every non-traceroute result kind', () => {
   for (const kind of ['dns', 'tcp', 'http', 'https', 'ssh', 'smtp', 'submission', 'smtps', 'imap', 'imaps', 'pop3', 'pop3s']) {
-    const report = legacyReport({ results: [result({ kind })], compact_topology: compactTopology() });
+    const report = legacyReport({ results: [validResultForKind(kind)], compact_topology: compactTopology() });
     assert.throws(() => normalizeReport(report), /route|traceroute|result_index/i, kind);
   }
-  const report = legacyReport({ results: [result({ kind: 'traceroute' })], compact_topology: compactTopology() });
+  const report = legacyReport({
+    results: [result({ kind: 'traceroute', details: { attempts_total: 1 } })],
+    compact_topology: compactTopology()
+  });
   assert.equal(normalizeReport(report).compact_topology.routes[0].result_index, 0);
 });
 
@@ -663,12 +1436,12 @@ test('linked zero result stats accept all 12 non-traceroute kinds as immutable c
     nonzero.stats.routes = { total: 1, displayed: 0, complete: 0, partial: 0, omitted: 1 };
     nonzero.result_stats[0].routes = structuredClone(nonzero.stats.routes);
     assert.throws(
-      () => normalizeReport(legacyReport({ results: [result({ kind })], compact_topology: nonzero })),
+      () => normalizeReport(legacyReport({ results: [validResultForKind(kind)], compact_topology: nonzero })),
       /result_stats|non-traceroute|zero/i,
       kind
     );
   }
-  const results = kinds.map(kind => result({ kind }));
+  const results = kinds.map(validResultForKind);
   const topology = emptyCompactTopology(kinds.map((_, index) => zeroResultStats(index)));
   const normalized = normalizeReport(legacyReport({
     results,
@@ -790,7 +1563,7 @@ test('compact schema accepts the exact backend 30-hop unreached route ceiling', 
   value.nodes = Array.from({ length: 32 }, (_, index) => ({
     id: `n${String(index + 1).padStart(6, '0')}`,
     kind: index === 0 ? 'local' : index === 31 ? 'hostname' : 'unknown',
-    address: index === 0 ? 'local' : index === 31 ? 'target.example' : '',
+    ...(index === 0 ? { address: 'local' } : index === 31 ? { address: 'target.example' } : {}),
     status: index === 0 ? 'healthy' : index === 31 ? 'failure' : 'unknown',
     hop_min: index === 31 ? 30 : index,
     hop_max: index === 31 ? 30 : index,
@@ -879,14 +1652,15 @@ test('compact schema rejects caps, identity, references, numeric, enum, reason, 
   for (const value of invalid) assert.throws(() => normalizeCompactTopology(value), /schema|compact|limit|count|reference|unique|Geo|reason/i);
 });
 
-test('compact schema preserves required empty arrays and rejects accessors without invoking them', () => {
+test('compact schema preserves required empty arrays, omits empty optional arrays, and rejects accessors without invoking them', () => {
   const empty = compactTopology({
     nodes: [], links: [], routes: [],
     stats: { nodes: { total: 0, displayed: 0, omitted: 0 }, links: { total: 0, displayed: 0, omitted: 0 }, routes: { total: 0, displayed: 0, complete: 0, partial: 0, omitted: 0 }, node_observations: { total: 0, displayed: 0, omitted: 0 }, link_observations: { total: 0, displayed: 0, omitted: 0 } },
     result_stats: [], geo: { eligible: 0, available: 0, included: 0, omitted: 0, unavailable: 0 }
   });
   const normalized = normalizeCompactTopology(empty);
-  assert.deepEqual([normalized.nodes, normalized.links, normalized.routes, normalized.result_stats, normalized.truncation_reasons], [[], [], [], [], []]);
+  assert.deepEqual([normalized.nodes, normalized.links, normalized.routes, normalized.result_stats], [[], [], [], []]);
+  assert.equal(Object.hasOwn(normalized, 'truncation_reasons'), false);
   let invoked = false;
   Object.defineProperty(empty, 'nodes', { get() { invoked = true; return []; } });
   assert.throws(() => normalizeCompactTopology(empty), /accessor|schema/i);
@@ -926,22 +1700,43 @@ test('topology normalization requires unique nodes and links that reference them
   }));
 });
 
-test('structured HTTP errors never retain a reflected bearer credential', () => {
+test('full topology accepts only optional bounded latency_delta_ms and never normalizes omission to zero', () => {
+  const topology = delta => ({
+    reached: true,
+    nodes: [{ id: 'one', hop: 1, status: 'healthy' }, { id: 'two', hop: 2, status: 'healthy' }],
+    links: [{ from: 'one', to: 'two', status: 'healthy', ...(delta === undefined ? {} : { latency_delta_ms: delta }) }]
+  });
+  const absent = normalizeTopology(topology(undefined));
+  assert.equal(Object.hasOwn(absent.links[0], 'latency_delta_ms'), false);
+  for (const delta of [0, 0.25, 30000]) {
+    const normalized = normalizeTopology(topology(delta));
+    assert.equal(normalized.links[0].latency_delta_ms, delta);
+  }
+  for (const delta of [-1, 30000.0001, 30001, Number.NaN, Number.POSITIVE_INFINITY, null, '1']) {
+    assert.throws(() => normalizeTopology(topology(delta)), /latency_delta_ms|bounded|finite|schema/i, String(delta));
+  }
+  const obsolete = topology(undefined);
+  obsolete.links[0].latency_ms = 1;
+  assert.throws(() => normalizeTopology(obsolete), /latency_ms|field|schema/i);
+});
+
+test('noncanonical API error messages fail closed without retaining a reflected bearer credential', () => {
   const bearer = 'Bearer SUPER-secret-Token-123';
   const parsed = parseResponse(
     response(401),
     JSON.stringify({ error: { code: 'unauthorized', message: `invalid ${bearer}` } }),
     0
   );
-  assert.equal(parsed.error.code, 'unauthorized');
+  assert.equal(parsed.error.code, 'invalid_server_response');
   assert.doesNotMatch(JSON.stringify(parsed), /SUPER-secret-Token-123/i);
-  assert.match(parsed.error.message, /HTTP 401|authorization|credential|unauthorized/i);
+  assert.equal(parsed.error.message, 'The server returned an invalid error response.');
 });
 
-test('structured HTTP error codes are allowlisted and cannot reflect a bearer credential', () => {
+test('unknown structured HTTP error codes use the fixed invalid response without reflecting a bearer credential', () => {
   const bearer = 'reflected-secret-token-123';
   const parsed = parseResponse(response(401), JSON.stringify({ error: { code: bearer, message: 'rejected' } }), 0);
-  assert.equal(parsed.error.code, 'unauthorized');
+  assert.equal(parsed.error.code, 'invalid_server_response');
+  assert.equal(parsed.error.retryable, false);
   assert.doesNotMatch(JSON.stringify(parsed), new RegExp(bearer, 'i'));
 });
 

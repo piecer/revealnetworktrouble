@@ -26,7 +26,12 @@ services:
       retries: 3
       start_period: 5s
   web:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VERSION: ${CHECKNETWORK_VERSION:-dev}
+        REVISION: ${CHECKNETWORK_REVISION:-dev}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
     ports:
       - "127.0.0.1:3000:80"
     restart: unless-stopped

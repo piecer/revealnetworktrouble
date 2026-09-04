@@ -32,6 +32,7 @@ func TestOperationalRoutesExposeFixedStartupReadyAndDrainContracts(t *testing.T)
 	var businessCalls atomic.Int32
 	business := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		businessCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	state := newOperationalState(true)
@@ -55,9 +56,9 @@ func TestOperationalRoutesExposeFixedStartupReadyAndDrainContracts(t *testing.T)
 	state.BeginDrain()
 	assert(http.MethodGet, "/livez", http.StatusOK, liveBody)
 	assert(http.MethodGet, "/readyz", http.StatusServiceUnavailable, drainingBody)
-	assert(http.MethodGet, "/api/v1/health", http.StatusServiceUnavailable, businessDrainingBody)
-	if businessCalls.Load() != 0 {
-		t.Fatalf("business handler called %d times while draining", businessCalls.Load())
+	assert(http.MethodGet, "/api/v1/health", http.StatusNoContent, "")
+	if businessCalls.Load() != 1 {
+		t.Fatalf("operational wrapper business calls=%d, want pass-through while draining", businessCalls.Load())
 	}
 }
 
@@ -216,6 +217,50 @@ func TestPublicOperationalProbesBypassAuthenticationAndRateWindow(t *testing.T) 
 	}
 }
 
+func TestOperationalStateDrivesClosedAPIDrainAfterPublicAuthAndRate(t *testing.T) {
+	state := newOperationalState(true)
+	state.MarkAccepting()
+	business, err := api.NewServerWithConfig(
+		diagnostic.NewRunner(noNetworkChecker{calls: &atomic.Int32{}}),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+		api.ServerConfig{
+			Mode: api.ModePublic, APIKey: "secret", RateLimitPerMinute: 1,
+			BusyRetryAfter: 5 * time.Second, DrainingProvider: state,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newOperationalHandler(state, business)
+	state.BeginDrain()
+
+	unauthorized := operationalRequest(t, handler, http.MethodGet, "/api/v1/health")
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized draining status=%d body=%q", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	authorizedRequest := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+		request.RemoteAddr = "192.0.2.25:1234"
+		request.Header.Set("Authorization", "Bearer secret")
+		handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	draining := authorizedRequest()
+	wantBody := "{\"error\":{\"code\":\"server_draining\",\"message\":\"server is draining and temporarily unavailable\"}}\n"
+	if draining.Code != http.StatusServiceUnavailable || draining.Body.String() != wantBody || draining.Header().Get("Retry-After") != "5" {
+		t.Fatalf("draining status=%d retry=%q body=%q", draining.Code, draining.Header().Get("Retry-After"), draining.Body.String())
+	}
+	if limited := authorizedRequest(); limited.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate limit did not precede drain: status=%d body=%q", limited.Code, limited.Body.String())
+	}
+	if ready := operationalRequest(t, handler, http.MethodGet, "/readyz"); ready.Code != http.StatusServiceUnavailable || ready.Body.String() != drainingBody {
+		t.Fatalf("draining readiness status=%d body=%q", ready.Code, ready.Body.String())
+	}
+}
+
 func TestOperationalStateSnapshotsAreConcurrentAndIgnoreTemporaryCapacity(t *testing.T) {
 	state := newOperationalState(true)
 	state.MarkAccepting()
@@ -356,6 +401,40 @@ type readinessObservingShutdownServer struct {
 func (server *readinessObservingShutdownServer) Shutdown(context.Context) error {
 	server.snapshot = server.state.Snapshot()
 	return server.err
+}
+
+func TestShutdownServiceSuccessfulDrainLogsCompletionInfo(t *testing.T) {
+	state := newOperationalState(true)
+	state.MarkAccepting()
+	supervisor, err := diagnostic.NewCheckerSupervisor(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	err = shutdownService(
+		context.Background(),
+		time.Second,
+		state,
+		&readinessObservingShutdownServer{state: state},
+		supervisor,
+		slog.New(slog.NewJSONHandler(&logs, nil)),
+	)
+	if err != nil {
+		t.Fatalf("shutdown error=%v", err)
+	}
+	var record map[string]any
+	if decodeErr := json.Unmarshal(logs.Bytes(), &record); decodeErr != nil {
+		t.Fatalf("shutdown log=%q: %v", logs.String(), decodeErr)
+	}
+	if record["level"] != "INFO" || record["msg"] != "service shutdown completed" {
+		t.Fatalf("shutdown record=%v", record)
+	}
+	if record["active"] != float64(0) || record["stuck"] != float64(0) || record["remaining"] != float64(0) {
+		t.Fatalf("shutdown counts=%v", record)
+	}
+	if _, exists := record["reason"]; exists {
+		t.Fatalf("successful shutdown has failure reason: %v", record)
+	}
 }
 
 func TestShutdownServiceClosesOperationalAdmissionBeforeHTTPAndCheckerShutdown(t *testing.T) {

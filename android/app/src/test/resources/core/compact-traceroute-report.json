@@ -4,7 +4,7 @@
   "started_at": "2026-09-02T00:00:00Z",
   "duration_ms": 8,
   "summary": {"total": 1, "passed": 1, "failed": 0},
-  "results": [{"kind": "traceroute", "address": "route.example.test", "status": "healthy", "latency_ms": 8, "started_at": "2026-09-02T00:00:00Z"}],
+  "results": [{"kind": "traceroute", "address": "route.example.test", "status": "healthy", "latency_ms": 8, "started_at": "2026-09-02T00:00:00Z", "details": {"attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0, "attempts_unreached": 0, "attempts_execution_failed": 0, "attempts_timed_out": 0, "attempts_cancelled": 0}}],
   "compact_topology": {
     "schema": "compact-v1", "selection": "fair-complete-prefix-v1",
     "limits": {"nodes": 500, "links": 1000, "max_response_bytes_exclusive": 1048576, "max_geo_bundle_bytes": 4096},
@@ -21,6 +21,6 @@
       "node_observations": {"total": 1, "displayed": 1, "omitted": 0}, "link_observations": {"total": 0, "displayed": 0, "omitted": 0}
     }],
     "geo": {"eligible": 0, "available": 0, "included": 0, "omitted": 0, "unavailable": 0},
-    "truncated": false, "truncation_reasons": []
+    "truncated": false
   }
 }

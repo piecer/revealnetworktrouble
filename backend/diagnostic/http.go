@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,30 +16,55 @@ var errTLSDowngrade = errors.New("HTTPS redirect did not preserve TLS")
 
 const maxHTTPResponseSampleBytes = 32 * 1024
 
+type tlsHandshakeObservation struct {
+	mu     sync.Mutex
+	failed bool
+}
+
+func (o *tlsHandshakeObservation) trace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+		if err == nil {
+			return
+		}
+		o.mu.Lock()
+		o.failed = true
+		o.mu.Unlock()
+	}}
+}
+
+func (o *tlsHandshakeObservation) didFail() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.failed
+}
+
 type HTTPChecker struct {
 	Client *http.Client
 	Policy *NetworkPolicy
+	Now    func() time.Time
 }
 
 func (HTTPChecker) Kind() Kind { return KindHTTP }
 
 func (c HTTPChecker) Check(ctx context.Context, target Target) Result {
-	return checkHTTP(ctx, target, KindHTTP, "", c.Client, c.Policy)
+	return checkHTTP(ctx, target, KindHTTP, "", c.Client, c.Policy, c.Now)
 }
 
 type HTTPSChecker struct {
 	Client *http.Client
 	Policy *NetworkPolicy
+	Now    func() time.Time
 }
 
 func (HTTPSChecker) Kind() Kind { return KindHTTPS }
 
 func (c HTTPSChecker) Check(ctx context.Context, target Target) Result {
-	return checkHTTP(ctx, target, KindHTTPS, "https", c.Client, c.Policy)
+	return checkHTTP(ctx, target, KindHTTPS, "https", c.Client, c.Policy, c.Now)
 }
 
-func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, configuredClient *http.Client, policy *NetworkPolicy) Result {
+func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, configuredClient *http.Client, policy *NetworkPolicy, now func() time.Time) Result {
 	started := time.Now().UTC()
+	verificationTime := frozenTLSVerificationTime(now)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.Address, nil)
 	if err != nil {
 		result := baseResult(kind, target.Address, started, err)
@@ -70,6 +97,20 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		clientCopy.Transport = transport
 		defer transport.CloseIdleConnections()
 	}
+	if kind == KindHTTPS {
+		if transport, ok := cloneHTTPTransport(clientCopy.Transport); ok {
+			config := transport.TLSClientConfig
+			if config == nil {
+				config = &tls.Config{}
+			} else {
+				config = config.Clone()
+			}
+			configureTLSVerificationClock(config, verificationTime)
+			transport.TLSClientConfig = config
+			clientCopy.Transport = transport
+			defer transport.CloseIdleConnections()
+		}
+	}
 	configuredRedirect := client.CheckRedirect
 	clientCopy.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
 		if kind == KindHTTPS && !strings.EqualFold(redirect.URL.Scheme, "https") {
@@ -89,15 +130,21 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		return nil
 	}
 	client = &clientCopy
+	var tlsObservation tlsHandshakeObservation
+	if kind == KindHTTPS {
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), tlsObservation.trace()))
+	}
 	resp, err := client.Do(req)
+	if contextErr := ctx.Err(); contextErr != nil {
+		err = contextErr
+	}
 	result := networkPolicyResult(kind, target.Address, started, err)
 	if err != nil {
 		if errors.Is(err, errTLSDowngrade) {
 			result.ErrorCode = "tls_downgrade"
 			result.Message = "HTTPS redirect or response did not preserve TLS"
-		} else if kind == KindHTTPS && isTLSHandshakeError(err) {
-			result.ErrorCode = "tls_handshake_failed"
-			result.Message = "TLS handshake failed"
+		} else if kind == KindHTTPS && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && (tlsObservation.didFail() || isTLSHandshakeError(err)) {
+			applyTLSFailure(&result, err, verificationTime)
 		}
 		return result
 	}
@@ -124,12 +171,12 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		"content_type":    resp.Header.Get("Content-Type"),
 	}
 	if resp.TLS != nil {
-		result.Details["tls_version"] = tlsVersionName(resp.TLS.Version)
-		result.Details["cipher_suite"] = tlsCipherSuiteName(resp.TLS.CipherSuite)
+		result.Details[ResultDetailTLSVersion] = tlsVersionName(resp.TLS.Version)
+		result.Details[ResultDetailCipherSuite] = tlsCipherSuiteName(resp.TLS.CipherSuite)
 		if len(resp.TLS.PeerCertificates) > 0 {
 			certificate := resp.TLS.PeerCertificates[0]
-			result.Details["certificate_subject"] = certificate.Subject.String()
-			result.Details["certificate_expires_at"] = certificate.NotAfter.UTC()
+			result.Details[ResultDetailCertificateSubject] = certificate.Subject.String()
+			result.Details[ResultDetailCertificateExpires] = certificate.NotAfter.UTC()
 		}
 	}
 	if resp.StatusCode != expected {
@@ -138,6 +185,17 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		result.Message = "service returned an unexpected HTTP status"
 	}
 	return result
+}
+
+func cloneHTTPTransport(base http.RoundTripper) (*http.Transport, bool) {
+	if base == nil {
+		return http.DefaultTransport.(*http.Transport).Clone(), true
+	}
+	transport, ok := base.(*http.Transport)
+	if !ok || transport == nil {
+		return nil, false
+	}
+	return transport.Clone(), true
 }
 
 func httpResponseReadFailure(kind Kind, address string, started time.Time, err error) Result {

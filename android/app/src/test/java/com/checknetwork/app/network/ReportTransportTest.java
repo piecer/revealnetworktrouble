@@ -17,6 +17,9 @@ import java.net.ServerSocket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +34,7 @@ import org.robolectric.RobolectricTestRunner;
 
 @RunWith(RobolectricTestRunner.class)
 public final class ReportTransportTest {
-    private static final String VALID = "{\"id\":\"r1\",\"status\":\"healthy\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":1,\"results\":[{\"kind\":\"dns\",\"address\":\"example.test\",\"status\":\"healthy\",\"latency_ms\":1,\"started_at\":\"2026-09-02T00:00:00Z\",\"details\":{}}],\"summary\":{\"total\":1,\"passed\":1,\"failed\":0}}";
+    private static final String VALID = "{\"id\":\"r1\",\"status\":\"healthy\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":1,\"results\":[{\"kind\":\"dns\",\"address\":\"example.test\",\"status\":\"healthy\",\"latency_ms\":1,\"started_at\":\"2026-09-02T00:00:00Z\",\"details\":{\"addresses\":[\"192.0.2.1\"],\"answer_count\":1}}],\"summary\":{\"total\":1,\"passed\":1,\"failed\":0}}";
     private enum Boundary {
         OPEN, CONFIG, OUTPUT_OPEN, OUTPUT_WRITE, OUTPUT_CLOSE, RESPONSE,
         CONTENT_LENGTH, INPUT_OPEN, INPUT_READ, INPUT_CLOSE, HEADER
@@ -43,6 +46,103 @@ public final class ReportTransportTest {
 
     @Test public void successFixtureSatisfiesStrictParser() {
         assertEquals("r1", com.checknetwork.app.core.ReportParser.parse(VALID).id());
+    }
+
+    @Test public void healthyDnsConnectionFailureIsInvalidBeforeTransportPublishesAResponse() throws Exception {
+        String contradictory = VALID.replace("\"status\":\"healthy\",\"latency_ms\":1",
+                "\"status\":\"healthy\",\"error_code\":\"connection_failed\",\"latency_ms\":1");
+        assertNotEquals(VALID, contradictory);
+        assertInvalidReportTransport(contradictory);
+    }
+
+    @Test public void duplicateReportNeverReturnsRawOrParsedPartialResponseCount100() throws Exception {
+        for (String fixtureName : new String[]{
+                "maximum-analysis-report.json", "checker-execution-report.json",
+                "enrichment-upstream-report.json", "enrichment-failures-report.json",
+                "compact-zero-route-report.json", "compact-zero-node-attempt-report.json",
+                "compact-geo-exact-boundary-report.json"}) {
+            String canonical = producerFixture(fixtureName);
+            assertEquals(canonical, executeSuccessfulReport(canonical).rawJson());
+            for (String malformed : duplicateFirstFieldAtEveryObject(canonical)) {
+                assertInvalidReportTransport(malformed);
+            }
+        }
+
+        String duplicateRoot = VALID.replaceFirst("\\{", "{\"id\":null,");
+        String duplicateDetails = VALID.replace("\"details\":{\"addresses\"",
+                "\"details\":{\"addresses\":null,\"addresses\"");
+        assertNotEquals(VALID, duplicateDetails);
+        for (int run = 0; run < 100; run++) {
+            for (String malformed : new String[]{duplicateRoot, duplicateDetails}) {
+                assertInvalidReportTransport(malformed);
+            }
+        }
+    }
+
+    private static ReportTransport.Response executeSuccessfulReport(String raw) throws Exception {
+        FakeConnection connection = new FakeConnection(200, bytes(raw));
+        return transport("https://api.example.test", null, connection,
+                new FakeClock(), new FakeScheduler()).newCall(request()).execute();
+    }
+
+    private static void assertInvalidReportTransport(String malformed) throws Exception {
+        FakeConnection connection = new FakeConnection(200, bytes(malformed));
+        java.util.concurrent.atomic.AtomicReference<ReportTransport.Response> published =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        TransportException failure = assertThrows(TransportException.class,
+                () -> published.set(transport("https://api.example.test", null, connection,
+                        new FakeClock(), new FakeScheduler()).newCall(request()).execute()));
+        assertEquals(TransportException.Kind.INVALID_RESPONSE, failure.kind());
+        assertEquals("The server returned an invalid response.", failure.getMessage());
+        assertNull(failure.getCause());
+        assertFalse(failure.apiError().isPresent());
+        assertNull(published.get());
+        assertEquals(1, connection.disconnects);
+    }
+
+    private static String producerFixture(String name) throws Exception {
+        Path fixture = Paths.get(System.getProperty("user.dir"), "..", "..", "testdata", name).normalize();
+        assertTrue("missing Go-produced fixture at " + fixture, Files.isRegularFile(fixture));
+        return new String(Files.readAllBytes(fixture), StandardCharsets.UTF_8);
+    }
+
+    private static List<String> duplicateFirstFieldAtEveryObject(String json) {
+        List<Integer> objectStarts = new ArrayList<>();
+        boolean inString = false;
+        boolean escaped = false;
+        for (int index = 0; index < json.length(); index++) {
+            char current = json.charAt(index);
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (current == '\\') escaped = true;
+                else if (current == '"') inString = false;
+            } else if (current == '"') inString = true;
+            else if (current == '{') objectStarts.add(index);
+        }
+        List<String> mutations = new ArrayList<>();
+        for (int start : objectStarts) {
+            int nameStart = start + 1;
+            while (nameStart < json.length() && Character.isWhitespace(json.charAt(nameStart))) nameStart++;
+            if (nameStart < json.length() && json.charAt(nameStart) == '}') {
+                mutations.add(json.substring(0, nameStart)
+                        + "\"duplicate_probe\":null,\"duplicate_probe\":null"
+                        + json.substring(nameStart));
+                continue;
+            }
+            assertTrue("object must begin with a quoted field", nameStart < json.length() && json.charAt(nameStart) == '"');
+            int nameEnd = nameStart + 1;
+            boolean nameEscaped = false;
+            for (; nameEnd < json.length(); nameEnd++) {
+                char current = json.charAt(nameEnd);
+                if (nameEscaped) nameEscaped = false;
+                else if (current == '\\') nameEscaped = true;
+                else if (current == '"') break;
+            }
+            assertTrue("unterminated producer field name", nameEnd < json.length());
+            String rawName = json.substring(nameStart, nameEnd + 1);
+            mutations.add(json.substring(0, nameStart) + rawName + ":null," + json.substring(nameStart));
+        }
+        return mutations;
     }
 
     @Test public void postsJsonWithBoundedTimeoutAndHttpsAuthorization() throws Exception {
@@ -426,15 +526,16 @@ public final class ReportTransportTest {
         assertKind(TransportException.Kind.INVALID_RESPONSE, malformed);
 
         for (int status : new int[]{401, 422, 429, 503}) {
-            String prose = "Bearer server-secret prose";
+            String message = expectedMessage(status);
             FakeConnection operational = new FakeConnection(status,
-                    bytes("{\"error\":{\"code\":\"" + expectedCode(status) + "\",\"message\":\"" + prose + "\"}}"));
+                    bytes("{\"error\":{\"code\":\"" + expectedCode(status) + "\",\"message\":\"" + message + "\"}}\n"));
             operational.headers.put("Retry-After", "2");
             TransportException error = assertThrows(TransportException.class,
                     () -> transport("https://api.example.test", "client-secret", operational, new FakeClock(), new FakeScheduler()).newCall(request()).execute());
             assertEquals(TransportException.Kind.API, error.kind());
             assertEquals(status, error.apiError().orElseThrow().status());
-            assertFalse(error.toString().contains(prose));
+            assertEquals(expectedCode(status), error.apiError().orElseThrow().code());
+            assertEquals(message, error.apiError().orElseThrow().safeMessage());
             assertFalse(error.toString().contains("client-secret"));
         }
     }
@@ -445,8 +546,47 @@ public final class ReportTransportTest {
         TransportException error = assertThrows(TransportException.class,
                 () -> transport("https://api.example.test", null, connection, new FakeClock(), new FakeScheduler()).newCall(request()).execute());
         assertEquals(TransportException.Kind.API, error.kind());
-        assertEquals("unauthorized", error.apiError().orElseThrow().code());
+        assertEquals("invalid_server_response", error.apiError().orElseThrow().code());
         assertTrue(connection.inputBytesRead <= ReportTransport.MAX_ERROR_BODY_BYTES + 1);
+    }
+
+    @Test public void strictErrorJsonNeverBecomesNetworkFailureAndHonorsExactBoundsCount100() throws Exception {
+        String canonical = "{\"error\":{\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"}}";
+        String duplicateCode = "{\"error\":{\"code\":\"server_busy\",\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"}}";
+        String duplicateError = "{\"error\":{\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"},\"error\":{\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"}}";
+        String deep = "{\"error\":" + "{".repeat(12_000) + "}".repeat(12_000) + "}";
+        for (int run = 0; run < 100; run++) for (byte[] body : new byte[][]{
+                bytes(canonical + canonical), bytes(canonical + " HOSTILE-TRAILING"),
+                bytes(duplicateCode), bytes(duplicateError), bytes(deep),
+                new byte[]{'{', '"', 'e', 'r', 'r', 'o', 'r', '"', ':', '"', (byte) 0xed,
+                        (byte) 0xa0, (byte) 0x80, '"', '}'}}) {
+            FakeConnection malformed = new FakeConnection(503, body);
+            TransportException failure = assertThrows(TransportException.class,
+                    () -> transport("https://api.example.test", null, malformed, new FakeClock(), new FakeScheduler()).newCall(request()).execute());
+            assertEquals(TransportException.Kind.API, failure.kind());
+            assertInvalidApiError(failure, 503);
+        }
+
+        byte[] prefix = bytes(canonical);
+        byte[] exact = java.util.Arrays.copyOf(prefix, ReportTransport.MAX_ERROR_BODY_BYTES);
+        java.util.Arrays.fill(exact, prefix.length, exact.length, (byte) ' ');
+        FakeConnection accepted = new FakeConnection(503, exact);
+        TransportException typed = assertThrows(TransportException.class,
+                () -> transport("https://api.example.test", null, accepted, new FakeClock(), new FakeScheduler()).newCall(request()).execute());
+        assertEquals("server_busy", typed.apiError().orElseThrow().code());
+
+        FakeConnection over = new FakeConnection(503, java.util.Arrays.copyOf(exact, exact.length + 1));
+        TransportException rejected = assertThrows(TransportException.class,
+                () -> transport("https://api.example.test", null, over, new FakeClock(), new FakeScheduler()).newCall(request()).execute());
+        assertInvalidApiError(rejected, 503);
+    }
+
+    private static void assertInvalidApiError(TransportException failure, int status) {
+        assertEquals(status, failure.apiError().orElseThrow().status());
+        assertEquals("invalid_server_response", failure.apiError().orElseThrow().code());
+        assertFalse(failure.apiError().orElseThrow().retryable());
+        assertFalse(failure.apiError().orElseThrow().retryAt().isPresent());
+        assertFalse(failure.toString().contains("HOSTILE"));
     }
 
     @Test public void structuredStatusWinsWhenErrorBodyCleanupFails() throws Exception {
@@ -457,7 +597,7 @@ public final class ReportTransportTest {
         TransportException error = assertThrows(TransportException.class,
                 () -> transport("https://api.example.test", "client-secret", connection, new FakeClock(), new FakeScheduler()).newCall(request()).execute());
         assertEquals(TransportException.Kind.API, error.kind());
-        assertEquals("unauthorized", error.apiError().orElseThrow().code());
+        assertEquals("invalid_server_response", error.apiError().orElseThrow().code());
         assertFalse(error.toString().contains("server prose"));
     }
 
@@ -471,7 +611,7 @@ public final class ReportTransportTest {
                 () -> transport("https://api.example.test", null, connection, new FakeClock(), new FakeScheduler()).newCall(request()).execute());
         assertEquals(TransportException.Kind.API, error.kind());
         assertEquals(503, error.apiError().orElseThrow().status());
-        assertEquals("server_busy", error.apiError().orElseThrow().code());
+        assertEquals("invalid_server_response", error.apiError().orElseThrow().code());
     }
 
     @Test public void cleanupRuntimeFailuresNeverReplaceSuccessfulResultAndAllStagesRun() throws Exception {
@@ -590,6 +730,15 @@ public final class ReportTransportTest {
         return switch (status) { case 401 -> "unauthorized"; case 422 -> "invalid_request"; case 429 -> "rate_limited"; default -> "server_busy"; };
     }
 
+    private static String expectedMessage(int status) {
+        return switch (status) {
+            case 401 -> "valid API credentials are required";
+            case 422 -> "request is invalid";
+            case 429 -> "per-client request limit exceeded";
+            default -> "report capacity is temporarily unavailable";
+        };
+    }
+
     private static ReportTransport transport(String base, String token, HttpURLConnection connection, FakeClock clock, ReportTransport.Scheduler scheduler) {
         return new ReportTransport(ApiConnectionConfig.create(base, base.startsWith("http:"), token), url -> connection, clock, scheduler);
     }
@@ -698,6 +847,13 @@ public final class ReportTransportTest {
         @Override public void setRequestMethod(String method) { this.method=method; }
         @Override public void setRequestProperty(String key,String value) { headers.put(key,value); onRequestProperty.run(); }
         @Override public String getHeaderField(String key) { onHeader.run(); return headers.get(key); }
+        @Override public java.util.Map<String,java.util.List<String>> getHeaderFields() {
+            onHeader.run();
+            java.util.Map<String,java.util.List<String>> values = new java.util.LinkedHashMap<>();
+            for (java.util.Map.Entry<String,String> entry : headers.entrySet())
+                values.put(entry.getKey(), java.util.List.of(entry.getValue()));
+            return values;
+        }
         @Override public void setConnectTimeout(int value) { connectTimeout=value; }
         @Override public void setReadTimeout(int value) { readTimeout=value; }
         @Override public java.io.OutputStream getOutputStream() { outputRequests++; onOutputOpen.run(); return output; }

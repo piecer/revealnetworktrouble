@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +38,6 @@ const (
 var (
 	errCompactResponseTooLarge = errors.New("compact response too large")
 	errResponseSerialization   = errors.New("response serialization failed")
-	errResponseWritePanic      = errors.New("response write panic")
 )
 
 type compactReportMarshaler func(diagnostic.Report) ([]byte, error)
@@ -53,6 +50,12 @@ const (
 	ModePublic       DeploymentMode = "public"
 )
 
+// DrainingProvider supplies process-owned admission state. Implementations must
+// be safe for concurrent request and shutdown access.
+type DrainingProvider interface {
+	IsDraining() bool
+}
+
 type ServerConfig struct {
 	AllowedOrigins              []string
 	MaxConcurrentReports        int
@@ -64,6 +67,7 @@ type ServerConfig struct {
 	RateLimitPerMinute          int
 	MaxRateLimitClients         int
 	Revision                    string
+	DrainingProvider            DrainingProvider
 }
 
 // HealthResponse identifies the exact application build serving the request.
@@ -71,6 +75,23 @@ type HealthResponse struct {
 	Status   string `json:"status"`
 	Version  string `json:"version"`
 	Revision string `json:"revision"`
+}
+
+type checksResponse struct {
+	Kinds         []string     `json:"kinds"`
+	TopologyModes []string     `json:"topology_modes"`
+	Limits        checksLimits `json:"limits"`
+}
+
+type checksLimits struct {
+	MaxTargets                    int   `json:"max_targets"`
+	MaxTracerouteAttempts         int   `json:"max_traceroute_attempts"`
+	TimeoutMSMin                  int64 `json:"timeout_ms_min"`
+	TimeoutMSMax                  int64 `json:"timeout_ms_max"`
+	CompactTopologyNodes          int   `json:"compact_topology_nodes"`
+	CompactTopologyLinks          int   `json:"compact_topology_links"`
+	CompactResponseBytesExclusive int   `json:"compact_response_bytes_exclusive"`
+	CompactGeoBundleBytes         int   `json:"compact_geo_bundle_bytes"`
 }
 
 type clientWindow struct {
@@ -105,6 +126,7 @@ type requestObservation struct {
 	runnerDuration    time.Duration
 	marshalDuration   time.Duration
 	writeDuration     time.Duration
+	reportTerminal    bool
 }
 
 func observationFromRequest(request *http.Request) *requestObservation {
@@ -128,6 +150,7 @@ type Server struct {
 	maxRateClients int
 	rateMu         sync.Mutex
 	clients        map[string]clientWindow
+	draining       DrainingProvider
 }
 
 func NewServer(runner *diagnostic.Runner, logger *slog.Logger, version string, allowedOrigins []string) http.Handler {
@@ -139,19 +162,17 @@ func NewServer(runner *diagnostic.Runner, logger *slog.Logger, version string, a
 }
 
 func NewServerWithConfig(runner *diagnostic.Runner, logger *slog.Logger, version string, config ServerConfig) (http.Handler, error) {
-	s, err := newServer(runner, logger, version, config)
+	server, err := newServer(runner, logger, version, config)
 	if err != nil {
 		return nil, err
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/health", s.health)
-	mux.HandleFunc("GET /api/v1/checks", s.checks)
-	mux.HandleFunc("POST /api/v1/reports", s.createReport)
-	mux.HandleFunc("OPTIONS /api/v1/", s.options)
-	return s.middleware(mux), nil
+	return newNetHTTPAdapter(server), nil
 }
 
 func newServer(runner *diagnostic.Runner, logger *slog.Logger, version string, config ServerConfig) (*Server, error) {
+	if runner == nil {
+		return nil, fmt.Errorf("diagnostic runner is required")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -199,7 +220,7 @@ func newServer(runner *diagnostic.Runner, logger *slog.Logger, version string, c
 	if config.Revision == "" {
 		config.Revision = "dev"
 	}
-	s := &Server{
+	server := &Server{
 		runner: runner, logger: logger, version: version, revision: config.Revision,
 		allowedOrigins: make(map[string]struct{}),
 		admission:      make(chan struct{}, config.MaxConcurrentReports),
@@ -211,103 +232,95 @@ func newServer(runner *diagnostic.Runner, logger *slog.Logger, version string, c
 		rateLimit:      config.RateLimitPerMinute,
 		maxRateClients: config.MaxRateLimitClients,
 		clients:        make(map[string]clientWindow),
+		draining:       config.DrainingProvider,
 	}
 	for _, origin := range config.AllowedOrigins {
-		s.allowedOrigins[strings.TrimSpace(origin)] = struct{}{}
+		server.allowedOrigins[strings.TrimSpace(origin)] = struct{}{}
 	}
-	return s, nil
+	return server, nil
 }
 
-func (s *Server) health(w http.ResponseWriter, request *http.Request) {
-	s.writeJSON(w, request, http.StatusOK, TelemetryOutcomeOK, HealthResponse{Status: "ok", Version: s.version, Revision: s.revision})
+func (s *Server) health(response responder, _ *http.Request) {
+	response.writeHealth(HealthResponse{Status: "ok", Version: s.version, Revision: s.revision})
 }
 
-func (s *Server) checks(w http.ResponseWriter, request *http.Request) {
-	s.writeJSON(w, request, http.StatusOK, TelemetryOutcomeOK, map[string]any{
-		"kinds":          []string{"dns", "tcp", "http", "https", "traceroute", "ssh", "smtp", "submission", "smtps", "imap", "imaps", "pop3", "pop3s"},
-		"topology_modes": []string{"full", "compact"},
-		"limits": map[string]any{
-			"max_targets":                      diagnostic.MaxTargets,
-			"max_traceroute_attempts":          diagnostic.MaxTraceAttempts,
-			"timeout_ms_min":                   diagnostic.MinTimeout.Milliseconds(),
-			"timeout_ms_max":                   diagnostic.MaxTimeout.Milliseconds(),
-			"compact_topology_nodes":           diagnostic.CompactTopologyMaxNodes,
-			"compact_topology_links":           diagnostic.CompactTopologyMaxLinks,
-			"compact_response_bytes_exclusive": diagnostic.CompactTopologyMaxResponseBytes,
-			"compact_geo_bundle_bytes":         diagnostic.CompactTopologyMaxGeoBundleBytes,
+func (s *Server) checks(response responder, _ *http.Request) {
+	response.writeChecks(checksResponse{
+		Kinds:         []string{"dns", "tcp", "http", "https", "traceroute", "ssh", "smtp", "submission", "smtps", "imap", "imaps", "pop3", "pop3s"},
+		TopologyModes: []string{"full", "compact"},
+		Limits: checksLimits{
+			MaxTargets:                    diagnostic.MaxTargets,
+			MaxTracerouteAttempts:         diagnostic.MaxTraceAttempts,
+			TimeoutMSMin:                  diagnostic.MinTimeout.Milliseconds(),
+			TimeoutMSMax:                  diagnostic.MaxTimeout.Milliseconds(),
+			CompactTopologyNodes:          diagnostic.CompactTopologyMaxNodes,
+			CompactTopologyLinks:          diagnostic.CompactTopologyMaxLinks,
+			CompactResponseBytesExclusive: diagnostic.CompactTopologyMaxResponseBytes,
+			CompactGeoBundleBytes:         diagnostic.CompactTopologyMaxGeoBundleBytes,
 		},
 	})
 }
 
-type reportDecodeFailure struct {
-	status  int
-	outcome TelemetryOutcome
-	code    string
-	message string
-}
+type reportDecodeFailure struct{ key apiErrorKey }
 
-func (s *Server) decodeReportRequest(w http.ResponseWriter, r *http.Request) (diagnostic.Request, bool) {
-	if r.ContentLength > maxBodyBytes {
-		s.rejectReport(w, r, http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit")
+func (s *Server) decodeReportRequest(response responder, request *http.Request) (diagnostic.Request, bool) {
+	if request.ContentLength > maxBodyBytes {
+		s.rejectReport(response, request, apiErrorRequestTooLarge, apiErrorMetadata{})
 		return diagnostic.Request{}, false
 	}
 	select {
 	case s.bodyDecodes <- struct{}{}:
 	default:
-		retrySeconds := int(math.Ceil(s.busyRetryAfter.Seconds()))
-		w.Header().Set("Retry-After", strconv.Itoa(max(1, retrySeconds)))
-		s.rejectReport(w, r, http.StatusServiceUnavailable, TelemetryOutcomeBodyCapacity, "body_decode_capacity_unavailable", "request body decode capacity is temporarily unavailable")
+		s.rejectReport(response, request, apiErrorBodyDecodeCapacity, apiErrorMetadata{RetryAfter: s.busyRetryAfter})
 		return diagnostic.Request{}, false
 	}
 
-	var req diagnostic.Request
+	var decoded diagnostic.Request
 	var failure *reportDecodeFailure
 	func() {
 		defer func() { <-s.bodyDecodes }()
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		decoder := json.NewDecoder(r.Body)
+		response.limitRequestBody(request, maxBodyBytes)
+		decoder := json.NewDecoder(request.Body)
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil {
+		if err := decoder.Decode(&decoded); err != nil {
 			if isRequestTooLarge(err) {
-				failure = &reportDecodeFailure{http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit"}
+				failure = &reportDecodeFailure{key: apiErrorRequestTooLarge}
 				return
 			}
-			failure = &reportDecodeFailure{http.StatusBadRequest, TelemetryOutcomeInvalidJSON, "invalid_json", "request body must be a valid JSON report request"}
+			failure = &reportDecodeFailure{key: apiErrorInvalidJSON}
 			return
 		}
 		var extra any
 		if err := decoder.Decode(&extra); err != io.EOF {
 			if isRequestTooLarge(err) {
-				failure = &reportDecodeFailure{http.StatusRequestEntityTooLarge, TelemetryOutcomeRequestTooLarge, "request_too_large", "request body exceeds the size limit"}
+				failure = &reportDecodeFailure{key: apiErrorRequestTooLarge}
 				return
 			}
-			failure = &reportDecodeFailure{http.StatusBadRequest, TelemetryOutcomeInvalidJSON, "invalid_json", "request body must contain one JSON object"}
+			failure = &reportDecodeFailure{key: apiErrorInvalidJSON}
 		}
 	}()
 	if failure != nil {
-		s.rejectReport(w, r, failure.status, failure.outcome, failure.code, failure.message)
+		s.rejectReport(response, request, failure.key, apiErrorMetadata{})
 		return diagnostic.Request{}, false
 	}
-	return req, true
+	return decoded, true
 }
 
-func (s *Server) createReport(w http.ResponseWriter, r *http.Request) {
-	observation := observationFromRequest(r)
-	req, ok := s.decodeReportRequest(w, r)
+func (s *Server) createReport(response responder, request *http.Request) {
+	observation := observationFromRequest(request)
+	decoded, ok := s.decodeReportRequest(response, request)
 	if !ok {
 		return
 	}
-	if err := s.runner.Validate(req); err != nil {
-		s.rejectReport(w, r, http.StatusUnprocessableEntity, TelemetryOutcomeInvalidRequest, "invalid_request", err.Error())
+	if err := s.runner.Validate(decoded); err != nil {
+		s.rejectReport(response, request, apiErrorInvalidRequest, apiErrorMetadata{})
 		return
 	}
 	select {
 	case s.admission <- struct{}{}:
-		s.emit(r, TelemetryEventReportAdmit, TelemetryOutcomeOK, 0)
+		s.emit(request, TelemetryEventReportAdmit, TelemetryOutcomeOK, 0)
 	default:
-		retrySeconds := int(math.Ceil(s.busyRetryAfter.Seconds()))
-		w.Header().Set("Retry-After", strconv.Itoa(max(1, retrySeconds)))
-		s.rejectReport(w, r, http.StatusServiceUnavailable, TelemetryOutcomeServerCapacity, "server_busy", "report capacity is temporarily unavailable")
+		s.rejectReport(response, request, apiErrorServerBusy, apiErrorMetadata{RetryAfter: s.busyRetryAfter})
 		return
 	}
 	admissionHeld := true
@@ -319,37 +332,37 @@ func (s *Server) createReport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer releaseAdmission()
 
-	s.emit(r, TelemetryEventReportStart, TelemetryOutcomeOK, 0)
+	s.emit(request, TelemetryEventReportStart, TelemetryOutcomeOK, 0)
 	runnerStarted := time.Now()
-	report, err := s.runner.RunWithID(r.Context(), observation.reportID, req)
+	report, err := s.runner.RunWithID(request.Context(), observation.reportID, decoded)
 	observation.runnerDuration = time.Since(runnerStarted)
 	if err != nil {
 		releaseAdmission()
-		s.setReportWriteDeadline(w)
-		s.writeError(w, r, http.StatusInternalServerError, TelemetryOutcomePanicSafeFailure, "internal_error", "report could not be generated")
-		s.emit(r, TelemetryEventReportFinish, observation.outcome, 0)
+		response.setReportWriteDeadline()
+		response.writeAPIError(apiErrorInternal, apiErrorMetadata{})
+		s.emit(request, TelemetryEventReportFinish, observation.outcome, 0)
 		return
 	}
-	if r.Context().Err() != nil {
+	if request.Context().Err() != nil {
 		releaseAdmission()
 		observation.status = 499
 		observation.outcome = TelemetryOutcomeCancel
-		s.emit(r, TelemetryEventReportCancel, TelemetryOutcomeCancel, 0)
+		s.emit(request, TelemetryEventReportCancel, TelemetryOutcomeCancel, 0)
 		return
 	}
-	s.emit(r, TelemetryEventReportComputed, TelemetryOutcomeOK, 0)
+	s.emit(request, TelemetryEventReportComputed, TelemetryOutcomeOK, 0)
 	if s.mode == ModePublic && reportHasResultCode(report, "network_policy_blocked") {
 		releaseAdmission()
-		s.setReportWriteDeadline(w)
-		s.emit(r, TelemetryEventReportReject, TelemetryOutcomePolicy, 0)
-		s.writeError(w, r, http.StatusUnprocessableEntity, TelemetryOutcomePolicy, "network_policy_blocked", "target is not allowed in public mode")
+		response.setReportWriteDeadline()
+		s.emit(request, TelemetryEventReportReject, TelemetryOutcomePolicy, 0)
+		response.writeAPIError(apiErrorNetworkPolicy, apiErrorMetadata{})
 		return
 	}
 
 	marshalStarted := time.Now()
 	var payload []byte
 	var marshalErr error
-	if req.TopologyMode == diagnostic.TopologyModeCompact {
+	if decoded.TopologyMode == diagnostic.TopologyModeCompact {
 		payload, marshalErr = marshalCompactResponse(report)
 	} else {
 		payload, marshalErr = marshalFullResponse(report)
@@ -357,15 +370,16 @@ func (s *Server) createReport(w http.ResponseWriter, r *http.Request) {
 	observation.marshalDuration = time.Since(marshalStarted)
 	if marshalErr != nil {
 		releaseAdmission()
-		s.setReportWriteDeadline(w)
-		outcome, code, message := TelemetryOutcomeSerialization, "response_serialization_failed", "report response could not be serialized"
-		if errors.Is(marshalErr, errCompactResponseTooLarge) {
-			outcome, code, message = TelemetryOutcomeCompactSize, "compact_response_too_large", "compact report response exceeds the size limit"
-		} else if isFullResponseBudgetError(marshalErr) {
-			outcome, code, message = TelemetryOutcomeFullSize, "full_response_too_large", "full report response exceeds the size limit"
+		response.setReportWriteDeadline()
+		switch {
+		case errors.Is(marshalErr, errCompactResponseTooLarge):
+			response.writeAPIError(apiErrorCompactTooLarge, apiErrorMetadata{})
+		case isFullResponseBudgetError(marshalErr):
+			response.writeAPIError(apiErrorFullTooLarge, apiErrorMetadata{})
+		default:
+			response.writeAPIError(apiErrorSerialization, apiErrorMetadata{})
 		}
-		s.writeError(w, r, http.StatusInternalServerError, outcome, code, message)
-		s.emit(r, TelemetryEventReportFinish, observation.outcome, 0)
+		s.emit(request, TelemetryEventReportFinish, observation.outcome, 0)
 		return
 	}
 
@@ -374,30 +388,22 @@ func (s *Server) createReport(w http.ResponseWriter, r *http.Request) {
 	default:
 		payload = nil
 		releaseAdmission()
-		s.setReportWriteDeadline(w)
-		s.writeError(w, r, http.StatusServiceUnavailable, TelemetryOutcomeWriteCapacity, "write_capacity_unavailable", "report response write capacity is temporarily unavailable")
-		s.emit(r, TelemetryEventReportFinish, observation.outcome, 0)
+		response.setReportWriteDeadline()
+		response.writeAPIError(apiErrorWriteCapacity, apiErrorMetadata{})
+		s.emit(request, TelemetryEventReportFinish, observation.outcome, 0)
 		return
 	}
 	releaseAdmission()
 	defer func() { <-s.responseWrites }()
-	s.setReportWriteDeadline(w)
-	s.writeJSONPayload(w, r, http.StatusOK, TelemetryOutcomeOK, payload)
-	s.emitReportFinish(r, observation.outcome, report)
-}
-
-func (s *Server) setReportWriteDeadline(w http.ResponseWriter) {
-	defer func() { _ = recover() }()
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(reportWriteTimeout))
+	response.setReportWriteDeadline()
+	response.writeReport(reportJSON{payload: payload})
+	s.emitReportFinish(request, observation.outcome, report)
 }
 
 func isFullResponseBudgetError(err error) bool {
-	return errors.Is(err, errFullResponseTooLarge) ||
-		errors.Is(err, errFullResponseStringLimit) ||
-		errors.Is(err, errFullResponseContainerLimit) ||
-		errors.Is(err, errFullResponseNodeLimit) ||
-		errors.Is(err, errFullResponseDepthLimit) ||
-		errors.Is(err, errFullResponseCycle)
+	return errors.Is(err, errFullResponseTooLarge) || errors.Is(err, errFullResponseStringLimit) ||
+		errors.Is(err, errFullResponseContainerLimit) || errors.Is(err, errFullResponseNodeLimit) ||
+		errors.Is(err, errFullResponseDepthLimit) || errors.Is(err, errFullResponseCycle)
 }
 
 func isRequestTooLarge(err error) bool {
@@ -405,9 +411,7 @@ func isRequestTooLarge(err error) bool {
 	return errors.As(err, &maxBytesErr)
 }
 
-func (s *Server) options(w http.ResponseWriter, request *http.Request) {
-	s.writeEmpty(w, request, http.StatusNoContent, TelemetryOutcomeOK)
-}
+func (s *Server) options(response responder, _ *http.Request) { response.writeNoContent() }
 
 func classifyRequest(request *http.Request) (TelemetryRoute, int) {
 	path := request.URL.Path
@@ -435,67 +439,114 @@ func classifyRequest(request *http.Request) (TelemetryRoute, int) {
 	}
 }
 
-func (s *Server) middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		route, unmatchedStatus := classifyRequest(r)
-		observation := &requestObservation{started: time.Now(), requestID: NewRequestID(), method: telemetryMethod(r.Method), route: route}
-		if r.Body != nil {
-			counter := &countingReadCloser{ReadCloser: r.Body}
-			observation.requestBody = counter
-			r.Body = counter
+func (s *Server) serveHTTP(response responder, request *http.Request) {
+	route, unmatchedStatus := classifyRequest(request)
+	observation := &requestObservation{started: time.Now(), requestID: NewRequestID(), method: telemetryMethod(request.Method), route: route}
+	if request.Body != nil {
+		counter := &countingReadCloser{ReadCloser: request.Body}
+		observation.requestBody = counter
+		request.Body = counter
+	}
+	if route == TelemetryRouteReports {
+		observation.reportID = NewReportID()
+	}
+	request = request.WithContext(context.WithValue(request.Context(), requestObservationKey{}, observation))
+	response.bindObservation(observation)
+	defer func() {
+		if recover() != nil {
+			s.containPanic(response, request, observation)
 		}
-		if route == TelemetryRouteReports {
-			observation.reportID = NewReportID()
-		}
-		r = r.WithContext(context.WithValue(r.Context(), requestObservationKey{}, observation))
-		defer func() {
-			if observation.status == 0 {
+		if observation.status == 0 {
+			attempted, _, status := response.responseState()
+			if attempted && status != 0 {
+				observation.status = status
+			} else {
 				observation.status = http.StatusInternalServerError
 				observation.outcome = TelemetryOutcomePanicSafeFailure
 			}
-			s.emit(r, TelemetryEventHTTPTerminal, observation.outcome, observation.status)
-		}()
+		}
+		s.emit(request, TelemetryEventHTTPTerminal, observation.outcome, observation.status)
+	}()
 
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Cache-Control", "no-store")
-		origin := r.Header.Get("Origin")
-		if origin != "" && s.originAllowed(origin) {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		}
-		if route == TelemetryRouteReports {
-			s.emit(r, TelemetryEventReportSubmit, TelemetryOutcomeOK, 0)
-		}
-		if s.mode == ModePublic && r.Method != http.MethodOptions {
-			provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			providedHash := sha256.Sum256([]byte(provided))
-			if provided == r.Header.Get("Authorization") || subtle.ConstantTimeCompare(providedHash[:], s.apiKeyHash[:]) != 1 {
-				if route == TelemetryRouteReports {
-					s.emit(r, TelemetryEventReportReject, TelemetryOutcomeUnauthorized, 0)
-				}
-				s.writeError(w, r, http.StatusUnauthorized, TelemetryOutcomeUnauthorized, "unauthorized", "valid API credentials are required")
-				return
+	response.setSecurityHeaders()
+	origin := request.Header.Get("Origin")
+	if origin != "" && s.originAllowed(origin) {
+		response.setCORSHeaders(origin)
+	}
+	if route == TelemetryRouteReports {
+		s.emit(request, TelemetryEventReportSubmit, TelemetryOutcomeOK, 0)
+	}
+	if s.mode == ModePublic && request.Method != http.MethodOptions {
+		provided := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
+		providedHash := sha256.Sum256([]byte(provided))
+		if provided == request.Header.Get("Authorization") || subtle.ConstantTimeCompare(providedHash[:], s.apiKeyHash[:]) != 1 {
+			if route == TelemetryRouteReports {
+				s.emit(request, TelemetryEventReportReject, TelemetryOutcomeUnauthorized, 0)
 			}
-			if allowed, retryAfter := s.allowClient(clientAddress(r.RemoteAddr), time.Now()); !allowed {
-				w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(retryAfter.Seconds())))))
-				if route == TelemetryRouteReports {
-					s.emit(r, TelemetryEventReportReject, TelemetryOutcomeRateLimited, 0)
-				}
-				s.writeError(w, r, http.StatusTooManyRequests, TelemetryOutcomeRateLimited, "rate_limited", "per-client request limit exceeded")
-				return
-			}
-		}
-		if unmatchedStatus != 0 {
-			if unmatchedStatus == http.StatusMethodNotAllowed {
-				w.Header().Set("Allow", allowedMethodForPath(r.URL.Path))
-			}
-			s.writeError(w, r, unmatchedStatus, TelemetryOutcomeUnmatched, "unmatched", "route not found")
+			response.writeAPIError(apiErrorUnauthorized, apiErrorMetadata{})
 			return
 		}
-		next.ServeHTTP(w, r)
-	})
+		if allowed, retryAfter := s.allowClient(clientAddress(request.RemoteAddr), time.Now()); !allowed {
+			if route == TelemetryRouteReports {
+				s.emit(request, TelemetryEventReportReject, TelemetryOutcomeRateLimited, 0)
+			}
+			response.writeAPIError(apiErrorRateLimited, apiErrorMetadata{RetryAfter: retryAfter})
+			return
+		}
+	}
+	if unmatchedStatus != 0 {
+		if unmatchedStatus == http.StatusMethodNotAllowed {
+			response.writeAPIError(apiErrorMethodNotAllowed, apiErrorMetadata{Allow: apiAllowForPath(request.URL.Path)})
+		} else {
+			response.writeAPIError(apiErrorRouteNotFound, apiErrorMetadata{})
+		}
+		return
+	}
+	if route != TelemetryRouteOptions && s.draining != nil && s.draining.IsDraining() {
+		if route == TelemetryRouteReports {
+			s.rejectReport(response, request, apiErrorServerDraining, apiErrorMetadata{RetryAfter: s.busyRetryAfter})
+		} else {
+			response.writeAPIError(apiErrorServerDraining, apiErrorMetadata{RetryAfter: s.busyRetryAfter})
+		}
+		return
+	}
+	switch route {
+	case TelemetryRouteHealth:
+		s.health(response, request)
+	case TelemetryRouteChecks:
+		s.checks(response, request)
+	case TelemetryRouteReports:
+		s.createReport(response, request)
+	case TelemetryRouteOptions:
+		s.options(response, request)
+	}
+}
+
+func apiAllowForPath(path string) apiAllowMethods {
+	switch path {
+	case "/api/v1/health", "/api/v1/checks":
+		return apiAllowGet
+	case "/api/v1/reports":
+		return apiAllowPost
+	default:
+		return apiAllowOptions
+	}
+}
+
+func (s *Server) containPanic(response responder, request *http.Request, observation *requestObservation) {
+	defer func() { _ = recover() }()
+	observation.outcome = TelemetryOutcomePanicSafeFailure
+	attempted, _, status := response.responseState()
+	if attempted && status != 0 {
+		observation.status = status
+	} else {
+		observation.status = http.StatusInternalServerError
+		response.writeAPIError(apiErrorInternal, apiErrorMetadata{})
+		observation.outcome = TelemetryOutcomePanicSafeFailure
+	}
+	if observation.route == TelemetryRouteReports && !observation.reportTerminal {
+		s.emit(request, TelemetryEventReportFinish, TelemetryOutcomePanicSafeFailure, 0)
+	}
 }
 
 func telemetryMethod(method string) string {
@@ -505,17 +556,6 @@ func telemetryMethod(method string) string {
 		return method
 	default:
 		return "OTHER"
-	}
-}
-
-func allowedMethodForPath(path string) string {
-	switch path {
-	case "/api/v1/health", "/api/v1/checks":
-		return "GET, OPTIONS"
-	case "/api/v1/reports":
-		return "POST, OPTIONS"
-	default:
-		return "OPTIONS"
 	}
 }
 
@@ -576,8 +616,12 @@ func (s *Server) telemetryRecord(request *http.Request, event TelemetryEvent, ou
 }
 
 func (s *Server) emit(request *http.Request, event TelemetryEvent, outcome TelemetryOutcome, status int) {
-	if observationFromRequest(request) == nil {
+	observation := observationFromRequest(request)
+	if observation == nil {
 		return
+	}
+	if event == TelemetryEventReportFinish || event == TelemetryEventReportReject || event == TelemetryEventReportCancel {
+		observation.reportTerminal = true
 	}
 	_ = EmitTelemetry(s.logger, s.telemetryRecord(request, event, outcome, status))
 }
@@ -587,6 +631,7 @@ func (s *Server) emitReportFinish(request *http.Request, outcome TelemetryOutcom
 	if observation == nil {
 		return
 	}
+	observation.reportTerminal = true
 	record := s.telemetryRecord(request, TelemetryEventReportFinish, outcome, 0)
 	if outcome == TelemetryOutcomeOK && observation.responseAttempted > 0 &&
 		observation.responseActual == observation.responseAttempted && report.Analysis != nil {
@@ -604,49 +649,10 @@ func (s *Server) emitReportFinish(request *http.Request, outcome TelemetryOutcom
 	_ = EmitTelemetry(s.logger, record)
 }
 
-func (s *Server) rejectReport(w http.ResponseWriter, request *http.Request, status int, outcome TelemetryOutcome, code, message string) {
-	s.emit(request, TelemetryEventReportReject, outcome, 0)
-	s.writeError(w, request, status, outcome, code, message)
-}
-
-func (s *Server) writeEmpty(w http.ResponseWriter, request *http.Request, status int, outcome TelemetryOutcome) {
-	observation := observationFromRequest(request)
-	observation.status, observation.outcome = status, outcome
-	w.WriteHeader(status)
-}
-
-func (s *Server) writeJSON(w http.ResponseWriter, request *http.Request, status int, outcome TelemetryOutcome, value any) {
-	started := time.Now()
-	payload, err := json.Marshal(value)
-	observation := observationFromRequest(request)
-	observation.marshalDuration += time.Since(started)
-	if err != nil {
-		status, outcome = http.StatusInternalServerError, TelemetryOutcomeSerialization
-		payload = []byte(`{"error":{"code":"response_serialization_failed","message":"report response could not be serialized"}}`)
-	}
-	payload = append(payload, '\n')
-	s.writeJSONPayload(w, request, status, outcome, payload)
-}
-
-func (s *Server) writeError(w http.ResponseWriter, request *http.Request, status int, outcome TelemetryOutcome, code, message string) {
-	s.writeJSON(w, request, status, outcome, map[string]any{"error": map[string]string{"code": code, "message": message}})
-}
-
-func (s *Server) writeJSONPayload(w http.ResponseWriter, request *http.Request, status int, outcome TelemetryOutcome, payload []byte) {
-	observation := observationFromRequest(request)
-	observation.status, observation.outcome = status, outcome
-	started := time.Now()
-	attempted, actual, err := writeJSONPayload(w, status, payload)
-	observation.writeDuration += time.Since(started)
-	observation.responseAttempted += int64(attempted)
-	observation.responseActual += int64(actual)
-	if err != nil {
-		if actual == 0 {
-			observation.outcome = TelemetryOutcomeWriteFailedZero
-		} else {
-			observation.outcome = TelemetryOutcomeWriteFailedPartial
-		}
-	}
+func (s *Server) rejectReport(response responder, request *http.Request, key apiErrorKey, metadata apiErrorMetadata) {
+	definition := apiErrorDefinitionFor(key)
+	s.emit(request, TelemetryEventReportReject, definition.Outcome, 0)
+	response.writeAPIError(key, metadata)
 }
 
 func reportHasResultCode(report diagnostic.Report, code string) bool {
@@ -656,43 +662,6 @@ func reportHasResultCode(report diagnostic.Report, code string) bool {
 		}
 	}
 	return false
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	payload, err := json.Marshal(value)
-	if err != nil {
-		status = http.StatusInternalServerError
-		payload = []byte(`{"error":{"code":"response_serialization_failed","message":"report response could not be serialized"}}`)
-	}
-	payload = append(payload, '\n')
-	writeJSONPayload(w, status, payload)
-}
-
-func writeJSONPayload(w http.ResponseWriter, status int, payload []byte) (attempted, actual int, err error) {
-	attempted = len(payload)
-	defer func() {
-		if recover() != nil {
-			// A panicking ResponseWriter cannot report how many bytes it may have
-			// committed internally. Account for zero actual bytes conservatively and
-			// return only a fixed private sentinel, never the panic value.
-			actual = 0
-			err = errResponseWritePanic
-			return
-		}
-		actual = max(0, min(actual, attempted))
-		if err == nil && actual != attempted {
-			err = io.ErrShortWrite
-		}
-	}()
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
-	w.WriteHeader(status)
-	actual, err = w.Write(payload)
-	return attempted, actual, err
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
 func marshalCompactResponse(report diagnostic.Report) ([]byte, error) {

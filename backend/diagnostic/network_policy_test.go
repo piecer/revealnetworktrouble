@@ -423,10 +423,10 @@ func TestPublicPolicyBlocksEveryDiagnosticSink(t *testing.T) {
 		}},
 		{"traceroute", func() Result {
 			called := false
-			result := (TracerouteChecker{Policy: newPolicy(), Command: func(context.Context, string, ...string) ([]byte, error) {
+			result := (NewInjectedTracerouteChecker(func(context.Context, string, ...string) ([]byte, error) {
 				called = true
 				return nil, nil
-			}}).Check(context.Background(), Target{Kind: KindTraceroute, Address: "internal.test", Attempts: 1})
+			}, nil, newPolicy())).Check(context.Background(), Target{Kind: KindTraceroute, Address: "internal.test", Attempts: 1})
 			if called {
 				t.Error("blocked traceroute invoked command")
 			}
@@ -585,13 +585,10 @@ func TestPublicTracerouteRechecksResolutionForEveryAttempt(t *testing.T) {
 		ipAnswers("127.0.0.1"),
 	}}
 	commands := 0
-	checker := TracerouteChecker{
-		Policy: NewNetworkPolicy(resolver, &recordingDialer{}),
-		Command: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-			commands++
-			return []byte("traceroute to example.test (93.184.216.34), 30 hops max\n1  93.184.216.34  1.0 ms"), nil
-		},
-	}
+	checker := NewInjectedTracerouteChecker(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		commands++
+		return []byte("traceroute to example.test (93.184.216.34), 30 hops max\n1  93.184.216.34  1.0 ms"), nil
+	}, nil, NewNetworkPolicy(resolver, &recordingDialer{}))
 	result := checker.Check(context.Background(), Target{Kind: KindTraceroute, Address: "example.test", Attempts: 2})
 	if result.ErrorCode != "network_policy_blocked" || commands != 1 || resolver.calls != 2 {
 		t.Fatalf("result=%+v commands=%d resolver_calls=%d", result, commands, resolver.calls)

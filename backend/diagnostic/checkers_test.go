@@ -164,7 +164,7 @@ func TestHTTPSCheckerReportsStableTLSHandshakeFailure(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
 	result := (HTTPSChecker{}).Check(context.Background(), Target{Kind: KindHTTPS, Address: server.URL})
-	if result.Status != StatusUnreachable || result.ErrorCode != "tls_handshake_failed" {
+	if result.Status != StatusUnreachable || result.ErrorCode != "tls_untrusted" {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -209,11 +209,12 @@ func TestServiceCheckerUsesDefaultAndExplicitPorts(t *testing.T) {
 	go func() {
 		conn, acceptErr := listener.Accept()
 		if acceptErr == nil {
+			_, _ = conn.Write([]byte("SSH-2.0-test\r\n"))
 			_ = conn.Close()
 		}
 	}()
 	result := (ServiceChecker{ServiceKind: KindSSH, DefaultPort: 22}).Check(context.Background(), Target{Kind: KindSSH, Address: listener.Addr().String()})
-	if result.Status != StatusHealthy || result.Details["endpoint"] != listener.Addr().String() {
+	if result.Status != StatusHealthy || result.Details["verification_scope"] != "server_greeting" {
 		t.Fatalf("unexpected service result: %+v", result)
 	}
 	if got := serviceAddress("example.test", 22); got != "example.test:22" {
@@ -222,11 +223,28 @@ func TestServiceCheckerUsesDefaultAndExplicitPorts(t *testing.T) {
 }
 
 func TestTLSServiceCheckerReportsHandshake(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer server.Close()
-	address := server.Listener.Addr().String()
+	certificateServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	certificate := certificateServer.TLS.Certificates[0]
+	certificateServer.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		raw, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		secured := tls.Server(raw, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
+		defer secured.Close()
+		if secured.Handshake() == nil {
+			_, _ = secured.Write([]byte("* OK ready\r\n"))
+		}
+	}()
+	address := listener.Addr().String()
 	result := (ServiceChecker{ServiceKind: KindIMAPS, DefaultPort: 993, UseTLS: true, TLSConfig: &tls.Config{InsecureSkipVerify: true}}).Check(context.Background(), Target{Kind: KindIMAPS, Address: address})
-	if result.Status != StatusHealthy || result.Details["tls_version"] == nil {
+	if result.Status != StatusHealthy || result.Details["tls_version"] == nil || result.Details["verification_scope"] != "server_greeting" {
 		t.Fatalf("unexpected TLS service result: %+v", result)
 	}
 }

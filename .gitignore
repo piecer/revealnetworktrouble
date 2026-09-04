@@ -1,9 +1,12 @@
 /bin/
+/checknetwork-api
 *.exe
 *.test
 .DS_Store
+.*.swp
 coverage.out
 /frontend/node_modules/
+/scripts/__pycache__/
 
 # Android/Gradle local state and generated outputs.
 /android/.gradle/

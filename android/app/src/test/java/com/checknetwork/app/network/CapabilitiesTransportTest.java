@@ -12,6 +12,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -82,6 +83,44 @@ public final class CapabilitiesTransportTest {
             assertTrue(connection.bytesRead <= CapabilitiesTransport.MAX_ERROR_BODY_BYTES + 1);
             assertFalse(error.toString().contains("client-secret"));
         }
+    }
+
+    @Test public void strictErrorJsonStaysNonretryableApiFailureAtEveryAdversarialBoundaryCount100() throws Exception {
+        String canonical = "{\"error\":{\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"}}";
+        String duplicateCode = "{\"error\":{\"code\":\"server_busy\",\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"}}";
+        String duplicateError = "{\"error\":{\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"},\"error\":{\"code\":\"server_busy\",\"message\":\"report capacity is temporarily unavailable\"}}";
+        String deep = "{\"error\":" + "[".repeat(12_000) + "]".repeat(12_000) + "}";
+        for (int run = 0; run < 100; run++) for (byte[] body : new byte[][]{
+                bytes(canonical + canonical), bytes(canonical + " HOSTILE-TRAILING"),
+                bytes(duplicateCode), bytes(duplicateError), bytes(deep),
+                new byte[]{'{', '"', 'e', 'r', 'r', 'o', 'r', '"', ':', '"', (byte) 0xc3, 0x28, '"', '}'}}) {
+            FakeConnection connection = new FakeConnection(503, body);
+            TransportException failure = assertThrows(TransportException.class,
+                    () -> transport("https://api.example.test", null, connection, new FakeScheduler()).newCall().execute());
+            assertEquals(TransportException.Kind.API, failure.kind());
+            assertInvalidApiError(failure, 503);
+        }
+
+        byte[] prefix = bytes(canonical);
+        byte[] exact = java.util.Arrays.copyOf(prefix, CapabilitiesTransport.MAX_ERROR_BODY_BYTES);
+        java.util.Arrays.fill(exact, prefix.length, exact.length, (byte) ' ');
+        FakeConnection accepted = new FakeConnection(503, exact);
+        TransportException typed = assertThrows(TransportException.class,
+                () -> transport("https://api.example.test", null, accepted, new FakeScheduler()).newCall().execute());
+        assertEquals("server_busy", typed.apiError().orElseThrow().code());
+
+        FakeConnection over = new FakeConnection(503, java.util.Arrays.copyOf(exact, exact.length + 1));
+        TransportException rejected = assertThrows(TransportException.class,
+                () -> transport("https://api.example.test", null, over, new FakeScheduler()).newCall().execute());
+        assertInvalidApiError(rejected, 503);
+    }
+
+    private static void assertInvalidApiError(TransportException failure, int status) {
+        assertEquals(status, failure.apiError().orElseThrow().status());
+        assertEquals("invalid_server_response", failure.apiError().orElseThrow().code());
+        assertFalse(failure.apiError().orElseThrow().retryable());
+        assertFalse(failure.apiError().orElseThrow().retryAt().isPresent());
+        assertFalse(failure.toString().contains("HOSTILE"));
     }
 
     @Test public void cancellationAndDeadlineDisconnectExactlyOnceAndWinLateIo() throws Exception {
@@ -450,6 +489,13 @@ public final class CapabilitiesTransportTest {
         @Override public void setRequestMethod(String value) { method = value; }
         @Override public void setRequestProperty(String key, String value) { headers.put(key, value); onRequestProperty.run(); }
         @Override public String getHeaderField(String key) { onHeader.run(); return headers.get(key); }
+        @Override public Map<String,List<String>> getHeaderFields() {
+            onHeader.run();
+            Map<String,List<String>> values = new LinkedHashMap<>();
+            for (Map.Entry<String,String> entry : headers.entrySet())
+                values.put(entry.getKey(), List.of(entry.getValue()));
+            return values;
+        }
         @Override public void setConnectTimeout(int value) { connectTimeout = value; }
         @Override public void setReadTimeout(int value) { readTimeout = value; }
         @Override public void setInstanceFollowRedirects(boolean value) { followRedirects = value; }

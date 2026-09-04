@@ -4,10 +4,10 @@ Go 진단 API를 사용하는 네이티브 Android 클라이언트입니다. And
 
 ## 필수 환경
 
-- JDK 17 (`JAVA_HOME` 설정)
+- JDK 17 (`JAVA_HOME` 미설정 시 canonical `make`가 `PATH`의 `javac`에서 탐색)
 - Android SDK Platform 35
 - Android SDK Build-Tools 35.0.0
-- `ANDROID_HOME` 또는 `ANDROID_SDK_ROOT` 설정
+- SDK는 `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `~/Android/Sdk`, `~/.local/share/checknetwork-android/sdk` 순으로 선택
 - 첫 Gradle 실행에서 플러그인 및 테스트 의존성을 받을 수 있는 네트워크 연결
 
 저장소 루트에서 환경과 체크인된 Gradle 8.11.1 wrapper의 출처/해시를 각각 확인할 수 있습니다.

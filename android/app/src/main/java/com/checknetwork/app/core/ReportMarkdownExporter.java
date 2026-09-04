@@ -2,87 +2,74 @@ package com.checknetwork.app.core;
 
 import java.util.Objects;
 
-/** Deterministic allowlist-only human export. Raw identifiers and network observations never enter it. */
+/** Deterministic, bounded, allowlist-only human export. */
 public final class ReportMarkdownExporter {
+    public static final int MAX_EXPORT_CHARS = 128 * 1024;
     private ReportMarkdownExporter() {}
 
     public static String export(Report report) {
         Objects.requireNonNull(report, "report");
-        StringBuilder out = new StringBuilder();
-        out.append("# Network diagnostic summary\n\n")
-                .append("- Overall status: **").append(label(report.status())).append("**\n")
-                .append("- Started: ").append(report.startedAt()).append("\n")
-                .append("- Duration: ").append(report.durationMs()).append(" ms\n")
-                .append("- Checks: ").append(report.summary().total())
-                .append(" total, ").append(report.summary().passed()).append(" passed, ")
-                .append(report.summary().failed()).append(" failed\n\n")
-                .append("## Check outcomes\n\n");
-        if (report.results().isEmpty()) out.append("No checks were returned.\n");
+        BoundedMarkdown out = new BoundedMarkdown(MAX_EXPORT_CHARS);
+        out.add("# Network diagnostic summary\n\n")
+                .add("- Overall status: ").add(AnalysisPresentationRegistry.reportStatus(report)).add("\n")
+                .add("- Started: ").add(report.startedAt().toString()).add("\n")
+                .add("- Duration: ").add(String.valueOf(report.durationMs())).add(" ms\n")
+                .add("- Checks: ").add(String.valueOf(report.summary().total())).add(" total, ");
+        out.add(String.valueOf(report.summary().passed())).add(" completed observations, ")
+                .add(String.valueOf(report.summary().failed())).add(" incomplete observations\n");
+        out.add("- Verdict: ").add(AnalysisPresentationRegistry.verdict(report)).add("\n\n")
+                .add("## Check outcomes\n\n");
+        if (report.results().isEmpty()) out.add("No checks were returned.\n");
         for (int index = 0; index < report.results().size(); index++) {
             Report.Result result = report.results().get(index);
-            out.append(index + 1).append(". **").append(kindLabel(result.kind())).append("** — ")
-                    .append(label(result.status())).append(" (").append(result.latencyMs()).append(" ms)\n");
+            out.add(String.valueOf(index + 1)).add(". **").add(AnalysisPresentationRegistry.kindLabel(result.kind()))
+                    .add("** — ").add(AnalysisPresentationRegistry.resultOutcome(result)).add(" (")
+                    .add(String.valueOf(result.latencyMs())).add(" ms)\n");
         }
-        out.append("\n## Analysis\n\n");
-        if (report.analysis().isEmpty()) {
-            out.append("Analysis unavailable (legacy report).\n");
-        } else {
-            Report.Analysis analysis = report.analysis().orElseThrow();
-            out.append("- Verdict: **").append(verdictLabel(analysis.verdict())).append("**\n")
-                    .append("- Findings: ").append(analysis.findings().size()).append("\n")
-                    .append("- Evidence records withheld: ").append(analysis.evidence().size()).append("\n")
-                    .append("- Recommended actions withheld: ").append(analysis.actions().size()).append("\n");
-            for (Report.Finding finding : analysis.findings()) {
-                out.append("  - ").append(findingLabel(finding.code())).append(" [")
-                        .append(finding.severity().name().toLowerCase(java.util.Locale.ROOT)).append(", ")
-                        .append(finding.confidence().name().toLowerCase(java.util.Locale.ROOT)).append("]\n");
+        out.add("\n## Analysis\n\n");
+        for (AnalysisPresentationRegistry.Section section : AnalysisPresentationRegistry.sections(report)) {
+            out.add("<!-- semantic-key: ").add(section.key()).add(" -->\n")
+                    .add("### ").add(section.key()).add("\n\n")
+                    .add(section.body()).add("\n\n");
+        }
+        if (report.analysis().isPresent()) {
+            for (Report.EnrichmentCoverage enrichment : report.analysis().orElseThrow().coverage().enrichment()) {
+                out.add("<!-- semantic-key: enrichment_coverage -->\n### enrichment_coverage\n\n")
+                        .add("- Source category: ").add(enrichment.source().name().toLowerCase(java.util.Locale.ROOT)).add("\n")
+                        .add("- Cache hits: ").add(String.valueOf(enrichment.cacheHits())).add("\n")
+                        .add("- Upstream fetches: ").add(String.valueOf(enrichment.upstreamFetches())).add("\n")
+                        .add("- Maximum age: ").add(String.valueOf(enrichment.maxAgeMs())).add(" ms\n");
+                for (Report.EnrichmentFailure failure : enrichment.failures()) {
+                    out.add("- ").add(failure.kind().name().toLowerCase(java.util.Locale.ROOT)).add(": ")
+                            .add(String.valueOf(failure.count())).add(failure.retryable() ? " (retryable)\n" : " (not retryable)\n");
+                }
+                out.add("\n");
             }
-            out.append("- Coverage: ").append(analysis.coverage().available().size()).append(" available, ")
-                    .append(analysis.coverage().missing().size()).append(" missing, ")
-                    .append(analysis.coverage().providerFailures().size()).append(" provider failures, ")
-                    .append(analysis.coverage().limitations().size()).append(" limitations\n");
         }
-        report.compactTopology().ifPresent(topology -> out.append("\n## Compact topology summary\n\n")
-                .append("- Nodes: ").append(topology.nodeCount()).append("\n")
-                .append("- Links: ").append(topology.linkCount()).append("\n")
-                .append("- Routes: ").append(topology.routeCount()).append("\n")
-                .append("- Truncated: ").append(topology.truncated() ? "yes" : "no").append("\n"));
-        return out.toString();
+        report.compactTopology().ifPresent(topology -> out.add("## Compact topology summary\n\n")
+                .add("- Nodes: ").add(String.valueOf(topology.nodeCount())).add("\n")
+                .add("- Links: ").add(String.valueOf(topology.linkCount())).add("\n")
+                .add("- Routes: ").add(String.valueOf(topology.routeCount())).add("\n")
+                .add("- Truncated: ").add(topology.truncated() ? "yes\n" : "no\n"));
+        return out.text();
     }
 
-    private static String label(Report.Status status) {
-        switch (status) { case HEALTHY:return "Healthy";case DEGRADED:return "Degraded";default:return "Unreachable"; }
-    }
-    private static String verdictLabel(Report.Verdict verdict) {
-        switch (verdict) { case HEALTHY:return "Healthy";case ATTENTION:return "Attention needed";default:return "Inconclusive"; }
-    }
-    private static String kindLabel(CheckKind kind) {
-        switch(kind){
-            case DNS:return "DNS";case TCP:return "TCP";case HTTP:return "HTTP";case HTTPS:return "HTTPS";
-            case SSH:return "SSH";case SMTP:return "SMTP";case SUBMISSION:return "Mail submission";case SMTPS:return "SMTPS";
-            case IMAP:return "IMAP";case IMAPS:return "IMAPS";case POP3:return "POP3";case POP3S:return "POP3S";default:return "Traceroute";
+    private static final class BoundedMarkdown {
+        private final int limit;
+        private final StringBuilder value = new StringBuilder();
+        private boolean truncated;
+        BoundedMarkdown(int limit) { this.limit = limit; }
+        BoundedMarkdown add(String text) {
+            if (truncated || text == null) return this;
+            int remaining = limit - value.length();
+            if (text.length() <= remaining) value.append(text);
+            else {
+                if (remaining > 1) value.append(text, 0, remaining - 1);
+                if (remaining > 0) value.append('…');
+                truncated = true;
+            }
+            return this;
         }
-    }
-    private static String findingLabel(Report.FindingCode code) {
-        return switch(code) {
-            case DNS_RESOLUTION_FAILED -> "DNS resolution failed";
-            case ENDPOINT_CONNECT_FAILED -> "Endpoint connection failed";
-            case HTTP_UNEXPECTED_STATUS -> "Unexpected HTTP status";
-            case INVALID_TARGET -> "Invalid target";
-            case EXECUTION_TIMEOUT -> "Execution timed out";
-            case EXECUTION_CANCELLED -> "Execution cancelled";
-            case TLS_DOWNGRADE -> "TLS downgrade";
-            case TLS_CERTIFICATE_EXPIRED -> "TLS certificate expired";
-            case TLS_CERTIFICATE_EXPIRING -> "TLS certificate expiring";
-            case TLS_HANDSHAKE_FAILED -> "TLS handshake failed";
-            case TARGET_POLICY_BLOCKED -> "Target blocked by policy";
-            case TRACEROUTE_UNREACHABLE -> "Traceroute destination unreachable";
-            case TRACEROUTE_PARTIAL_REACHABILITY -> "Traceroute partial reachability";
-            case TRACEROUTE_PATH_DEGRADED -> "Traceroute path degraded";
-            case TRACEROUTE_PATH_UNSTABLE -> "Traceroute path unstable";
-            case TRACEROUTE_EXECUTION_FAILED -> "Traceroute execution failed";
-            case CHECKER_PANIC -> "Checker execution failed";
-            case CHECKER_CAPACITY_UNAVAILABLE -> "Checker capacity was unavailable";
-        };
+        String text() { return value.toString(); }
     }
 }

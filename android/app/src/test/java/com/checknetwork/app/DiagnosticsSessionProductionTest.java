@@ -2,6 +2,9 @@ package com.checknetwork.app;
 
 import static org.junit.Assert.*;
 
+import android.view.View;
+import android.widget.EditText;
+import android.widget.TextView;
 import com.checknetwork.app.core.CheckCapabilities;
 import com.checknetwork.app.core.CheckKind;
 import com.checknetwork.app.core.ReportRequest;
@@ -27,9 +30,14 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
+import org.robolectric.shadows.ShadowLooper;
 
 @RunWith(RobolectricTestRunner.class)
 public final class DiagnosticsSessionProductionTest {
@@ -37,7 +45,7 @@ public final class DiagnosticsSessionProductionTest {
             + "\"topology_modes\":[\"full\",\"compact\"],\"limits\":{\"max_targets\":20,\"max_traceroute_attempts\":10,\"timeout_ms_min\":100,\"timeout_ms_max\":30000}}";
     private static final String REDUCED = "{\"kinds\":[\"dns\"],\"topology_modes\":[\"full\"],\"limits\":{\"max_targets\":1,\"max_traceroute_attempts\":3,\"timeout_ms_min\":500,\"timeout_ms_max\":2000}}";
     private static final String REPORT = "{\"id\":\"r1\",\"status\":\"healthy\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":1,"
-            + "\"results\":[{\"kind\":\"dns\",\"address\":\"example.test\",\"status\":\"healthy\",\"latency_ms\":1,\"started_at\":\"2026-09-02T00:00:00Z\",\"details\":{}}],"
+            + "\"results\":[{\"kind\":\"dns\",\"address\":\"example.test\",\"status\":\"healthy\",\"latency_ms\":1,\"started_at\":\"2026-09-02T00:00:00Z\",\"details\":{\"addresses\":[\"192.0.2.1\"],\"answer_count\":1}}],"
             + "\"summary\":{\"total\":1,\"passed\":1,\"failed\":0}}";
 
     @Test public void discoveryRunsBeforePostAndReducedServerBlocksLocally() throws Exception {
@@ -60,6 +68,97 @@ public final class DiagnosticsSessionProductionTest {
             assertEquals(RequestState.Phase.READY, fixture.awaitTerminal().phase());
             assertEquals(List.of("GET", "POST"), current.executedMethods());
         }
+    }
+
+    @Test public void contradictoryHealthyDnsNeverPublishesReadyFromRealTransportLane() throws Exception {
+        String contradictory = REPORT.replace("\"details\":{\"addresses\":[\"192.0.2.1\"],\"answer_count\":1}",
+                "\"error_code\":\"connection_failed\",\"details\":{\"addresses\":[\"203.0.113.10\"],\"answer_count\":1}");
+        ProbeTransports probes = new ProbeTransports(ALL, contradictory);
+        try (Fixture fixture = fixture(probes)) {
+            fixture.session.start(ApiConnectionConfig.create("https://api.example.test", false, null), dnsRequest());
+            RequestState state = fixture.awaitTerminal();
+            assertEquals(RequestState.Phase.ERROR, state.phase());
+            assertEquals(TransportException.Kind.INVALID_RESPONSE, state.error().orElseThrow().kind());
+            assertFalse(state.report().isPresent());
+            assertFalse(state.rawJson().isPresent());
+        }
+    }
+
+    @Test public void invalidSemantic2xxNeverPublishesRawReportRenderingOrShareFromProduction() throws Exception {
+        List<String> invalidBodies = new ArrayList<>();
+        JSONObject unknownKey = new JSONObject(REPORT);
+        unknownKey.getJSONArray("results").getJSONObject(0)
+                .put("unknown_result_key", "HOSTILE-REMOTE-PROSE");
+        invalidBodies.add(unknownKey.toString());
+        JSONObject partialAnswer = new JSONObject(REPORT);
+        setOutcome(partialAnswer, "dns", "degraded", "partial_answer",
+                new JSONObject().put("addresses", new JSONArray()).put("answer_count", 0));
+        invalidBodies.add(partialAnswer.toString());
+        JSONObject missingDNS = new JSONObject(REPORT);
+        missingDNS.getJSONArray("results").getJSONObject(0).remove("details");
+        invalidBodies.add(missingDNS.toString());
+        JSONObject plainInvalidAddress = new JSONObject(REPORT);
+        setOutcome(plainInvalidAddress, "smtp", "unreachable", "invalid_address", null);
+        invalidBodies.add(plainInvalidAddress.toString());
+        JSONObject incompleteTLSService = new JSONObject(REPORT);
+        setOutcome(incompleteTLSService, "imaps", "healthy", null,
+                new JSONObject().put("verification_scope", "server_greeting"));
+        invalidBodies.add(incompleteTLSService.toString());
+        JSONObject missingTraceCounters = new JSONObject(REPORT);
+        setOutcome(missingTraceCounters, "traceroute", "unreachable", "traceroute_failed",
+                new JSONObject().put("attempts", new JSONArray()));
+        invalidBodies.add(missingTraceCounters.toString());
+
+        for (String invalidBody : invalidBodies) {
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            ProbeTransports probes = new ProbeTransports(ALL, invalidBody);
+            AtomicReference<DiagnosticsSession> sessionRef = new AtomicReference<>();
+            MainActivity.setSessionFactoryForTests(dispatcher -> {
+                DiagnosticsSession session = DiagnosticsSession.createProductionForTests(
+                        dispatcher, executor, probes, probes.clock);
+                sessionRef.set(session);
+                return session;
+            });
+            MainActivity activity = null;
+            try {
+                activity = Robolectric.buildActivity(MainActivity.class).setup().get();
+                ((EditText) activity.findViewById(R.id.api_url)).setText("https://api.example.test");
+                activity.findViewById(R.id.run).performClick();
+                executor.submit(() -> {}).get(3, TimeUnit.SECONDS);
+                ShadowLooper.idleMainLooper();
+                RequestState state = sessionRef.get().state();
+                assertEquals(RequestState.Phase.ERROR, state.phase());
+                assertEquals(TransportException.Kind.INVALID_RESPONSE, state.error().orElseThrow().kind());
+                assertFalse(state.report().isPresent());
+                assertFalse(state.rawJson().isPresent());
+                assertFalse(state.shareEligible());
+                assertEquals(View.GONE, activity.findViewById(R.id.report).getVisibility());
+                assertFalse(activity.findViewById(R.id.share).isEnabled());
+                assertFalse(activity.findViewById(R.id.share_raw).isEnabled());
+                String fixed = ((TextView) activity.findViewById(R.id.error)).getText().toString();
+                assertEquals(activity.getString(R.string.error_invalid_response), fixed);
+                assertFalse(fixed.contains("HOSTILE"));
+                assertFalse(state.error().orElseThrow().toString().contains("HOSTILE"));
+            } finally {
+                if (activity != null) activity.finish();
+                DiagnosticsSession session = sessionRef.get();
+                if (session != null) session.destroy();
+                executor.shutdownNow();
+                MainActivity.resetSessionFactoryForTests();
+            }
+        }
+        assertEquals(6, invalidBodies.size());
+    }
+
+    private static void setOutcome(JSONObject report, String kind, String status,
+            String errorCode, JSONObject details) throws Exception {
+        JSONObject result = report.getJSONArray("results").getJSONObject(0);
+        result.put("kind", kind).put("status", status).remove("error_code");
+        if (errorCode != null) result.put("error_code", errorCode);
+        result.remove("details"); if (details != null) result.put("details", details);
+        boolean healthy = "healthy".equals(status);
+        report.put("status", status).put("summary", new JSONObject().put("total", 1)
+                .put("passed", healthy ? 1 : 0).put("failed", healthy ? 0 : 1));
     }
 
     @Test public void everyReducedCapabilityFieldMapsToItsTypedReasonWithoutCreatingReportTransport() throws Exception {
@@ -311,7 +410,7 @@ public final class DiagnosticsSessionProductionTest {
             capabilitiesDeadline = deadline; capabilitiesClock = clock; deadlineIdentities.add(deadline);
             String authorization = config.authorizationHeader().orElse(null);
             int status = rejectToken != null && rejectToken.equals(authorization) ? 401 : 200;
-            String body = status == 401 ? "{\"error\":{\"code\":\"unauthorized\",\"message\":\"secret\"}}" : capabilitiesJson;
+            String body = status == 401 ? "{\"error\":{\"code\":\"unauthorized\",\"message\":\"valid API credentials are required\"}}\n" : capabilitiesJson;
             ProbeConnection connection = new ProbeConnection(status, body, executionOrder);
             connection.onResponse = () -> {
                 clock.nanos = TimeUnit.MILLISECONDS.toNanos(advanceDiscoveryMillis);

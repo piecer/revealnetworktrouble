@@ -26,14 +26,14 @@ function compactTopology(overrides = {}) {
     nodes: [
       { id: 'n1', kind: 'local', address: 'local', status: 'healthy', hop_min: 0, hop_max: 0, observations: 1 },
       { id: 'n2', kind: 'ip', address: '192.0.2.1', status: 'healthy', hop_min: 1, hop_max: 1, latency_ms_avg: 2, observations: 1, public_ip: true,
-        geolocation: { city: 'Seoul', region: '', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 } }
+        geolocation: { city: 'Seoul', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 } }
     ],
     links: [{ from: 'n1', to: 'n2', status: 'healthy', observations: 1 }],
     routes: [{ result_index: 0, attempt: 1, status: 'healthy', reached: true, complete: true, node_ids: ['n1', 'n2'] }],
     stats: { nodes: count(2), links: count(1), routes: routeCount(1), node_observations: count(2), link_observations: count(1) },
     result_stats: [{ result_index: 0, routes: routeCount(1), node_observations: count(2), link_observations: count(1) }],
     geo: { eligible: 1, available: 1, included: 1, omitted: 0, unavailable: 0 },
-    truncated: false, truncation_reasons: [],
+    truncated: false,
     ...overrides
   };
 }
@@ -51,6 +51,21 @@ function report(results, compact) {
 
 function traceResult(address, attempts, topology) {
   return { kind: 'traceroute', address, status: 'healthy', latency_ms: 1, started_at: started, details: { attempts, ...(topology ? { topology } : {}) } };
+}
+
+function compactTraceResult(address, attemptsTotal = 1) {
+  return {
+    kind: 'traceroute', address, status: 'healthy', latency_ms: 1, started_at: started,
+    details: {
+      attempts_total: attemptsTotal,
+      attempts_reached: attemptsTotal,
+      attempts_failed: 0,
+      attempts_unreached: 0,
+      attempts_execution_failed: 0,
+      attempts_timed_out: 0,
+      attempts_cancelled: 0
+    }
+  };
 }
 
 function legacyTopology(resultIndex, attempt, hops = 30) {
@@ -114,7 +129,7 @@ test('topologyModelFromReport consumes compact data first without mutation and k
     result_stats: [{ result_index: 0, routes: routeCount(2, 1), node_observations: count(4, 2), link_observations: count(3, 1) }],
     truncated: true, truncation_reasons: ['node_limit']
   });
-  const normalized = normalizeReport(report([traceResult('target.test', [])], compact));
+  const normalized = normalizeReport(report([compactTraceResult('target.test', 2)], compact));
   const before = structuredClone(normalized);
   const model = topologyModelFromReport(normalized);
   assert.equal(model.source, 'compact');
@@ -123,6 +138,10 @@ test('topologyModelFromReport consumes compact data first without mutation and k
   assert.deepEqual(model.adapterTruncation, { truncated: false, reasons: [] });
   assert.notStrictEqual(model.nodes, normalized.compact_topology.nodes);
   assert.deepEqual(normalized, before);
+
+  const untruncated = normalizeReport(report([compactTraceResult('target.test')], compactTopology()));
+  assert.equal(Object.hasOwn(untruncated.compact_topology, 'truncation_reasons'), false);
+  assert.deepEqual(topologyModelFromReport(untruncated).serverTruncation, { truncated: false, reasons: [] });
 });
 
 test('topologyModelFromReport rejects present malformed compact data instead of falling back to legacy', () => {

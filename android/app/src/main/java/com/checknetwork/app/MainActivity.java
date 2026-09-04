@@ -2,6 +2,7 @@ package com.checknetwork.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -31,8 +32,6 @@ import com.checknetwork.app.core.ReportRequest;
 import com.checknetwork.app.network.ApiConnectionConfig;
 import com.checknetwork.app.network.TransportException;
 import com.checknetwork.app.state.RequestState;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,19 +41,46 @@ import java.util.Objects;
 public final class MainActivity extends Activity {
     private static final String KEY_API="form.api",KEY_TIMEOUT="form.timeout",KEY_KINDS="form.kinds",KEY_ADDRESSES="form.addresses",KEY_EXPECTED="form.expected",KEY_ATTEMPTS="form.attempts";
     private static final int MAX_TARGETS=ContractLimits.MAX_TARGETS;
+    private static final int MAX_REMOVE_ADDRESS_CODE_POINTS=48;
     interface SessionFactory { DiagnosticsSession create(DiagnosticsSession.Dispatcher dispatcher); }
-    interface RawShareFactory { RawReportShare create(Activity activity); }
+    interface RawRuntimeFactory { RawShareRuntime create(Activity activity); }
+    interface ChooserLauncher { void launch(Activity activity,Intent chooser); }
     interface ConnectionConfigFactory { ApiConnectionConfig create(String base,boolean debug,String bearer); }
+    enum PresentationPhase { EMPTY, RENDERING, RENDERED, RENDER_ERROR }
+    enum RenderPoint { BEFORE_FIRST_VIEW, MID_BUILD }
+    enum CommitPoint { PRE_SWAP, REPORT_VISIBILITY, READY_STATUS, FOCUS, LIVE_ANNOUNCEMENT, SHARE_ELIGIBILITY }
+    interface RenderCheckpoint { void at(RenderPoint point); }
+    interface PresentationRenderer { View render(MainActivity activity,AnalysisPresentation presentation,RenderCheckpoint checkpoint); }
+    interface PresentationCommitter {
+        void checkpoint(CommitPoint point);
+        void swap(LinearLayout target,View candidate);
+        void rollback(LinearLayout target);
+    }
     private static final SessionFactory DEFAULT_SESSION_FACTORY=DiagnosticsSession::create;
-    private static final RawShareFactory DEFAULT_RAW_SHARE_FACTORY=RawReportShare::new;
+    private static final RawRuntimeFactory DEFAULT_RAW_RUNTIME_FACTORY=RawReportShare::processRuntime;
+    private static final ChooserLauncher DEFAULT_CHOOSER_LAUNCHER=Activity::startActivity;
     private static final ConnectionConfigFactory DEFAULT_CONNECTION_CONFIG_FACTORY=ApiConnectionConfig::create;
+    private static final PresentationRenderer DEFAULT_PRESENTATION_RENDERER=MainActivity::buildDetachedPresentation;
+    private static final PresentationCommitter DEFAULT_PRESENTATION_COMMITTER=new PresentationCommitter(){
+        public void checkpoint(CommitPoint ignored){}
+        public void swap(LinearLayout target,View candidate){target.removeAllViews();target.addView(candidate);}
+        public void rollback(LinearLayout target){target.removeAllViews();}
+    };
     private static SessionFactory sessionFactory=DEFAULT_SESSION_FACTORY;
-    private static RawShareFactory rawShareFactory=DEFAULT_RAW_SHARE_FACTORY;
+    private static RawRuntimeFactory rawRuntimeFactory=DEFAULT_RAW_RUNTIME_FACTORY;
+    private static ChooserLauncher chooserLauncher=DEFAULT_CHOOSER_LAUNCHER;
     private static ConnectionConfigFactory connectionConfigFactory=DEFAULT_CONNECTION_CONFIG_FACTORY;
+    private static PresentationRenderer presentationRenderer=DEFAULT_PRESENTATION_RENDERER;
+    private static PresentationCommitter presentationCommitter=DEFAULT_PRESENTATION_COMMITTER;
     static void setSessionFactoryForTests(SessionFactory factory){sessionFactory=Objects.requireNonNull(factory,"factory");}
-    static void setRawShareFactoryForTests(RawShareFactory factory){rawShareFactory=Objects.requireNonNull(factory,"factory");}
+    static void setRawRuntimeFactoryForTests(RawRuntimeFactory factory){rawRuntimeFactory=Objects.requireNonNull(factory,"factory");}
+    static void setChooserLauncherForTests(ChooserLauncher launcher){chooserLauncher=Objects.requireNonNull(launcher,"launcher");}
     static void setConnectionConfigFactoryForTests(ConnectionConfigFactory factory){connectionConfigFactory=Objects.requireNonNull(factory,"factory");}
-    static void resetSessionFactoryForTests(){sessionFactory=DEFAULT_SESSION_FACTORY;rawShareFactory=DEFAULT_RAW_SHARE_FACTORY;connectionConfigFactory=DEFAULT_CONNECTION_CONFIG_FACTORY;}
+    static void setPresentationRendererForTests(PresentationRenderer renderer){presentationRenderer=Objects.requireNonNull(renderer,"renderer");}
+    static PresentationRenderer defaultPresentationRendererForTests(){return DEFAULT_PRESENTATION_RENDERER;}
+    static void setPresentationCommitterForTests(PresentationCommitter committer){presentationCommitter=Objects.requireNonNull(committer,"committer");}
+    static PresentationCommitter defaultPresentationCommitterForTests(){return DEFAULT_PRESENTATION_COMMITTER;}
+    static void resetSessionFactoryForTests(){sessionFactory=DEFAULT_SESSION_FACTORY;rawRuntimeFactory=DEFAULT_RAW_RUNTIME_FACTORY;chooserLauncher=DEFAULT_CHOOSER_LAUNCHER;connectionConfigFactory=DEFAULT_CONNECTION_CONFIG_FACTORY;presentationRenderer=DEFAULT_PRESENTATION_RENDERER;presentationCommitter=DEFAULT_PRESENTATION_COMMITTER;}
 
     private DiagnosticsSession session;
     private final Object owner=new Object();
@@ -67,18 +93,26 @@ public final class MainActivity extends Activity {
     private Button run,cancel,retry,share,shareRaw,addTarget;
     private Report readyReport;
     private ReadyRaw readyRaw;
-    private RawReportShare rawReportShare;
+    private RawShareRuntime rawRuntime;
+    private PendingRawShare pendingRawShare;
     private AlertDialog rawWarningDialog;
+    private boolean rawAttached;
+    private long rawAttachmentGeneration;
     private boolean suppressInput;
     private boolean retainingSession;
+    private PresentationPhase presentationPhase=PresentationPhase.EMPTY;
+    private long presentationGeneration;
+    private View installedCandidate;
+    private long installedCandidateGeneration=-1;
+    private PresentationOwner installedCandidateOwner;
 
     @Override protected void onCreate(Bundle savedInstanceState){
         super.onCreate(savedInstanceState);setContentView(R.layout.activity_main);bindViews();
         ViewCompat.setAccessibilityHeading(findViewById(R.id.hero_heading),true);
         ViewCompat.setAccessibilityHeading(findViewById(R.id.targets_heading),true);
         Object previous=getLastNonConfigurationInstance();
-        retained=previous instanceof Retained?(Retained)previous:new Retained(sessionFactory.create(r->new Handler(Looper.getMainLooper()).post(r)),rawShareFactory.create(this));
-        session=retained.session;rawReportShare=retained.rawReportShare;
+        retained=previous instanceof Retained?(Retained)previous:new Retained(sessionFactory.create(r->new Handler(Looper.getMainLooper()).post(r)));
+        session=retained.session;rawRuntime=rawRuntimeFactory.create(this);
         suppressInput=true;
         apiUrl.setSaveEnabled(false);timeout.setSaveEnabled(false);bearer.setSaveEnabled(false);
         bearer.setText(retained.bearer);authEnabled.setChecked(retained.authEnabled);
@@ -86,8 +120,20 @@ public final class MainActivity extends Activity {
         bearer.setVisibility(retained.authEnabled?View.VISIBLE:View.GONE);
         restoreForm(savedInstanceState);
         suppressInput=false;
-        wireActions(); session.attach(owner,this::renderState);
+        wireActions();session.attach(owner,this::renderState);attachRawRuntime();
     }
+
+    @Override protected void onResume(){
+        super.onResume();
+        RawShareRuntime observedRuntime=rawRuntime;Object observedOwner=retained==null?null:retained.rawOwner;long observedGeneration=rawAttachmentGeneration;
+        if(!isCurrentRawAttachment(observedRuntime,observedOwner,observedGeneration))return;
+        try{observedRuntime.observe();}
+        catch(RuntimeException failure){if(isCurrentRawAttachment(observedRuntime,observedOwner,observedGeneration))showRawShareFailure();}
+    }
+
+    private void attachRawRuntime(){rawRuntime.attach(retained.rawOwner,this::renderRawShareState);rawAttached=true;rawAttachmentGeneration++;}
+    private void detachRawRuntime(){if(!rawAttached)return;rawAttached=false;rawAttachmentGeneration++;rawRuntime.detach(retained.rawOwner);}
+    private boolean isCurrentRawAttachment(RawShareRuntime expectedRuntime,Object expectedOwner,long expectedGeneration){return rawAttached&&rawRuntime==expectedRuntime&&retained!=null&&retained.rawOwner==expectedOwner&&rawAttachmentGeneration==expectedGeneration&&!isFinishing()&&!isDestroyed();}
 
     private void bindViews(){
         targets=findViewById(R.id.targets);report=findViewById(R.id.report);results=findViewById(R.id.results);apiUrl=findViewById(R.id.api_url);timeout=findViewById(R.id.timeout);bearer=findViewById(R.id.bearer);authEnabled=findViewById(R.id.auth_enabled);
@@ -115,6 +161,7 @@ public final class MainActivity extends Activity {
     }
 
     private TextWatcher watcher(){return new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int b,int c){}public void onTextChanged(CharSequence s,int a,int b,int c){inputMutated();}public void afterTextChanged(Editable e){}};}
+    private TextWatcher addressWatcher(){return new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int b,int c){}public void onTextChanged(CharSequence s,int a,int b,int c){refreshRemoveDescriptions();inputMutated();}public void afterTextChanged(Editable e){}};}
     private void inputMutated(){if(suppressInput)return;clearReady();session.invalidateInput(safeSignature());}
     private String safeSignature(){try{return collectForm().signature();}catch(RuntimeException invalid){return "invalid-form";}}
 
@@ -122,18 +169,57 @@ public final class MainActivity extends Activity {
         View row=LayoutInflater.from(this).inflate(R.layout.target_row,targets,false);Spinner kind=row.findViewById(R.id.kind);EditText address=row.findViewById(R.id.address),expected=row.findViewById(R.id.expected_status),attempts=row.findViewById(R.id.attempts);
         ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,kindLabels());adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);kind.setAdapter(adapter);kind.setSaveEnabled(false);kind.setSelection(kindIndex(initial));
         address.setSaveEnabled(false);expected.setSaveEnabled(false);attempts.setSaveEnabled(false);address.setText(addressText);expected.setText(expectedText);attempts.setText(attemptsText);
-        TextWatcher watcher=watcher();address.addTextChangedListener(watcher);expected.addTextChangedListener(watcher);attempts.addTextChangedListener(watcher);
+        TextWatcher addressWatcher=addressWatcher(),watcher=watcher();address.addTextChangedListener(addressWatcher);expected.addTextChangedListener(watcher);attempts.addTextChangedListener(watcher);
         boolean[] initialSelection={true};
-        kind.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int position,long id){updateRow(row,CheckKind.values()[position]);if(initialSelection[0]){initialSelection[0]=false;return;}inputMutated();}});
-        row.findViewById(R.id.remove).setOnClickListener(v->{if(targets.getChildCount()>1){targets.removeView(row);refreshRemoveDescriptions();inputMutated();}});
+        AdapterView.OnItemSelectedListener kindListener=new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int position,long id){updateRow(row,CheckKind.values()[position]);if(initialSelection[0]){initialSelection[0]=false;return;}inputMutated();}};
+        kind.setOnItemSelectedListener(kindListener);
+        Button remove=row.findViewById(R.id.remove);row.setTag(new TargetRowListeners(addressWatcher,watcher));
+        remove.setOnClickListener(v->{if(targets.getChildCount()>1){detachTargetRowListeners(row);targets.removeView(row);refreshRemoveDescriptions();inputMutated();}});
         targets.addView(row);updateRow(row,initial);refreshRemoveDescriptions();addTarget.setEnabled(targets.getChildCount()<MAX_TARGETS);
+    }
+    private void detachTargetRowListeners(View row){
+        Object tag=row.getTag();if(!(tag instanceof TargetRowListeners listeners))return;
+        ((EditText)row.findViewById(R.id.address)).removeTextChangedListener(listeners.address());
+        ((EditText)row.findViewById(R.id.expected_status)).removeTextChangedListener(listeners.fields());
+        ((EditText)row.findViewById(R.id.attempts)).removeTextChangedListener(listeners.fields());
+        ((Spinner)row.findViewById(R.id.kind)).setOnItemSelectedListener(null);
+        row.findViewById(R.id.remove).setOnClickListener(null);row.setTag(null);
     }
     private void updateRow(View row,CheckKind kind){
         EditText address=row.findViewById(R.id.address),expected=row.findViewById(R.id.expected_status),attempts=row.findViewById(R.id.attempts);address.setHint(addressHint(kind));
         int http=kind.supportsExpectedStatus()?View.VISIBLE:View.GONE;expected.setVisibility(http);row.findViewById(R.id.expected_status_label).setVisibility(http);
         int trace=kind==CheckKind.TRACEROUTE?View.VISIBLE:View.GONE;attempts.setVisibility(trace);row.findViewById(R.id.attempts_label).setVisibility(trace);refreshRemoveDescriptions();
     }
-    private void refreshRemoveDescriptions(){for(int i=0;i<targets.getChildCount();i++){View row=targets.getChildAt(i);Spinner spinner=row.findViewById(R.id.kind);EditText address=row.findViewById(R.id.address);String kind=spinner.getSelectedItem()==null?"":spinner.getSelectedItem().toString();row.findViewById(R.id.remove).setContentDescription(getString(R.string.remove_target,i+1,kind,address.getText().toString()));}}
+    private void refreshRemoveDescriptions(){for(int i=0;i<targets.getChildCount();i++){View row=targets.getChildAt(i);Spinner spinner=row.findViewById(R.id.kind);EditText address=row.findViewById(R.id.address);String kind=spinner.getSelectedItem()==null?"":spinner.getSelectedItem().toString(),presentation=targetAddressPresentation(address.getText());row.findViewById(R.id.remove).setContentDescription(presentation.isEmpty()?getString(R.string.remove_target_without_address,i+1,kind):getString(R.string.remove_target_with_address,i+1,kind,presentation));}}
+    private static String targetAddressPresentation(CharSequence raw){
+        String value=raw==null?"":raw.toString();
+        int scheme=value.indexOf("://");
+        if(scheme<0){
+            StringBuilder structural=new StringBuilder(value.length());
+            for(int offset=0;offset<value.length();){int codePoint=value.codePointAt(offset);offset+=Character.charCount(codePoint);if(!isAddressPresentationHazard(codePoint))structural.appendCodePoint(codePoint);}
+            if(structural.indexOf("://")>=0)return "";
+        }else{
+            int schemeStart=scheme;
+            while(schemeStart>0){int codePoint=value.codePointBefore(schemeStart);if(!isUriSchemeCodePoint(codePoint)&&!isAddressPresentationHazard(codePoint))break;schemeStart-=Character.charCount(codePoint);}
+            while(schemeStart<scheme){int codePoint=value.codePointAt(schemeStart);if(!isAddressPresentationHazard(codePoint))break;schemeStart+=Character.charCount(codePoint);}
+            for(int offset=schemeStart;offset<scheme;){int codePoint=value.codePointAt(offset);if(isAddressPresentationHazard(codePoint))return "";offset+=Character.charCount(codePoint);}
+            int authorityEnd=value.length();
+            for(char separator:new char[]{'/','?','#'}){int found=value.indexOf(separator,scheme+3);if(found>=0&&found<authorityEnd)authorityEnd=found;}
+            for(int offset=scheme+3;offset<authorityEnd;){int codePoint=value.codePointAt(offset);if(isAddressPresentationHazard(codePoint))return "";offset+=Character.charCount(codePoint);}
+            int at=value.lastIndexOf('@',authorityEnd-1);
+            if(at>=scheme+3)value=value.substring(0,scheme+3)+value.substring(at+1);
+        }
+        int suffix=value.length();for(char separator:new char[]{'?','#'}){int found=value.indexOf(separator);if(found>=0&&found<suffix)suffix=found;}value=value.substring(0,suffix).strip();
+        StringBuilder clean=new StringBuilder(value.length());
+        boolean previousSpace=false;
+        for(int offset=0;offset<value.length();){int codePoint=value.codePointAt(offset);offset+=Character.charCount(codePoint);boolean unsafe=isAddressPresentationHazard(codePoint)||Character.isWhitespace(codePoint);if(unsafe){if(!previousSpace)clean.append(' ');previousSpace=true;}else{clean.appendCodePoint(codePoint);previousSpace=false;}}
+        value=clean.toString().strip();
+        int count=value.codePointCount(0,value.length());
+        if(count>MAX_REMOVE_ADDRESS_CODE_POINTS){int end=value.offsetByCodePoints(0,MAX_REMOVE_ADDRESS_CODE_POINTS-1);value=value.substring(0,end)+"…";}
+        return value;
+    }
+    private static boolean isAddressPresentationHazard(int codePoint){return Character.isISOControl(codePoint)||Character.getType(codePoint)==Character.FORMAT;}
+    private static boolean isUriSchemeCodePoint(int codePoint){return codePoint>='a'&&codePoint<='z'||codePoint>='A'&&codePoint<='Z'||codePoint>='0'&&codePoint<='9'||codePoint=='+'||codePoint=='-'||codePoint=='.';}
     private List<String> kindLabels(){return List.of(getString(R.string.kind_dns),getString(R.string.kind_tcp),getString(R.string.kind_http),getString(R.string.kind_https),getString(R.string.kind_ssh),getString(R.string.kind_smtp),getString(R.string.kind_submission),getString(R.string.kind_smtps),getString(R.string.kind_imap),getString(R.string.kind_imaps),getString(R.string.kind_pop3),getString(R.string.kind_pop3s),getString(R.string.kind_traceroute));}
     private int addressHint(CheckKind kind){return switch(kind){case DNS->R.string.hint_dns;case TCP->R.string.hint_tcp;case HTTP->R.string.hint_http;case HTTPS->R.string.hint_https;case TRACEROUTE->R.string.hint_trace;default->R.string.hint_service;};}
     private static int kindIndex(CheckKind kind){return kind.ordinal();}
@@ -155,13 +241,13 @@ public final class MainActivity extends Activity {
         switch(state.phase()){
             case IDLE->status.setText(R.string.state_idle);
             case LOADING->{status.setText(R.string.state_loading);clearReady();status.requestFocus();}
-            case READY->{status.setText(R.string.state_ready);hideError();renderReady(state);report.requestFocus();}
+            case READY->renderReady(state);
             case ERROR->{status.setText(R.string.state_error);clearReady();showTransportError(state.error().orElseThrow());}
             case CANCELLED->{status.setText(R.string.state_cancelled);clearReady();status.requestFocus();}
         }
     }
     private void showTransportError(TransportException failure){
-        if(failure.kind()==TransportException.Kind.API){ApiError api=failure.apiError().orElseThrow();int res=switch(api.status()){case 401->R.string.error_401;case 422->R.string.error_422;case 429->R.string.error_429;case 503->R.string.error_503;case 500->R.string.error_500;default->0;};String message=res==0?getString(R.string.error_http,api.status()):getString(res);if(api.retryAt().isPresent())message+="\n"+getString(R.string.retry_after,api.retryAt().orElseThrow().toString());showError(message);return;}
+        if(failure.kind()==TransportException.Kind.API){showApiError(failure.apiError().orElseThrow());return;}
         int res=switch(failure.kind()){
             case NETWORK->R.string.error_network;
             case TIMEOUT->R.string.error_timeout_request;
@@ -171,6 +257,16 @@ public final class MainActivity extends Activity {
                     failure.capabilityMismatchReason().orElseThrow());
             case API,CANCELLED->throw new IllegalStateException("Unexpected error-state failure kind");
         };showError(getString(res));
+    }
+    private void showApiError(ApiError api){
+        ApiErrorPresentation.Entry presentation=ApiErrorPresentation.resolve(api);
+        retry.setVisibility(presentation.retryable()?View.VISIBLE:View.GONE);
+        String message=getString(presentation.messageResource());
+        if(presentation.retryAfterAllowed()&&api.retryAt().isPresent())
+            message+="\n"+getString(R.string.retry_after,api.retryAt().orElseThrow().toString());
+        error.setText(message);ViewCompat.setStateDescription(error,getString(R.string.accessibility_error_state));error.setVisibility(View.VISIBLE);
+        if(presentation.credentialFocus()&&bearer.getVisibility()==View.VISIBLE)bearer.requestFocus();
+        else error.requestFocus();
     }
     private static int capabilityErrorResource(CheckCapabilities.CapabilityMismatchException.Reason reason){
         return switch(reason){
@@ -183,22 +279,87 @@ public final class MainActivity extends Activity {
     }
     private void showError(String message){error.setText(message);ViewCompat.setStateDescription(error,getString(R.string.accessibility_error_state));error.setVisibility(View.VISIBLE);error.requestFocus();}
     private void hideError(){error.setVisibility(View.GONE);ViewCompat.setStateDescription(error,null);}
-    private void clearReady(){readyReport=null;readyRaw=null;if(rawWarningDialog!=null){rawWarningDialog.dismiss();rawWarningDialog=null;}rawReportShare.clear();results.removeAllViews();report.setVisibility(View.GONE);share.setEnabled(false);shareRaw.setEnabled(false);}
+    private void clearReady(){presentationGeneration++;presentationPhase=PresentationPhase.EMPTY;forgetInstalledCandidate();readyReport=null;readyRaw=null;pendingRawShare=null;if(rawWarningDialog!=null){rawWarningDialog.dismiss();rawWarningDialog=null;}retireRawShareAndCancelPreparation();results.removeAllViews();report.setVisibility(View.GONE);share.setEnabled(false);shareRaw.setEnabled(false);}
     private void renderReady(RequestState state){
-        String raw=state.rawJson().orElse(null);
-        readyRaw=state.shareEligible()&&raw!=null&&raw.getBytes(StandardCharsets.UTF_8).length<=ContractLimits.MAX_TRANSPORT_BYTES?new ReadyRaw(state.ownerId(),state.signature(),raw):null;
-        renderReport(state.report().orElseThrow());
+        final long generation=++presentationGeneration;
+        final PresentationOwner expected=new PresentationOwner(state.ownerId(),state.signature(),state.rawJson().orElseThrow(),state.report().orElseThrow());
+        presentationPhase=PresentationPhase.RENDERING;
+        final View candidate;
+        try{
+            AnalysisPresentation presentation=AnalysisPresentation.from(expected.report());
+            candidate=presentationRenderer.render(this,presentation,point->{});
+            if(candidate==null||candidate.getParent()!=null)throw new IllegalStateException("renderer must return one detached hierarchy");
+            presentationCommitter.checkpoint(CommitPoint.PRE_SWAP);
+        }catch(RuntimeException failure){failPresentationIfCurrent(generation,expected,null);return;}
+        if(!isCurrentReady(generation,expected)){discardCandidate(candidate);recoverCurrentInstalledHierarchy();return;}
+        try{
+            presentationCommitter.swap(results,candidate);
+        }catch(RuntimeException failure){failPresentationIfCurrent(generation,expected,candidate);return;}
+        if(!isCurrentReady(generation,expected)){discardCandidate(candidate);recoverCurrentInstalledHierarchy();return;}
+        if(!isExactInstalledHierarchy(candidate)){rollbackCandidateIfCurrent(generation,expected,candidate,true);return;}
+        installedCandidate=candidate;installedCandidateGeneration=generation;installedCandidateOwner=expected;
+        try{
+            publishStep(generation,expected,CommitPoint.REPORT_VISIBILITY,()->report.setVisibility(View.VISIBLE));
+            publishStep(generation,expected,CommitPoint.READY_STATUS,()->status.setText(R.string.state_ready));
+            publishStep(generation,expected,CommitPoint.FOCUS,()->report.requestFocus());
+            publishStep(generation,expected,CommitPoint.LIVE_ANNOUNCEMENT,()->status.announceForAccessibility(getString(R.string.state_ready)));
+            publishStep(generation,expected,CommitPoint.SHARE_ELIGIBILITY,()->{
+                readyReport=expected.report();
+                readyRaw=new ReadyRaw(expected.ownerId(),expected.signature(),expected.raw());
+                share.setEnabled(true);shareRaw.setEnabled(true);
+            });
+            if(!isCurrentReady(generation,expected))throw new StalePresentationException();
+            hideError();presentationPhase=PresentationPhase.RENDERED;
+        }catch(StalePresentationException stale){discardCandidate(candidate);recoverCurrentInstalledHierarchy();}
+        catch(RuntimeException failure){rollbackCandidateIfCurrent(generation,expected,candidate,true);}
     }
-    private void renderReport(Report value){readyReport=value;results.removeAllViews();for(AnalysisPresentation.Block block:AnalysisPresentation.from(value).blocks()){if(block.folded()){addFoldedBlock(block);continue;}TextView heading=new TextView(this);heading.setText(block.heading());heading.setTextColor(getColor(R.color.lime));heading.setTextSize(18);heading.setTypeface(null,android.graphics.Typeface.BOLD);ViewCompat.setAccessibilityHeading(heading,true);heading.setPadding(0,12,0,4);results.addView(heading);TextView body=new TextView(this);body.setText(block.body());body.setTextColor(getColor(R.color.ink));body.setTextSize(15);body.setPadding(0,0,0,12);results.addView(body);}report.setVisibility(View.VISIBLE);share.setEnabled(true);shareRaw.setEnabled(readyRaw!=null);}
-    private void addFoldedBlock(AnalysisPresentation.Block block){
+    private static View buildDetachedPresentation(MainActivity activity,AnalysisPresentation value,RenderCheckpoint checkpoint){
+        checkpoint.at(RenderPoint.BEFORE_FIRST_VIEW);
+        LinearLayout candidate=new LinearLayout(activity);candidate.setOrientation(LinearLayout.VERTICAL);
+        int index=0;
+        for(AnalysisPresentation.Block block:value.blocks()){
+            if(index++==1)checkpoint.at(RenderPoint.MID_BUILD);
+            if(block.folded()){activity.addFoldedBlock(candidate,block);continue;}
+            TextView heading=new TextView(activity);heading.setText(block.heading());heading.setTextColor(activity.getColor(R.color.lime));heading.setTextSize(18);heading.setTypeface(null,android.graphics.Typeface.BOLD);ViewCompat.setAccessibilityHeading(heading,true);heading.setPadding(0,12,0,4);candidate.addView(heading);
+            TextView body=new TextView(activity);body.setText(block.body());body.setTextColor(activity.getColor(R.color.ink));body.setTextSize(15);body.setPadding(0,0,0,12);candidate.addView(body);
+        }
+        return candidate;
+    }
+    private void addFoldedBlock(LinearLayout candidate,AnalysisPresentation.Block block){
         Button toggle=new Button(this);toggle.setId(R.id.raw_results_toggle);toggle.setText(R.string.raw_results_show);toggle.setAllCaps(false);toggle.setMinHeight(dp(48));toggle.setPadding(dp(12),dp(12),dp(12),dp(12));
         TextView body=new TextView(this);body.setId(R.id.raw_results_body);body.setText(block.body());body.setTextColor(getColor(R.color.ink));body.setTextSize(15);body.setPadding(0,dp(8),0,dp(12));body.setVisibility(View.GONE);
         ViewCompat.setStateDescription(toggle,getString(R.string.raw_results_collapsed));
         toggle.setOnClickListener(v->{boolean expand=body.getVisibility()!=View.VISIBLE;body.setVisibility(expand?View.VISIBLE:View.GONE);toggle.setText(expand?R.string.raw_results_hide:R.string.raw_results_show);ViewCompat.setStateDescription(toggle,getString(expand?R.string.raw_results_expanded:R.string.raw_results_collapsed));});
-        results.addView(toggle,new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,LinearLayout.LayoutParams.WRAP_CONTENT));results.addView(body);
+        candidate.addView(toggle,new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,LinearLayout.LayoutParams.WRAP_CONTENT));candidate.addView(body);
     }
+    private void publishStep(long generation,PresentationOwner expected,CommitPoint point,Runnable publication){if(!isCurrentReady(generation,expected))throw new StalePresentationException();presentationCommitter.checkpoint(point);if(!isCurrentReady(generation,expected))throw new StalePresentationException();publication.run();}
+    private boolean isCurrentReady(long generation,PresentationOwner expected){if(generation!=presentationGeneration)return false;RequestState current=session.state();return current.phase()==RequestState.Phase.READY&&current.ownerId()==expected.ownerId()&&current.signature().equals(expected.signature())&&current.rawJson().filter(expected.raw()::equals).isPresent()&&current.report().filter(value->value==expected.report()).isPresent();}
+    private void failPresentationIfCurrent(long generation,PresentationOwner expected,View candidate){if(!isCurrentReady(generation,expected)){discardCandidate(candidate);recoverCurrentInstalledHierarchy();return;}rollbackCandidateIfCurrent(generation,expected,candidate,true);}
+    private boolean isExactInstalledHierarchy(View candidate){return candidate.getParent()==results&&results.getChildCount()==1&&results.getChildAt(0)==candidate;}
+    private void forgetInstalledCandidate(){installedCandidate=null;installedCandidateGeneration=-1;installedCandidateOwner=null;}
+    private void recoverCurrentInstalledHierarchy(){
+        View current=installedCandidate;PresentationOwner expected=installedCandidateOwner;long generation=installedCandidateGeneration;
+        if(current==null||expected==null||!isCurrentReady(generation,expected))return;
+        if(current.getParent()!=null&&current.getParent()!=results)return;
+        try{
+            if(current.getParent()==null)results.addView(current);
+            for(int index=results.getChildCount()-1;index>=0;index--)if(results.getChildAt(index)!=current)results.removeViewAt(index);
+        }catch(RuntimeException ignored){}
+    }
+    private void rollbackCandidateIfCurrent(long generation,PresentationOwner expected,View candidate,boolean fixedError){
+        if(!isCurrentReady(generation,expected)||installedCandidate!=null&&(installedCandidate!=candidate||installedCandidateGeneration!=generation||installedCandidateOwner!=expected)){discardCandidate(candidate);recoverCurrentInstalledHierarchy();return;}
+        try{presentationCommitter.rollback(results);}catch(RuntimeException ignored){try{results.removeAllViews();}catch(RuntimeException ignoredAgain){}}
+        if(!isCurrentReady(generation,expected)){discardCandidate(candidate);recoverCurrentInstalledHierarchy();return;}
+        forgetInstalledCandidate();readyReport=null;readyRaw=null;
+        try{share.setEnabled(false);}catch(RuntimeException ignored){}try{shareRaw.setEnabled(false);}catch(RuntimeException ignored){}
+        try{report.setVisibility(View.GONE);}catch(RuntimeException ignored){}try{report.clearFocus();}catch(RuntimeException ignored){}
+        if(fixedError){presentationPhase=PresentationPhase.RENDER_ERROR;try{retry.setVisibility(View.VISIBLE);}catch(RuntimeException ignored){}try{status.setText(R.string.state_render_error);}catch(RuntimeException ignored){}try{error.setText(R.string.error_render_report);}catch(RuntimeException ignored){}try{error.setVisibility(View.VISIBLE);}catch(RuntimeException ignored){}try{ViewCompat.setStateDescription(error,getString(R.string.accessibility_error_state));}catch(RuntimeException ignored){}try{error.requestFocus();}catch(RuntimeException ignored){}}
+        else presentationPhase=PresentationPhase.EMPTY;
+    }
+    private static void discardCandidate(View candidate){if(candidate!=null&&candidate.getParent() instanceof android.view.ViewGroup parent)try{parent.removeView(candidate);}catch(RuntimeException ignored){}}
     private int dp(int value){return Math.round(value*getResources().getDisplayMetrics().density);}
-    void renderReadyForTest(String ignoredRaw,Report report){readyRaw=null;renderReport(report);}
+    PresentationPhase presentationPhaseForTests(){return presentationPhase;}
+    void renderReadyForTest(String ignoredRaw,Report value){View candidate=DEFAULT_PRESENTATION_RENDERER.render(this,AnalysisPresentation.from(value),point->{});results.removeAllViews();results.addView(candidate);readyReport=value;readyRaw=null;report.setVisibility(View.VISIBLE);share.setEnabled(true);}
     private void shareReadyReport(){if(readyReport==null)return;Intent send=new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT,getString(R.string.share_subject)).putExtra(Intent.EXTRA_TEXT,ReportMarkdownExporter.export(readyReport));startActivity(Intent.createChooser(send,getString(R.string.share_chooser)));}
     private void warnBeforeRawShare(){
         ReadyRaw candidate=readyRaw;if(candidate==null||!shareRaw.isEnabled())return;
@@ -211,16 +372,69 @@ public final class MainActivity extends Activity {
         ReadyRaw candidate=readyRaw;if(candidate==null)return;
         RequestState current=session.state();
         if(candidate.ownerId()!=warnedOwner||!candidate.signature().equals(warnedSignature)||current.phase()!=RequestState.Phase.READY||current.ownerId()!=candidate.ownerId()||!current.signature().equals(candidate.signature())||!current.rawJson().filter(candidate.json()::equals).isPresent())return;
-        try{
-            Uri stream=rawReportShare.writeConfirmed(candidate.json());
-            Intent send=new Intent(Intent.ACTION_SEND).setType("application/json").putExtra(Intent.EXTRA_STREAM,stream).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(send,getString(R.string.raw_share_chooser)));
-        }catch(IOException|IllegalArgumentException failure){showError(getString(R.string.raw_share_error));}
+        PendingRawShare request=new PendingRawShare(candidate.ownerId(),candidate.signature(),candidate.json());
+        RawShareRuntime.Admission admission=rawRuntime.prepare(retained.rawOwner,candidate.json());
+        if(admission==RawShareRuntime.Admission.ACCEPTED){pendingRawShare=request;shareRaw.setEnabled(false);status.setText(R.string.raw_share_state_cleaning);return;}
+        if(admission==RawShareRuntime.Admission.BUSY){status.setText(R.string.raw_share_busy);return;}
+        showRawShareFailure();
     }
+
+    private void renderRawShareState(RawShareRuntime.Snapshot snapshot){
+        if(!rawAttached||isFinishing()||isDestroyed())return;
+        switch(snapshot.phase()){
+            case CLEANING->{if(pendingRawShare!=null)status.setText(R.string.raw_share_state_cleaning);}
+            case PREPARING->{if(pendingRawShare!=null)status.setText(R.string.raw_share_state_preparing);}
+            case MATERIALIZED->{status.setText(R.string.raw_share_state_materialized);launchMaterializedRaw(snapshot);}
+            case GRANTED->status.setText(R.string.raw_share_state_granted);
+            case RETIRED->status.setText(R.string.raw_share_state_retired);
+            case DISPOSED->status.setText(R.string.raw_share_state_disposed);
+            case CLEANUP_FAILED->showRawShareFailure();
+            case IDLE->{
+                boolean failed=pendingRawShare!=null&&snapshot.failure()!=null;
+                pendingRawShare=null;
+                if(failed)showRawShareFailure();
+                else if(session.state().phase()==RequestState.Phase.READY)status.setText(R.string.state_ready);
+            }
+        }
+    }
+
+    private void launchMaterializedRaw(RawShareRuntime.Snapshot notified){
+        PendingRawShare request=pendingRawShare;if(request==null){rawRuntime.retire(retained.rawOwner);return;}
+        RequestState current=session.state();RawShareRuntime.Snapshot exact=rawRuntime.snapshot();
+        if(!rawAttached||current.phase()!=RequestState.Phase.READY||current.ownerId()!=request.ownerId()||!current.signature().equals(request.signature())||!current.rawJson().filter(request.json()::equals).isPresent()||exact.phase()!=RawShareRuntime.Phase.MATERIALIZED||exact.uri()==null||!exact.uri().equals(notified.uri())){
+            pendingRawShare=null;rawRuntime.retire(retained.rawOwner);return;
+        }
+        Uri stream=rawRuntime.grant(retained.rawOwner);RawShareRuntime.Snapshot granted=rawRuntime.snapshot();
+        if(stream==null||granted.phase()!=RawShareRuntime.Phase.GRANTED||!stream.equals(granted.uri())){pendingRawShare=null;rawRuntime.retire(retained.rawOwner);showRawShareFailure();return;}
+        try{
+            Intent send=new Intent(Intent.ACTION_SEND).setType("application/json").putExtra(Intent.EXTRA_STREAM,stream).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            chooserLauncher.launch(this,Intent.createChooser(send,getString(R.string.raw_share_chooser)));
+            pendingRawShare=null;status.setText(R.string.raw_share_state_granted);
+        }catch(ActivityNotFoundException|SecurityException failure){pendingRawShare=null;rawRuntime.retire(retained.rawOwner);showRawShareFailure();}
+        catch(RuntimeException failure){pendingRawShare=null;rawRuntime.retire(retained.rawOwner);showRawShareFailure();}
+    }
+
+    private void retireRawShareAndCancelPreparation(){
+        if(rawRuntime==null)return;
+        rawRuntime.retire(retained.rawOwner);
+        if(rawAttached){detachRawRuntime();attachRawRuntime();}
+    }
+    private void showRawShareFailure(){showError(getString(R.string.raw_share_error));}
 
     @Override protected void onSaveInstanceState(Bundle out){super.onSaveInstanceState(out);try{FormState form=collectForm();out.putString(KEY_API,bounded(form.apiBase()));out.putInt(KEY_TIMEOUT,form.timeoutMs());ArrayList<String> kinds=new ArrayList<>(),addresses=new ArrayList<>(),expected=new ArrayList<>(),attempts=new ArrayList<>();for(FormState.Target target:form.targets()){kinds.add(target.kind().wireValue());addresses.add(bounded(target.address()));expected.add(bounded(target.expectedStatus()));attempts.add(bounded(target.attempts()));}out.putStringArrayList(KEY_KINDS,kinds);out.putStringArrayList(KEY_ADDRESSES,addresses);out.putStringArrayList(KEY_EXPECTED,expected);out.putStringArrayList(KEY_ATTEMPTS,attempts);}catch(RuntimeException ignored){}}
     @Override public Object onRetainNonConfigurationInstance(){retainingSession=true;retained.bearer=bearer.getText().toString();retained.authEnabled=authEnabled.isChecked();return retained;}
-    @Override protected void onDestroy(){session.detach(owner);if(!retainingSession&&!isChangingConfigurations()){rawReportShare.clear();session.destroy();}super.onDestroy();}
+    @Override protected void onDestroy(){
+        for(int i=0;i<targets.getChildCount();i++)detachTargetRowListeners(targets.getChildAt(i));
+        session.detach(owner);
+        boolean finalDestroy=!retainingSession&&!isChangingConfigurations();
+        if(finalDestroy){pendingRawShare=null;rawRuntime.retire(retained.rawOwner);session.destroy();}
+        detachRawRuntime();
+        super.onDestroy();
+    }
     private record ReadyRaw(long ownerId,String signature,String json){}
-    private static final class Retained {final DiagnosticsSession session;final RawReportShare rawReportShare;String bearer="";boolean authEnabled;Retained(DiagnosticsSession session,RawReportShare rawReportShare){this.session=session;this.rawReportShare=rawReportShare;}}
+    private record PendingRawShare(long ownerId,String signature,String json){}
+    private record PresentationOwner(long ownerId,String signature,String raw,Report report){}
+    private record TargetRowListeners(TextWatcher address,TextWatcher fields){}
+    private static final class StalePresentationException extends RuntimeException {}
+    private static final class Retained {final DiagnosticsSession session;final Object rawOwner=new Object();String bearer="";boolean authEnabled;Retained(DiagnosticsSession session){this.session=session;}}
 }

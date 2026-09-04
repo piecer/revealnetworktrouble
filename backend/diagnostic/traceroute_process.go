@@ -20,6 +20,7 @@ type traceCommandOwner interface {
 type boundedTraceOutput struct {
 	mu              sync.Mutex
 	bytes           []byte
+	maxBytes        int
 	overflow        bool
 	cancel          func()
 	cancelTriggered atomic.Bool
@@ -27,7 +28,11 @@ type boundedTraceOutput struct {
 
 func (output *boundedTraceOutput) Write(p []byte) (int, error) {
 	output.mu.Lock()
-	remaining := MaxTraceOutputBytes - len(output.bytes)
+	limit := output.maxBytes
+	if limit <= 0 {
+		limit = MaxTraceOutputBytes
+	}
+	remaining := limit - len(output.bytes)
 	if remaining > 0 {
 		kept := min(remaining, len(p))
 		output.bytes = append(output.bytes, p[:kept]...)
@@ -51,6 +56,10 @@ func (output *boundedTraceOutput) result() ([]byte, bool) {
 }
 
 func runTraceCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return runTraceCommandWithOutputLimit(ctx, MaxTraceOutputBytes, name, args...)
+}
+
+func runTraceCommandWithOutputLimit(ctx context.Context, maxOutputBytes int, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, contextErr
@@ -64,7 +73,7 @@ func runTraceCommand(ctx context.Context, name string, args ...string) ([]byte, 
 	}
 	cmd.WaitDelay = traceCommandWaitDelay
 
-	output := &boundedTraceOutput{cancel: func() {
+	output := &boundedTraceOutput{maxBytes: maxOutputBytes, cancel: func() {
 		if cmd.Cancel != nil {
 			_ = cmd.Cancel()
 		}

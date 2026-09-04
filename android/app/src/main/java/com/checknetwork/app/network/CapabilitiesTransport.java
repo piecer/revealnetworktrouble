@@ -114,12 +114,7 @@ public final class CapabilitiesTransport {
                 if (status < 200 || status >= 300) {
                     String body = readErrorBody(opened, startedNanos);
                     remainingDeadlineOrThrow(startedNanos);
-                    String retryAfter;
-                    try {
-                        remainingDeadlineOrThrow(startedNanos);
-                        retryAfter = opened.getHeaderField("Retry-After");
-                    }
-                    catch (RuntimeException ignored) { retryAfter = null; }
+                    String retryAfter = RetryAfterHeaderExtractor.extract(opened);
                     remainingDeadlineOrThrow(startedNanos);
                     java.time.Instant now = clock.now();
                     remainingDeadlineOrThrow(startedNanos);

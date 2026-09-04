@@ -54,37 +54,38 @@ public final class DiagnosticsPresentationTest {
 
     @Test public void analysisPresentationKeepsIdentityCoverageFindingsEvidenceActionsLimitationsResultsTopologyOrder() {
         String json="{\"id\":\"report-7\",\"status\":\"degraded\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":12,"+
-                "\"summary\":{\"total\":1,\"passed\":0,\"failed\":1},\"results\":[{\"kind\":\"traceroute\",\"address\":\"example.test\",\"status\":\"degraded\",\"latency_ms\":12,\"started_at\":\"2026-09-02T00:00:00Z\",\"details\":{}}],"+
+                "\"summary\":{\"total\":1,\"passed\":0,\"failed\":1},\"results\":[{\"kind\":\"traceroute\",\"address\":\"example.test\",\"status\":\"degraded\",\"latency_ms\":12,\"started_at\":\"2026-09-02T00:00:00Z\",\"details\":{\"attempts_cancelled\":0,\"attempts_execution_failed\":0,\"attempts_failed\":0,\"attempts_reached\":1,\"attempts_timed_out\":0,\"attempts_total\":1,\"attempts_unreached\":0,\"topology\":{\"reached\":true,\"nodes\":[{\"id\":\"hop-1\",\"hop\":1,\"status\":\"healthy\"},{\"id\":\"hop-2\",\"hop\":2,\"status\":\"degraded\"}],\"links\":[{\"from\":\"hop-1\",\"to\":\"hop-2\",\"status\":\"degraded\",\"latency_delta_ms\":70}]}}}],"+
                 "\"analysis\":{\"verdict\":\"attention\",\"findings\":[{\"id\":\"f1\",\"code\":\"traceroute_path_degraded\",\"severity\":\"warning\",\"category\":\"routing\",\"title\":\"Path degraded\",\"summary\":\"Loss observed\",\"confidence\":\"direct\",\"evidence_ids\":[\"e1\"],\"action_ids\":[\"a1\"]}],"+
-                "\"evidence\":[{\"id\":\"e1\",\"result_index\":0,\"kind\":\"traceroute\",\"address\":\"example.test\",\"signal\":\"loss\",\"observed\":\"50%\",\"expected\":\"0%\",\"provenance\":\"result\"}],"+
+                "\"evidence\":[{\"id\":\"e1\",\"result_index\":0,\"kind\":\"traceroute\",\"address\":\"example.test\",\"signal\":\"traceroute.path_status\",\"observed\":\"degraded segment observed among 1 completed attempt\",\"expected\":\"producer prose withheld\",\"provenance\":\"details\"}],"+
                 "\"actions\":[{\"id\":\"a1\",\"title\":\"Retry path\",\"step\":\"Retry\",\"expected_result\":\"Stable\",\"escalation_condition\":\"Still lossy\"}],"+
-                "\"coverage\":{\"available\":[\"route\"],\"missing\":[\"asn\"],\"provider_failures\":[{\"code\":\"missing_details\",\"result_index\":0,\"kind\":\"traceroute\",\"signal\":\"asn\",\"reason\":\"provider failed\"}],\"limitations\":[]}}}";
+                "\"coverage\":{\"available\":[\"route\"],\"missing\":[\"topology\"],\"provider_failures\":[{\"code\":\"missing_details\",\"result_index\":0,\"kind\":\"traceroute\",\"signal\":\"trace_topology\",\"reason\":\"provider failed\"}],\"limitations\":[]}}}";
         Report report=ReportParser.parse(json);
         List<AnalysisPresentation.Block> blocks=AnalysisPresentation.from(report).blocks();
         assertEquals("Report", blocks.get(0).heading());
         String all=blocks.toString();
-        assertTrue(all.contains("report-7")); assertTrue(all.contains("Degraded")); assertTrue(all.contains("Attention"));
-        assertTrue(all.contains("Confidence: Direct")); assertFalse(all.toLowerCase().contains("probability"));
-        assertTrue(all.contains("Evidence")); assertTrue(all.contains("Actions")); assertTrue(all.contains("Provider failures"));
-        assertTrue(index(blocks,"Report") < index(blocks,"Findings"));
-        assertTrue(index(blocks,"Findings") < index(blocks,"Evidence"));
-        assertTrue(index(blocks,"Evidence") < index(blocks,"Actions"));
-        assertTrue(index(blocks,"Actions") < index(blocks,"Coverage and limitations"));
-        assertTrue(index(blocks,"Coverage and limitations") < index(blocks,"Result summary"));
+        assertFalse(all.contains("report-7")); assertTrue(all.contains("Degraded")); assertTrue(all.contains("Attention"));
+        assertTrue(all, all.contains("Direct bounded observation")); assertFalse(all.toLowerCase().contains("probability"));
+        assertTrue(all.contains("supporting_evidence")); assertTrue(all.contains("next_action"));
+        assertTrue(indexKey(blocks,"cause") < indexKey(blocks,"supporting_evidence"));
+        assertTrue(indexKey(blocks,"supporting_evidence") < indexKey(blocks,"expectation"));
+        assertTrue(indexKey(blocks,"expectation") < indexKey(blocks,"evidence_directness"));
+        assertTrue(indexKey(blocks,"evidence_directness") < indexKey(blocks,"coverage_limitation"));
+        assertTrue(indexKey(blocks,"coverage_limitation") < indexKey(blocks,"next_action"));
+        assertTrue(indexKey(blocks,"next_action") < index(blocks,"Result summary"));
     }
 
     @Test public void rawResultsArePlainBoundedCompleteAndAlwaysLast() {
-        String json="{\"id\":\"dns-report\",\"status\":\"degraded\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":9,"+
-                "\"summary\":{\"total\":1,\"passed\":0,\"failed\":1},\"results\":[{\"kind\":\"dns\",\"address\":\"example.test\",\"status\":\"degraded\",\"latency_ms\":9,\"started_at\":\"2026-09-02T00:00:00Z\",\"error_code\":\"partial_answer\",\"message\":\"one resolver failed\",\"details\":{\"answer\":\"203.0.113.8\",\"addresses\":[\"203.0.113.8\"]}}]}";
+        String json="{\"id\":\"http-report\",\"status\":\"unreachable\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":9,"+
+                "\"summary\":{\"total\":1,\"passed\":0,\"failed\":1},\"results\":[{\"kind\":\"http\",\"address\":\"https://example.test\",\"status\":\"unreachable\",\"latency_ms\":9,\"started_at\":\"2026-09-02T00:00:00Z\",\"error_code\":\"unexpected_status\",\"message\":\"unexpected HTTP status\",\"details\":{\"expected_status\":200,\"status_code\":503}}]}";
         List<AnalysisPresentation.Block> blocks=AnalysisPresentation.from(ReportParser.parse(json)).blocks();
 
         AnalysisPresentation.Block raw=blocks.get(blocks.size()-1);
         assertEquals("Raw results",raw.heading());assertTrue(raw.folded());
-        assertTrue(raw.body().contains("Kind: DNS"));assertTrue(raw.body().contains("Status: Degraded"));
-        assertTrue(raw.body().contains("Address: example.test"));assertTrue(raw.body().contains("Latency: 9 ms"));
-        assertTrue(raw.body().contains("Error: partial_answer"));assertTrue(raw.body().contains("Message: one resolver failed"));
-        assertTrue(raw.body().contains("Details:"));assertTrue(raw.body().contains("answer: 203.0.113.8"));
-        assertTrue(raw.body().contains("addresses: [203.0.113.8]"));
+        assertTrue(raw.body().contains("Kind: HTTP"));assertTrue(raw.body().contains("Status: Unreachable"));
+        assertTrue(raw.body().contains("Address: https://example.test"));assertTrue(raw.body().contains("Latency: 9 ms"));
+        assertTrue(raw.body().contains("Error: unexpected_status"));assertTrue(raw.body().contains("Message: unexpected HTTP status"));
+        assertTrue(raw.body().contains("Details:"));assertTrue(raw.body().contains("expected_status: 200"));
+        assertTrue(raw.body().contains("status_code: 503"));
         assertTrue(raw.body().length()<=AnalysisPresentation.MAX_RAW_RESULT_CHARS);
     }
 
@@ -101,10 +102,10 @@ public final class DiagnosticsPresentationTest {
         assertTrue("missing Go-produced fixture at " + fixture, Files.isRegularFile(fixture));
         Report report = ReportParser.parse(new String(Files.readAllBytes(fixture), StandardCharsets.UTF_8));
         List<AnalysisPresentation.Block> blocks = AnalysisPresentation.from(report).blocks();
-        assertTrue(index(blocks, "Coverage and limitations") < index(blocks, "Enrichment"));
+        assertTrue(indexKey(blocks, "coverage_limitation") < index(blocks, "Enrichment"));
         assertTrue(index(blocks, "Enrichment") < index(blocks, "Result summary"));
         String body = blocks.get(index(blocks, "Enrichment")).body();
-        assertTrue(body.contains("Source: none"));
+        assertTrue(body.contains("Source category: none"));
         assertTrue(body.contains("Cache hits: 0"));
         assertTrue(body.contains("Upstream fetches: 0"));
         assertTrue(body.contains("Maximum age: 0 ms"));
@@ -126,15 +127,19 @@ public final class DiagnosticsPresentationTest {
                 .put("title", "CAPACITY-TITLE-CANARY").put("summary", "CAPACITY-SUMMARY-CANARY");
         Report report = ReportParser.parse(hostile.toString());
         String rendered = AnalysisPresentation.from(report).blocks().toString();
-        assertTrue(rendered.contains("Checker execution failed"));
-        assertTrue(rendered.contains("Checker capacity was unavailable"));
-        assertTrue(rendered.contains("The checker stopped unexpectedly, so service health was not established."));
-        assertTrue(rendered.contains("The bounded checker supervisor had no execution slot, so service health was not established."));
+        assertTrue(rendered.contains("finding.checker_panic"));
+        assertTrue(rendered.contains("finding.checker_capacity_unavailable"));
+        assertTrue(rendered.contains("The checker stopped unexpectedly, so service behavior was not established."));
+        assertTrue(rendered.contains("Checker execution capacity was unavailable, so service behavior was not established."));
         assertFalse(rendered.contains("CANARY"));
     }
 
     private static int index(List<AnalysisPresentation.Block> blocks,String heading){
         for(int i=0;i<blocks.size();i++) if(blocks.get(i).heading().equals(heading)) return i;
+        return -1;
+    }
+    private static int indexKey(List<AnalysisPresentation.Block> blocks,String key){
+        for(int i=0;i<blocks.size();i++) if(blocks.get(i).key().equals(key)) return i;
         return -1;
     }
 }

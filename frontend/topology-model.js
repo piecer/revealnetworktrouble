@@ -74,7 +74,10 @@ function compactModel(compact, report) {
     serverStats: clonePlain(value.stats),
     serverResultStats: clonePlain(value.result_stats),
     serverGeo: clonePlain(value.geo),
-    serverTruncation: { truncated: value.truncated, reasons: [...value.truncation_reasons] },
+    serverTruncation: {
+      truncated: value.truncated,
+      reasons: Object.hasOwn(value, 'truncation_reasons') ? [...value.truncation_reasons] : []
+    },
     adapterTruncation: { truncated: false, reasons: [] }
   };
 }

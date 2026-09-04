@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,10 +34,27 @@ func newTestHandler() http.Handler {
 	return NewServer(diagnostic.NewRunner(successChecker{}), logger, "test", []string{"http://localhost:3000"})
 }
 
+func TestServerConstructorsRejectNilRunner(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if server, err := newServer(nil, logger, "test", ServerConfig{}); err == nil || server != nil {
+		t.Fatalf("newServer(nil)=(%v, %v), want nil error result", server, err)
+	}
+	if handler, err := NewServerWithConfig(nil, logger, "test", ServerConfig{}); err == nil || handler != nil {
+		t.Fatalf("NewServerWithConfig(nil)=(%v, %v), want nil error result", handler, err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewServer(nil) did not preserve its panic-on-invalid-configuration convention")
+		}
+	}()
+	_ = NewServer(nil, logger, "test", nil)
+}
+
 func TestWriteJSONReturnsStableErrorBeforeCommittingNonFiniteValue(t *testing.T) {
 	rec := httptest.NewRecorder()
+	writer := &responseWriter{raw: rec}
 
-	writeJSON(rec, http.StatusOK, map[string]any{"value": math.Inf(1)})
+	writer.writeTypedOK(map[string]any{"value": math.Inf(1)})
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
@@ -62,8 +80,9 @@ func (failingJSONValue) MarshalJSON() ([]byte, error) {
 
 func TestWriteJSONReturnsStableErrorBeforeCommittingFailingMarshaler(t *testing.T) {
 	rec := httptest.NewRecorder()
+	writer := &responseWriter{raw: rec}
 
-	writeJSON(rec, http.StatusOK, failingJSONValue{})
+	writer.writeTypedOK(failingJSONValue{})
 
 	want := "{\"error\":{\"code\":\"response_serialization_failed\",\"message\":\"report response could not be serialized\"}}\n"
 	if rec.Code != http.StatusInternalServerError || rec.Body.String() != want {
@@ -78,19 +97,19 @@ func TestWriteJSONKeepsOrdinarySuccessAndErrorResponsesValid(t *testing.T) {
 	tests := []struct {
 		name   string
 		status int
-		write  func(http.ResponseWriter)
+		write  func(*responseWriter)
 	}{
-		{name: "success", status: http.StatusOK, write: func(w http.ResponseWriter) {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		{name: "success", status: http.StatusOK, write: func(w *responseWriter) {
+			w.writeHealth(HealthResponse{Status: "ok"})
 		}},
-		{name: "error", status: http.StatusBadRequest, write: func(w http.ResponseWriter) {
-			writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON")
+		{name: "error", status: http.StatusBadRequest, write: func(w *responseWriter) {
+			w.writeAPIError(apiErrorInvalidJSON, apiErrorMetadata{})
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			tt.write(rec)
+			tt.write(&responseWriter{raw: rec})
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d", rec.Code)
 			}
@@ -925,9 +944,15 @@ func TestRejectsUnknownField(t *testing.T) {
 type countingChecker struct {
 	mu    sync.Mutex
 	calls int
+	kind  diagnostic.Kind
 }
 
-func (checker *countingChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }
+func (checker *countingChecker) Kind() diagnostic.Kind {
+	if checker.kind == "" {
+		return diagnostic.KindDNS
+	}
+	return checker.kind
+}
 func (checker *countingChecker) Check(_ context.Context, target diagnostic.Target) diagnostic.Result {
 	checker.mu.Lock()
 	checker.calls++
@@ -1202,7 +1227,7 @@ func TestReportWriteFailureDoesNotAppendSecondErrorAndReleasesCapacity(t *testin
 
 func TestWriteJSONPayloadReportsAttemptedActualAndShortWrite(t *testing.T) {
 	writer := &failingResponseWriter{header: make(http.Header), actualPerWrite: 3}
-	attempted, actual, err := writeJSONPayload(writer, http.StatusOK, []byte("12345"))
+	attempted, actual, err := (&responseWriter{raw: writer}).writePayload(http.StatusOK, []byte("12345"))
 	if attempted != 5 || actual != 3 || !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("attempted=%d actual=%d err=%v", attempted, actual, err)
 	}
@@ -1252,7 +1277,7 @@ func TestWriteJSONPayloadRecoversWriterPanicsAsFixedSentinel(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			attempted, actual, err := writeJSONPayload(test.writer, http.StatusCreated, []byte("123456789"))
+			attempted, actual, err := (&responseWriter{raw: test.writer}).writePayload(http.StatusCreated, []byte("123456789"))
 			if attempted != 9 || actual != 0 || !errors.Is(err, errResponseWritePanic) {
 				t.Fatalf("attempted=%d actual=%d err=%v", attempted, actual, err)
 			}
@@ -1422,6 +1447,138 @@ func publicServerConfig() ServerConfig {
 	}
 }
 
+type atomicDrainingProvider struct{ draining atomic.Bool }
+
+func (provider *atomicDrainingProvider) IsDraining() bool { return provider.draining.Load() }
+
+type drainReadProbe struct{ reads atomic.Int32 }
+
+func (body *drainReadProbe) Read([]byte) (int, error) {
+	body.reads.Add(1)
+	return 0, io.EOF
+}
+
+func (*drainReadProbe) Close() error { return nil }
+
+func TestPublicDrainingAdmissionRunsAfterAuthAndRateBeforeBodyAndReportCapacity(t *testing.T) {
+	provider := &atomicDrainingProvider{}
+	provider.draining.Store(true)
+	checker := &countingChecker{}
+	var logs bytes.Buffer
+	config := publicServerConfig()
+	config.RateLimitPerMinute = 1
+	config.BusyRetryAfter = 7 * time.Second
+	config.DrainingProvider = provider
+	server, err := newServer(diagnostic.NewRunner(checker), telemetryTestLogger(&logs), "test", config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newNetHTTPAdapter(server)
+
+	unauthorizedBody := &drainReadProbe{}
+	unauthorizedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/reports", unauthorizedBody)
+	unauthorizedRequest.RemoteAddr = "198.51.100.50:1"
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, unauthorizedRequest)
+	if unauthorized.Code != http.StatusUnauthorized || unauthorized.Body.String() != string(marshalAPIError(apiErrorUnauthorized)) {
+		t.Fatalf("unauthorized status=%d body=%q", unauthorized.Code, unauthorized.Body.String())
+	}
+	if unauthorizedBody.reads.Load() != 0 {
+		t.Fatalf("unauthorized draining body reads=%d", unauthorizedBody.reads.Load())
+	}
+
+	drainingBody := &drainReadProbe{}
+	drainingRequest := httptest.NewRequest(http.MethodPost, "/api/v1/reports", drainingBody)
+	drainingRequest.RemoteAddr = "198.51.100.50:2"
+	drainingRequest.Header.Set("Authorization", "Bearer test-secret")
+	draining := httptest.NewRecorder()
+	draining.Header().Add("Retry-After", "999")
+	handler.ServeHTTP(draining, drainingRequest)
+	if draining.Code != http.StatusServiceUnavailable || draining.Body.String() != string(marshalAPIError(apiErrorServerDraining)) {
+		t.Fatalf("draining status=%d body=%q", draining.Code, draining.Body.String())
+	}
+	if values := draining.Header().Values("Retry-After"); !reflect.DeepEqual(values, []string{"7"}) {
+		t.Fatalf("draining Retry-After=%q", values)
+	}
+	if drainingBody.reads.Load() != 0 || checker.callCount() != 0 || len(server.bodyDecodes) != 0 || len(server.admission) != 0 || len(server.responseWrites) != 0 {
+		t.Fatalf("draining reached work: reads=%d checker=%d body=%d reports=%d writes=%d",
+			drainingBody.reads.Load(), checker.callCount(), len(server.bodyDecodes), len(server.admission), len(server.responseWrites))
+	}
+
+	rateBody := &drainReadProbe{}
+	rateRequest := httptest.NewRequest(http.MethodPost, "/api/v1/reports", rateBody)
+	rateRequest.RemoteAddr = "198.51.100.50:3"
+	rateRequest.Header.Set("Authorization", "Bearer test-secret")
+	rateLimited := httptest.NewRecorder()
+	handler.ServeHTTP(rateLimited, rateRequest)
+	if rateLimited.Code != http.StatusTooManyRequests || rateLimited.Body.String() != string(marshalAPIError(apiErrorRateLimited)) {
+		t.Fatalf("rate status=%d body=%q", rateLimited.Code, rateLimited.Body.String())
+	}
+	if rateBody.reads.Load() != 0 {
+		t.Fatalf("rate-limited draining body reads=%d", rateBody.reads.Load())
+	}
+
+	records := decodeTelemetryLines(t, logs.Bytes())
+	if got := telemetryEventNames(records); !reflect.DeepEqual(got, []string{
+		"report_submit", "report_reject", "http_terminal",
+		"report_submit", "report_reject", "http_terminal",
+		"report_submit", "report_reject", "http_terminal",
+	}) {
+		t.Fatalf("draining events=%v", got)
+	}
+	for _, index := range []int{4, 5} {
+		if records[index]["outcome"] != string(TelemetryOutcomeServerDraining) {
+			t.Fatalf("draining telemetry[%d]=%v", index, records[index])
+		}
+	}
+}
+
+func TestAtomicDrainingTransitionsReturnOnlyClosedHealthOrDrainingResponses(t *testing.T) {
+	provider := &atomicDrainingProvider{}
+	config := ServerConfig{Mode: ModeTrustedLocal, DrainingProvider: provider, BusyRetryAfter: time.Second}
+	handler, err := NewServerWithConfig(diagnostic.NewRunner(successChecker{}), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 16
+	const requestsPerWorker = 100
+	var invalid atomic.Int32
+	var wait sync.WaitGroup
+	wait.Add(workers + 1)
+	go func() {
+		defer wait.Done()
+		for index := 0; index < workers*requestsPerWorker; index++ {
+			provider.draining.Store(index%2 == 0)
+		}
+	}()
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wait.Done()
+			for requestIndex := 0; requestIndex < requestsPerWorker; requestIndex++ {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+				switch recorder.Code {
+				case http.StatusOK:
+					if !strings.Contains(recorder.Body.String(), `"status":"ok"`) {
+						invalid.Add(1)
+					}
+				case http.StatusServiceUnavailable:
+					if recorder.Body.String() != string(marshalAPIError(apiErrorServerDraining)) || recorder.Header().Get("Retry-After") != "1" {
+						invalid.Add(1)
+					}
+				default:
+					invalid.Add(1)
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	if invalid.Load() != 0 {
+		t.Fatalf("invalid transition responses=%d", invalid.Load())
+	}
+}
+
 func TestPublicModeRequiresAPIKeyAndPositiveRateLimit(t *testing.T) {
 	runner := diagnostic.NewRunner(successChecker{})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -1527,6 +1684,32 @@ type policyBlockedChecker struct{}
 func (policyBlockedChecker) Kind() diagnostic.Kind { return diagnostic.KindDNS }
 func (policyBlockedChecker) Check(_ context.Context, target diagnostic.Target) diagnostic.Result {
 	return diagnostic.Result{Kind: target.Kind, Address: target.Address, Status: diagnostic.StatusUnreachable, ErrorCode: "network_policy_blocked", Message: "target is not allowed in public mode"}
+}
+
+func TestExpectedStatusInvalidRequestRejectsBeforeCheckerAndReportAdmission(t *testing.T) {
+	for _, test := range []struct {
+		kind diagnostic.Kind
+		body string
+	}{
+		{diagnostic.KindDNS, `{"targets":[{"kind":"dns","address":"EXPECTED_STATUS_CANARY.example","expected_status":200}]}`},
+		{diagnostic.KindHTTP, `{"targets":[{"kind":"http","address":"http://EXPECTED_STATUS_CANARY.example","expected_status":99}]}`},
+		{diagnostic.KindHTTPS, `{"targets":[{"kind":"https","address":"https://EXPECTED_STATUS_CANARY.example","expected_status":600}]}`},
+	} {
+		checker := &countingChecker{kind: test.kind}
+		server, err := newServer(diagnostic.NewRunner(checker), slog.New(slog.NewTextHandler(io.Discard, nil)), "test", ServerConfig{Mode: ModeTrustedLocal, MaxConcurrentReports: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := newNetHTTPAdapter(server)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/reports", strings.NewReader(test.body)))
+		if recorder.Code != http.StatusUnprocessableEntity || bodyAdmissionErrorCode(t, recorder) != "invalid_request" {
+			t.Errorf("body=%s status=%d response=%s", test.body, recorder.Code, recorder.Body.String())
+		}
+		if checker.callCount() != 0 || len(server.admission) != 0 {
+			t.Errorf("invalid request reached admission/checker: calls=%d admission=%d", checker.callCount(), len(server.admission))
+		}
+	}
 }
 
 func TestPublicPolicyBlockReturnsStablePrivacySafe422(t *testing.T) {

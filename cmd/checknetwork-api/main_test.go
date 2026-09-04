@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,17 @@ import (
 	"github.com/network-troubleshooting-company/checknetwork/backend/api"
 	"github.com/network-troubleshooting-company/checknetwork/backend/diagnostic"
 )
+
+func TestRunMainShutdownFailureReturnsNonzeroWithoutCompletionInfo(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	if exitCode := finishRun(0, errCheckerDrainIncomplete, logger); exitCode != 1 {
+		t.Fatalf("exit code=%d", exitCode)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("shutdown failure emitted completion INFO: %s", logs.String())
+	}
+}
 
 func TestServerStartedLogUsesExactBuildIdentity(t *testing.T) {
 	var output bytes.Buffer
@@ -168,10 +181,21 @@ func TestLoadRuntimeConfigAcceptsExplicitPublicMode(t *testing.T) {
 	}
 }
 
-func TestBuildCheckersAppliesPolicyOnlyInPublicMode(t *testing.T) {
+func TestBuildCheckersAppliesPolicyOnlyInPublicModeAndRetainsProbedTraceroute(t *testing.T) {
+	directory := t.TempDir()
+	executable := filepath.Join(directory, "traceroute")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf 'traceroute to 127.0.0.1 (127.0.0.1), 30 hops max\\n1  127.0.0.1  0.01 ms\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	capability, err := diagnostic.ProbeTracerouteCapability()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	publicPolicy := diagnostic.NewNetworkPolicy(nil, nil)
-	trusted := buildCheckers(api.ModeTrustedLocal, publicPolicy, nil)
-	public := buildCheckers(api.ModePublic, publicPolicy, nil)
+	trusted := buildCheckers(api.ModeTrustedLocal, publicPolicy, nil, capability)
+	public := buildCheckers(api.ModePublic, publicPolicy, nil, capability)
 	if len(trusted) != len(public) || len(public) != 13 {
 		t.Fatalf("trusted=%d public=%d", len(trusted), len(public))
 	}
@@ -203,6 +227,28 @@ func TestBuildCheckersAppliesPolicyOnlyInPublicMode(t *testing.T) {
 	}
 	for index, checker := range public {
 		assertPolicy(index, checker, publicPolicy)
+	}
+}
+
+func TestBuildCheckersRetainsUnavailableTracerouteForTruthfulReports(t *testing.T) {
+	checkers := buildCheckers(api.ModeTrustedLocal, nil, nil, nil)
+	if len(checkers) != 13 {
+		t.Fatalf("checker inventory=%d, want 13 including unavailable traceroute", len(checkers))
+	}
+	var traceroute diagnostic.Checker
+	for _, checker := range checkers {
+		if checker.Kind() == diagnostic.KindTraceroute {
+			traceroute = checker
+			break
+		}
+	}
+	if traceroute == nil {
+		t.Fatal("unavailable traceroute checker was omitted from inventory")
+	}
+	result := traceroute.Check(context.Background(), diagnostic.Target{Kind: diagnostic.KindTraceroute, Address: "example.test", Attempts: 1})
+	analysis := diagnostic.Analyze([]diagnostic.Result{result}, time.Now().UTC())
+	if result.ErrorCode != "traceroute_unavailable" || len(analysis.Findings) != 1 || analysis.Findings[0].Code != diagnostic.FindingTracerouteUnavailable || analysis.Verdict != diagnostic.VerdictInconclusive {
+		t.Fatalf("result=%+v analysis=%+v", result, analysis)
 	}
 }
 
@@ -289,8 +335,8 @@ func TestShutdownServiceUsesOneEndToEndDeadline(t *testing.T) {
 	operational.MarkAccepting()
 	err = shutdownService(context.Background(), timeout, operational, &shutdownRecorder{wait: true}, supervisor, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 	elapsed := time.Since(begin)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("shutdown error=%v", err)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, errCheckerDrainIncomplete) {
+		t.Fatalf("joined shutdown error=%v", err)
 	}
 	if elapsed >= timeout+35*time.Millisecond {
 		t.Fatalf("shutdown used more than one timeout window: elapsed=%v timeout=%v", elapsed, timeout)
@@ -300,12 +346,182 @@ func TestShutdownServiceUsesOneEndToEndDeadline(t *testing.T) {
 	}
 }
 
+func TestShutdownServiceDeadlineHandoffLogsOneAtomicCheckerSnapshot(t *testing.T) {
+	const workerCount = 128
+	supervisor, err := diagnostic.NewCheckerSupervisor(workerCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, workerCount)
+	checker := mainCheckerFunc{calls: &atomic.Int32{}, fn: func(ctx context.Context, target diagnostic.Target) diagnostic.Result {
+		started <- struct{}{}
+		<-ctx.Done()
+		return diagnostic.Result{Kind: target.Kind, Status: diagnostic.StatusHealthy}
+	}}
+	runner := newProductionRunner(supervisor, checker)
+	var runs sync.WaitGroup
+	runs.Add(workerCount)
+	for index := 0; index < workerCount; index++ {
+		go func(index int) {
+			defer runs.Done()
+			_, _ = runner.Run(context.Background(), diagnostic.Request{Targets: []diagnostic.Target{{
+				Kind:    diagnostic.KindDNS,
+				Address: "DEADLINE_HANDOFF_SECRET_" + strconv.Itoa(index),
+			}}})
+		}(index)
+	}
+	for index := 0; index < workerCount; index++ {
+		<-started
+	}
+
+	var logs bytes.Buffer
+	err = shutdownService(
+		context.Background(),
+		10*time.Millisecond,
+		newOperationalState(true),
+		&shutdownRecorder{wait: true},
+		supervisor,
+		slog.New(slog.NewJSONHandler(&logs, nil)),
+	)
+	runs.Wait()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error=%v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("terminal logs=%d: %s", len(lines), logs.String())
+	}
+	var record map[string]any
+	if decodeErr := json.Unmarshal([]byte(lines[0]), &record); decodeErr != nil {
+		t.Fatalf("shutdown log=%q: %v", logs.String(), decodeErr)
+	}
+	active, activeOK := record["active"].(float64)
+	stuck, stuckOK := record["stuck"].(float64)
+	remaining, remainingOK := record["remaining"].(float64)
+	if !activeOK || !stuckOK || !remainingOK {
+		t.Fatalf("shutdown counts missing: %v", record)
+	}
+	if remaining != active || stuck != active {
+		t.Fatalf("non-atomic shutdown counts: active=%v stuck=%v remaining=%v", active, stuck, remaining)
+	}
+	if strings.Contains(logs.String(), "DEADLINE_HANDOFF_SECRET_") {
+		t.Fatalf("shutdown log exposed target: %s", logs.String())
+	}
+}
+
+func TestShutdownServiceFailsWhenCheckerDrainIsIncompleteAfterHTTPDrain(t *testing.T) {
+	supervisor, err := diagnostic.NewCheckerSupervisor(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := newProductionRunner(supervisor, mainCheckerFunc{calls: &atomic.Int32{}, fn: func(context.Context, diagnostic.Target) diagnostic.Result {
+		close(started)
+		<-release
+		return diagnostic.Result{Kind: diagnostic.KindDNS, Status: diagnostic.StatusHealthy}
+	}})
+	runDone := make(chan struct{})
+	go func() {
+		_, _ = runner.Run(context.Background(), diagnostic.Request{Targets: []diagnostic.Target{{Kind: diagnostic.KindDNS, Address: "TARGET_SECRET_CANARY"}}})
+		close(runDone)
+	}()
+	<-started
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	operational := newOperationalState(true)
+	operational.MarkAccepting()
+	err = shutdownService(context.Background(), 5*time.Millisecond, operational, &shutdownRecorder{}, supervisor, logger)
+	if err == nil || err.Error() != "checker drain incomplete" {
+		t.Fatalf("shutdown error=%v", err)
+	}
+
+	var record map[string]any
+	if decodeErr := json.Unmarshal(logs.Bytes(), &record); decodeErr != nil {
+		t.Fatalf("shutdown log=%q: %v", logs.String(), decodeErr)
+	}
+	if record["level"] != "ERROR" || record["msg"] != "service shutdown failed" || record["reason"] != "shutdown_incomplete" {
+		t.Fatalf("shutdown record=%v", record)
+	}
+	if record["active"] != float64(1) || record["stuck"] != float64(1) || record["remaining"] != float64(1) {
+		t.Fatalf("shutdown counts=%v", record)
+	}
+	if strings.Contains(logs.String(), "TARGET_SECRET_CANARY") || strings.Contains(logs.String(), "service shutdown completed") {
+		t.Fatalf("shutdown log was unsafe or falsely successful: %s", logs.String())
+	}
+
+	close(release)
+	<-runDone
+	deadline := time.Now().Add(time.Second)
+	for supervisor.Snapshot().Active != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if snapshot := supervisor.Snapshot(); snapshot.Active != 0 || snapshot.Stuck != 0 {
+		t.Fatalf("released checker accounting=%+v", snapshot)
+	}
+}
+
+func TestShutdownServiceJoinsHTTPAndCheckerDrainFailures(t *testing.T) {
+	supervisor, err := diagnostic.NewCheckerSupervisor(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := newProductionRunner(supervisor, mainCheckerFunc{calls: &atomic.Int32{}, fn: func(context.Context, diagnostic.Target) diagnostic.Result {
+		close(started)
+		<-release
+		return diagnostic.Result{Kind: diagnostic.KindDNS, Status: diagnostic.StatusHealthy}
+	}})
+	runDone := make(chan struct{})
+	go func() {
+		_, _ = runner.Run(context.Background(), diagnostic.Request{Targets: []diagnostic.Target{{Kind: diagnostic.KindDNS, Address: "DUAL_TARGET_SECRET_CANARY"}}})
+		close(runDone)
+	}()
+	<-started
+	defer func() {
+		close(release)
+		<-runDone
+	}()
+
+	httpErr := errors.New("DUAL_HTTP_SECRET_CANARY")
+	var logs bytes.Buffer
+	err = shutdownService(
+		context.Background(),
+		5*time.Millisecond,
+		newOperationalState(true),
+		&shutdownRecorder{err: httpErr},
+		supervisor,
+		slog.New(slog.NewJSONHandler(&logs, nil)),
+	)
+	if !errors.Is(err, httpErr) || !errors.Is(err, errCheckerDrainIncomplete) {
+		t.Fatalf("joined shutdown error=%v", err)
+	}
+	var record map[string]any
+	if decodeErr := json.Unmarshal(logs.Bytes(), &record); decodeErr != nil {
+		t.Fatalf("shutdown log=%q: %v", logs.String(), decodeErr)
+	}
+	if record["level"] != "ERROR" || record["msg"] != "service shutdown failed" || record["reason"] != shutdownFailureReason {
+		t.Fatalf("shutdown record=%v", record)
+	}
+	if record["active"] != float64(1) || record["stuck"] != float64(1) || record["remaining"] != float64(1) {
+		t.Fatalf("shutdown counts=%v", record)
+	}
+	for _, forbidden := range []string{"DUAL_TARGET_SECRET_CANARY", "DUAL_HTTP_SECRET_CANARY", "service shutdown completed"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("shutdown log exposed %q or false completion: %s", forbidden, logs.String())
+		}
+	}
+}
+
 func TestShutdownServiceCleansSupervisorAfterHTTPShutdownFailure(t *testing.T) {
 	supervisor, err := diagnostic.NewCheckerSupervisor(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recorder := &shutdownRecorder{err: errors.New("http drain failed")}
+	recorder := &shutdownRecorder{err: errors.New("HTTP_ERROR_SECRET_CANARY")}
 	started := make(chan struct{})
 	var calls atomic.Int32
 	runner := newProductionRunner(supervisor, mainCheckerFunc{calls: &calls, fn: func(ctx context.Context, target diagnostic.Target) diagnostic.Result {
@@ -338,13 +554,22 @@ func TestShutdownServiceCleansSupervisorAfterHTTPShutdownFailure(t *testing.T) {
 	if snapshot := supervisor.Snapshot(); snapshot.Active != 0 || snapshot.Stuck != 0 {
 		t.Fatalf("supervisor not drained: %+v", snapshot)
 	}
-	logText := logs.String()
-	for _, field := range []string{`"active":0`, `"stuck":0`, `"remaining":0`} {
-		if !strings.Contains(logText, field) {
-			t.Fatalf("shutdown log missing %s: %s", field, logText)
-		}
+	var record map[string]any
+	if decodeErr := json.Unmarshal(logs.Bytes(), &record); decodeErr != nil {
+		t.Fatalf("shutdown log=%q: %v", logs.String(), decodeErr)
 	}
-	if strings.Contains(logText, "private-target.example") {
-		t.Fatalf("shutdown log exposed target: %s", logText)
+	if record["level"] != "ERROR" || record["msg"] != "service shutdown failed" || record["reason"] != "shutdown_incomplete" {
+		t.Fatalf("shutdown record=%v", record)
+	}
+	if record["active"] != float64(0) || record["stuck"] != float64(0) || record["remaining"] != float64(0) {
+		t.Fatalf("shutdown counts=%v", record)
+	}
+	if errors.Is(err, errCheckerDrainIncomplete) {
+		t.Fatalf("HTTP-only shutdown included checker failure: %v", err)
+	}
+	for _, forbidden := range []string{"private-target.example", "HTTP_ERROR_SECRET_CANARY", "service shutdown completed"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("shutdown log exposed %q or false completion: %s", forbidden, logs.String())
+		}
 	}
 }

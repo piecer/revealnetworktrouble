@@ -156,7 +156,7 @@ func CloneCompactTopology(source *CompactTopology) *CompactTopology {
 		return nil
 	}
 	clone := *source
-	clone.Nodes = append([]CompactTopologyNode(nil), source.Nodes...)
+	clone.Nodes = cloneSlicePreservingNil(source.Nodes)
 	for index := range clone.Nodes {
 		node := &clone.Nodes[index]
 		if node.LatencyMSAvg != nil {
@@ -166,14 +166,23 @@ func CloneCompactTopology(source *CompactTopology) *CompactTopology {
 		node.Geolocation = cloneGeoLocation(node.Geolocation)
 		node.ASN = cloneASNInfo(node.ASN)
 	}
-	clone.Links = append([]CompactTopologyLink(nil), source.Links...)
-	clone.Routes = append([]CompactTopologyRoute(nil), source.Routes...)
+	clone.Links = cloneSlicePreservingNil(source.Links)
+	clone.Routes = cloneSlicePreservingNil(source.Routes)
 	for index := range clone.Routes {
-		clone.Routes[index].NodeIDs = append([]string(nil), source.Routes[index].NodeIDs...)
+		clone.Routes[index].NodeIDs = cloneSlicePreservingNil(source.Routes[index].NodeIDs)
 	}
 	clone.ResultStats = append([]CompactResultStats(nil), source.ResultStats...)
 	clone.TruncationReasons = append([]CompactTruncationReason(nil), source.TruncationReasons...)
 	return &clone
+}
+
+func cloneSlicePreservingNil[T any](source []T) []T {
+	if source == nil {
+		return nil
+	}
+	clone := make([]T, len(source))
+	copy(clone, source)
+	return clone
 }
 
 type compactNodeObservation struct {
@@ -230,7 +239,7 @@ func BuildCompactTopology(report Report) *CompactTopology {
 // results used by analysis or legacy/full responses.
 func BuildCompactReport(report Report, topology *CompactTopology) Report {
 	compact := report
-	compact.Results = append([]Result(nil), report.Results...)
+	compact.Results = cloneSlicePreservingNil(report.Results)
 	for index := range compact.Results {
 		result := &compact.Results[index]
 		if result.Kind != KindTraceroute || result.Details == nil {
@@ -414,9 +423,10 @@ func buildCompactTopology(report Report, options compactBuildOptions) compactBui
 				aggregate.hopMax = max(aggregate.hopMax, raw.Hop)
 				aggregate.observations++
 				aggregate.publicIP = aggregate.publicIP || raw.PublicIP
-				if aggregate.geolocation == nil && aggregate.asn == nil && (raw.Geolocation != nil || raw.ASN != nil) {
+				asn := canonicalASNInfo(raw.ASN)
+				if aggregate.geolocation == nil && aggregate.asn == nil && (raw.Geolocation != nil || asn != nil) {
 					aggregate.geolocation = raw.Geolocation
-					aggregate.asn = raw.ASN
+					aggregate.asn = asn
 				}
 				if raw.Hop > 0 && raw.LatencyMS >= 0 && !math.IsNaN(raw.LatencyMS) && !math.IsInf(raw.LatencyMS, 0) {
 					aggregate.latencyTotal += raw.LatencyMS
@@ -558,7 +568,7 @@ func compactRoutes(report Report) []compactRawRoute {
 		}
 		sort.SliceStable(attempts, func(i, j int) bool { return attempts[i].Attempt < attempts[j].Attempt })
 		for occurrence, attempt := range attempts {
-			if attempt.Topology == nil {
+			if !traceAttemptEligible(attempt) {
 				continue
 			}
 			topologyNodes := append([]TopologyNode(nil), attempt.Topology.Nodes...)
@@ -703,11 +713,19 @@ func cloneGeoLocation(value *GeoLocation) *GeoLocation {
 }
 
 func cloneASNInfo(value *ASNInfo) *ASNInfo {
+	value = canonicalASNInfo(value)
 	if value == nil {
 		return nil
 	}
 	copy := *value
 	return &copy
+}
+
+func canonicalASNInfo(value *ASNInfo) *ASNInfo {
+	if value == nil || value.Number == 0 && value.Organization == "" {
+		return nil
+	}
+	return value
 }
 
 func compactNonSelfEdgeCount(edges []compactEdgeKey, prefix int) int {

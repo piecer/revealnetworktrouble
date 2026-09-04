@@ -8,12 +8,28 @@ const markup = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const started = '2026-09-01T12:00:00Z';
 const result = (overrides = {}) => ({ kind: 'dns', address: 'example.test', status: 'healthy', latency_ms: 4, started_at: started, details: {}, ...overrides });
 const report = (id, overrides = {}) => ({ id, status: 'healthy', started_at: started, duration_ms: 10, summary: { total: 1, passed: 1, failed: 0 }, results: [result()], ...overrides });
+const compactTraceResult = (address, {
+  attemptsTotal = 1, attemptsReached = attemptsTotal, attemptsUnreached = 0,
+  status = 'healthy', errorCode
+} = {}) => result({
+  kind: 'traceroute', address, status,
+  ...(errorCode ? { error_code: errorCode } : {}),
+  details: {
+    attempts_total: attemptsTotal,
+    attempts_reached: attemptsReached,
+    attempts_failed: attemptsTotal - attemptsReached,
+    attempts_unreached: attemptsUnreached,
+    attempts_execution_failed: 0,
+    attempts_timed_out: 0,
+    attempts_cancelled: 0
+  }
+});
 const compactTopology = (overrides = {}) => ({
   schema: 'compact-v1', selection: 'fair-complete-prefix-v1',
   limits: { nodes: 500, links: 1000, max_response_bytes_exclusive: 1048576, max_geo_bundle_bytes: 4096 },
   nodes: [
     { id: 'n1', kind: 'local', address: 'local', status: 'healthy', hop_min: 0, hop_max: 0, observations: 1 },
-    { id: 'n2', kind: 'ip', address: '192.0.2.1', status: 'healthy', hop_min: 1, hop_max: 1, observations: 1, public_ip: true, geolocation: { city: 'Seoul', region: '', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 } }
+    { id: 'n2', kind: 'ip', address: '192.0.2.1', status: 'healthy', hop_min: 1, hop_max: 1, observations: 1, public_ip: true, geolocation: { city: 'Seoul', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 } }
   ],
   links: [{ from: 'n1', to: 'n2', status: 'healthy', observations: 1 }],
   routes: [{ result_index: 0, attempt: 1, status: 'healthy', reached: true, complete: true, node_ids: ['n1', 'n2'] }],
@@ -24,14 +40,14 @@ const compactTopology = (overrides = {}) => ({
   },
   result_stats: [{ result_index: 0, routes: { total: 1, displayed: 1, complete: 1, partial: 0, omitted: 0 }, node_observations: { total: 2, displayed: 2, omitted: 0 }, link_observations: { total: 1, displayed: 1, omitted: 0 } }],
   geo: { eligible: 1, available: 1, included: 1, omitted: 0, unavailable: 0 },
-  truncated: false, truncation_reasons: [], ...overrides
+  truncated: false, ...overrides
 });
 const fullAnalysis = (value = 'safe') => ({
   verdict: 'attention',
   findings: [{ id: 'f1', code: 'dns_resolution_failed', severity: 'critical', category: 'name_resolution', title: value, summary: 'No answer', confidence: 'direct', evidence_ids: ['e1'], action_ids: ['a1'] }],
   evidence: [{ id: 'e1', result_index: 0, kind: 'dns', address: 'example.test', signal: 'error_code', observed: value, expected: 'answer', provenance: 'result' }],
   actions: [{ id: 'a1', title: 'Check DNS', step: value, expected_result: 'answer', escalation_condition: 'still fails' }],
-  coverage: { available: ['status'], missing: ['packet loss'], provider_failures: [], limitations: [] }
+  coverage: { available: ['results[0].status'], missing: ['results[0].details'], provider_failures: [], limitations: [] }
 });
 const response = (body, status = 200, headers = {}) => ({ ok: status >= 200 && status < 300, status, headers: { get: n => headers[n] ?? null }, text: async () => body });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -53,11 +69,299 @@ function labelRows(count, offset = 0) {
 }
 function drain(queue) { while (queue.length) queue.shift()(); }
 
+const credentialBase = 'http://localhost:9090';
+const credentialKey = base => `checknetwork.bearer.v1:${encodeURIComponent(base)}`;
+function installCredentialStorageFaults(win, { initial = [], steps = [] } = {}) {
+  const storage = win.sessionStorage;
+  const prototype = win.Storage.prototype;
+  const originals = Object.fromEntries(['getItem', 'setItem', 'removeItem'].map(name => [name, prototype[name]]));
+  const values = new Map(initial);
+  const calls = [];
+  function invoke(method, args, normal) {
+    if (this !== storage) return originals[method].apply(this, args);
+    const step = steps[calls.length];
+    calls.push({ method, key: args[0] });
+    if (step) assert.equal(method, step.method, `storage operation ${calls.length}`);
+    if (step?.throw) throw new Error('injected storage failure');
+    if (step?.mismatch) return step.value;
+    if (step?.noop) return undefined;
+    return normal();
+  };
+  prototype.getItem = function (key) { return invoke.call(this, 'getItem', [key], () => values.get(key) ?? null); };
+  prototype.setItem = function (key, value) { return invoke.call(this, 'setItem', [key, value], () => { values.set(key, String(value)); }); };
+  prototype.removeItem = function (key) { return invoke.call(this, 'removeItem', [key], () => { values.delete(key); }); };
+  return { values, calls };
+}
+
+test('credential transaction rejects blank Apply without storage mutation or lane invalidation', async () => {
+  let aborts = 0; let faults;
+  const { document, app } = setup((_url, init) => new Promise((_, reject) => {
+    init.signal.addEventListener('abort', () => {
+      aborts++;
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    });
+  }), { configureWindow(win) { faults = installCredentialStorageFaults(win); } });
+  const pending = app.start('diagnostics'); await flush();
+  const signature = app.getState().diagnostics.inputSignature;
+  document.querySelector('#bearer-token').value = '   ';
+  document.querySelector('#apply-bearer').click();
+  assert.deepEqual(faults.calls, []);
+  assert.equal(aborts, 0);
+  assert.equal(app.getState().diagnostics.inputSignature, signature);
+  assert.equal(app.getState().diagnostics.phase, 'loading');
+  assert.equal(document.querySelector('#bearer-token').value, '   ');
+  assert.match(document.querySelector('#credential-status').textContent, /required|입력|비어/i);
+  app.cancel('diagnostics'); await pending;
+});
+
+test('credential transaction commits Apply and explicit Clear only after exact readback', async () => {
+  let faults; const requests = [];
+  const key = credentialKey(credentialBase);
+  const { document, app } = setup(async (_url, init) => {
+    requests.push(init);
+    return response(JSON.stringify(report(`credential-${requests.length}`)));
+  }, { configureWindow(win) {
+    faults = installCredentialStorageFaults(win, { steps: [
+      { method: 'getItem' }, { method: 'setItem' }, { method: 'getItem' }, { method: 'getItem' },
+      { method: 'getItem' }, { method: 'removeItem' }, { method: 'getItem' }, { method: 'getItem' }
+    ] });
+  } });
+  document.querySelector('#public-auth-enabled').checked = true;
+  document.querySelector('#bearer-token').value = 'transaction-secret';
+  document.querySelector('#apply-bearer').click();
+  assert.equal(faults.values.get(key), 'transaction-secret');
+  assert.equal(document.querySelector('#bearer-token').value, '');
+  assert.match(document.querySelector('#credential-status').textContent, /설정|configured/i);
+  await app.start('diagnostics');
+  const appliedSignature = app.getState().diagnostics.inputSignature;
+  assert.equal(requests[0].headers.Authorization, 'Bearer transaction-secret');
+
+  document.querySelector('#bearer-token').value = 'must-not-be-written';
+  document.querySelector('#clear-bearer').click();
+  assert.equal(faults.values.has(key), false);
+  assert.equal(document.querySelector('#bearer-token').value, '');
+  assert.match(document.querySelector('#credential-status').textContent, /삭제|removed|cleared/i);
+  await app.start('diagnostics');
+  assert.notEqual(app.getState().diagnostics.inputSignature, appliedSignature);
+  assert.equal(Object.hasOwn(requests[1].headers, 'Authorization'), false);
+  assert.deepEqual(faults.calls.map(call => call.method), [
+    'getItem', 'setItem', 'getItem', 'getItem',
+    'getItem', 'removeItem', 'getItem', 'getItem'
+  ]);
+  assert.doesNotMatch(document.body.textContent, /transaction-secret|must-not-be-written/);
+});
+
+test('credential transaction storage fault matrix distinguishes preserved from indeterminate state', async t => {
+  const previous = 'previous-secret';
+  const requested = 'requested-secret';
+  const key = credentialKey(credentialBase);
+  const preservedMessage = 'Credential 업데이트에 실패했습니다. 이전 credential은 변경되지 않았습니다.';
+  const reconciliationMessage = 'Credential 상태를 확인할 수 없습니다. 인증 요청 전에 credential을 다시 적용하거나 삭제해 주세요.';
+  const cases = [
+    { name: 'Apply initial read throws', action: 'apply', steps: [{ method: 'getItem', throw: true }], methods: ['getItem'], indeterminate: false },
+    { name: 'Clear initial read throws', action: 'clear', steps: [{ method: 'getItem', throw: true }], methods: ['getItem'], indeterminate: false },
+    { name: 'Apply set throws', action: 'apply', steps: [{ method: 'getItem' }, { method: 'setItem', throw: true }], methods: ['getItem', 'setItem'], indeterminate: false },
+    { name: 'Clear remove throws', action: 'clear', steps: [{ method: 'getItem' }, { method: 'removeItem', throw: true }], methods: ['getItem', 'removeItem'], indeterminate: false },
+    { name: 'Apply readback throws and rollback verifies', action: 'apply', steps: [{ method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true }, { method: 'setItem' }, { method: 'getItem' }], indeterminate: false },
+    { name: 'Clear readback mismatches and rollback verifies', action: 'clear', steps: [{ method: 'getItem' }, { method: 'removeItem' }, { method: 'getItem', mismatch: true, value: 'phantom' }, { method: 'setItem' }, { method: 'getItem' }], indeterminate: false },
+    { name: 'Apply silent set mismatch rolls back previous value', action: 'apply', steps: [{ method: 'getItem' }, { method: 'setItem', noop: true }, { method: 'getItem' }, { method: 'setItem' }, { method: 'getItem' }], indeterminate: false },
+    { name: 'Clear silent remove mismatch rolls back previous value', action: 'clear', steps: [{ method: 'getItem' }, { method: 'removeItem', noop: true }, { method: 'getItem' }, { method: 'setItem' }, { method: 'getItem' }], indeterminate: false },
+    { name: 'Apply with no previous value rolls back by removing', action: 'apply', previousNull: true, steps: [{ method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true }, { method: 'removeItem' }, { method: 'getItem' }], indeterminate: false },
+    { name: 'Apply rollback set throws', action: 'apply', steps: [{ method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true }, { method: 'setItem', throw: true }, { method: 'getItem' }], indeterminate: true },
+    { name: 'Apply rollback remove throws with no previous value', action: 'apply', previousNull: true, steps: [{ method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true }, { method: 'removeItem', throw: true }, { method: 'getItem' }], indeterminate: true },
+    { name: 'Clear rollback set throws', action: 'clear', steps: [{ method: 'getItem' }, { method: 'removeItem' }, { method: 'getItem', throw: true }, { method: 'setItem', throw: true }, { method: 'getItem' }], indeterminate: true },
+    { name: 'Apply rollback read throws', action: 'apply', steps: [{ method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true }, { method: 'setItem' }, { method: 'getItem', throw: true }], indeterminate: true },
+    { name: 'Clear rollback read mismatches', action: 'clear', steps: [{ method: 'getItem' }, { method: 'removeItem' }, { method: 'getItem', throw: true }, { method: 'setItem' }, { method: 'getItem', mismatch: true, value: 'phantom' }], indeterminate: true }
+  ];
+  for (const fixture of cases) await t.test(fixture.name, async () => {
+    let faults; let fetches = 0;
+    const { document, app } = setup(async () => {
+      fetches++;
+      return response(JSON.stringify(report(`fault-${fetches}`)));
+    }, { configureWindow(win) {
+      faults = installCredentialStorageFaults(win, { initial: fixture.previousNull ? [] : [[key, previous]], steps: fixture.steps });
+    } });
+    await app.start('diagnostics');
+    const laneBefore = app.getState().diagnostics;
+    document.querySelector('#public-auth-enabled').checked = true;
+    document.querySelector('#bearer-token').value = requested;
+    document.querySelector(fixture.action === 'clear' ? '#clear-bearer' : '#apply-bearer').click();
+
+    assert.equal(document.querySelector('#bearer-token').value, requested, fixture.name);
+    assert.deepEqual(faults.calls.map(call => call.method), fixture.methods ?? fixture.steps.map(step => step.method), fixture.name);
+    assert.equal(document.querySelector('#credential-status').textContent, fixture.indeterminate ? reconciliationMessage : preservedMessage, fixture.name);
+    assert.doesNotMatch(document.body.textContent, /previous-secret|requested-secret|phantom/, fixture.name);
+    if (!fixture.indeterminate) {
+      assert.strictEqual(app.getState().diagnostics, laneBefore, fixture.name);
+      assert.equal(faults.values.get(key) ?? null, fixture.previousNull ? null : previous, fixture.name);
+      return;
+    }
+    assert.equal(app.getState().diagnostics.phase, 'idle', fixture.name);
+    assert.notStrictEqual(app.getState().diagnostics, laneBefore, fixture.name);
+    const callsBeforeBlockedRequest = faults.calls.length;
+    await app.start('diagnostics');
+    assert.equal(fetches, 1, fixture.name);
+    assert.equal(faults.calls.length, callsBeforeBlockedRequest, fixture.name);
+    assert.equal(app.getState().diagnostics.phase, 'error', fixture.name);
+    assert.equal(app.getState().diagnostics.error.code, 'credential_indeterminate', fixture.name);
+    assert.equal(app.getState().diagnostics.error.message, reconciliationMessage, fixture.name);
+    await app.start('topology');
+    assert.equal(fetches, 1, `${fixture.name}: topology fetch`);
+    assert.equal(faults.calls.length, callsBeforeBlockedRequest, `${fixture.name}: topology storage read`);
+    assert.equal(app.getState().topology.phase, 'error', fixture.name);
+    assert.equal(app.getState().topology.error.code, 'credential_indeterminate', fixture.name);
+  });
+});
+
+test('credential indeterminate invalidation survives cleanup throws and rejects both stale lane owners', async () => {
+  const waits = { diagnostics: deferred(), topology: deferred() }; const pending = []; const aborts = { diagnostics: 0, topology: 0 };
+  let faults;
+  const { document, app } = setup((_url, init) => {
+    const purpose = pending.length === 0 ? 'diagnostics' : 'topology';
+    pending.push(purpose);
+    init.signal.addEventListener('abort', () => { aborts[purpose]++; });
+    return waits[purpose].promise;
+  }, { configureWindow(win) {
+    faults = installCredentialStorageFaults(win, { initial: [[credentialKey(credentialBase), 'old']], steps: [
+      { method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true },
+      { method: 'setItem', throw: true }, { method: 'getItem' }
+    ] });
+    const abort = win.AbortController.prototype.abort;
+    win.AbortController.prototype.abort = function (reason) {
+      const result = abort.call(this, reason);
+      if (reason === 'input-change') throw new Error('injected abort cleanup failure');
+      return result;
+    };
+  } });
+  const diagnostics = app.start('diagnostics');
+  const topology = app.start('topology');
+  await flush();
+  const signatures = {
+    diagnostics: app.getState().diagnostics.inputSignature,
+    topology: app.getState().topology.inputSignature
+  };
+  document.querySelector('#bearer-token').value = 'new-secret';
+  document.querySelector('#apply-bearer').click();
+
+  assert.deepEqual(aborts, { diagnostics: 1, topology: 1 });
+  for (const purpose of ['diagnostics', 'topology']) {
+    assert.equal(app.getState()[purpose].phase, 'idle', purpose);
+    assert.equal(app.getState()[purpose].active, null, purpose);
+    assert.notEqual(app.getState()[purpose].inputSignature, signatures[purpose], purpose);
+  }
+  waits.diagnostics.resolve(response(JSON.stringify(report('stale-diagnostics'))));
+  waits.topology.resolve(response(JSON.stringify(report('stale-topology'))));
+  await Promise.all([diagnostics, topology]); await flush();
+  assert.doesNotMatch(document.body.textContent, /stale-diagnostics|stale-topology/);
+  assert.equal(document.querySelector('#bearer-token').value, 'new-secret');
+  assert.equal(faults.calls.length, 5);
+});
+
+test('explicit Apply and Clear each recover an indeterminate base only after a fresh verified transaction', async t => {
+  for (const recovery of ['Apply', 'Clear']) await t.test(recovery, async () => {
+    const key = credentialKey(credentialBase); let faults; const requests = [];
+    const recoverySteps = recovery === 'Apply'
+      ? [{ method: 'getItem' }, { method: 'setItem' }, { method: 'getItem' }, { method: 'getItem' }]
+      : [{ method: 'getItem' }, { method: 'removeItem' }, { method: 'getItem' }, { method: 'getItem' }];
+    const { document, app } = setup(async (_url, init) => {
+      requests.push(init);
+      return response(JSON.stringify(report(`recovered-${recovery}`)));
+    }, { configureWindow(win) {
+      faults = installCredentialStorageFaults(win, { initial: [[key, 'old-secret']], steps: [
+        { method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true },
+        { method: 'setItem', throw: true }, { method: 'getItem' }, ...recoverySteps
+      ] });
+    } });
+    document.querySelector('#public-auth-enabled').checked = true;
+    document.querySelector('#bearer-token').value = 'failed-secret';
+    document.querySelector('#apply-bearer').click();
+    const indeterminateSignature = app.getState().diagnostics.inputSignature;
+    assert.match(document.querySelector('#credential-status').textContent, /확인할 수 없습니다|reconcil/i);
+    assert.doesNotMatch(document.querySelector('#credential-status').textContent, /이전.*변경되지|previous.*unchanged/i);
+    await app.start('diagnostics');
+    assert.equal(requests.length, 0, recovery);
+
+    document.querySelector('#bearer-token').value = 'recovery-secret';
+    document.querySelector(recovery === 'Apply' ? '#apply-bearer' : '#clear-bearer').click();
+    assert.equal(document.querySelector('#bearer-token').value, '', recovery);
+    assert.notEqual(app.getState().diagnostics.inputSignature, indeterminateSignature, recovery);
+    await app.start('diagnostics');
+    assert.equal(requests.length, 1, recovery);
+    if (recovery === 'Apply') {
+      assert.equal(requests[0].headers.Authorization, 'Bearer recovery-secret');
+      assert.equal(faults.values.get(key), 'recovery-secret');
+    } else {
+      assert.equal(Object.hasOwn(requests[0].headers, 'Authorization'), false);
+      assert.equal(faults.values.has(key), false);
+    }
+    assert.equal(faults.calls.length, 9, recovery);
+  });
+});
+
+test('credential updates invalidate only lanes owned by the same canonical API base', async () => {
+  const wait = deferred(); let aborts = 0; let faults;
+  const otherBase = 'https://other.example.test/api';
+  const { document, app } = setup((_url, init) => {
+    init.signal.addEventListener('abort', () => { aborts++; });
+    return wait.promise;
+  }, { configureWindow(win) {
+    faults = installCredentialStorageFaults(win, { steps: [
+      { method: 'getItem' }, { method: 'setItem' }, { method: 'getItem' }
+    ] });
+  } });
+  const pending = app.start('diagnostics'); await flush();
+  const laneBefore = app.getState().diagnostics;
+  document.querySelector('#api-base-url').value = `${otherBase}/`;
+  document.querySelector('#bearer-token').value = 'other-base-secret';
+  document.querySelector('#apply-bearer').click();
+
+  assert.equal(aborts, 0);
+  assert.strictEqual(app.getState().diagnostics, laneBefore);
+  assert.equal(app.getState().diagnostics.phase, 'loading');
+  assert.equal(faults.values.get(credentialKey(otherBase)), 'other-base-secret');
+  wait.resolve(response(JSON.stringify(report('original-base-owner'))));
+  await pending;
+  assert.equal(app.getState().diagnostics.phase, 'ready');
+  assert.equal(app.getState().diagnostics.result.report.id, 'original-base-owner');
+  assert.doesNotMatch(document.body.textContent, /original-base-owner/);
+});
+
+test('credential indeterminate state is isolated when the canonical API base changes', async () => {
+  const otherBase = 'https://other.example.test/api'; let faults; const requests = [];
+  const { dom, document, app } = setup(async (url, init) => {
+    requests.push({ url, init });
+    return response(JSON.stringify(report('other-base')));
+  }, { configureWindow(win) {
+    faults = installCredentialStorageFaults(win, { initial: [[credentialKey(credentialBase), 'old-secret']], steps: [
+      { method: 'getItem' }, { method: 'setItem' }, { method: 'getItem', throw: true },
+      { method: 'setItem', throw: true }, { method: 'getItem' }, { method: 'getItem' }
+    ] });
+  } });
+  document.querySelector('#public-auth-enabled').checked = true;
+  document.querySelector('#bearer-token').value = 'failed-secret';
+  document.querySelector('#apply-bearer').click();
+
+  document.querySelector('#api-base-url').value = `${otherBase}/`;
+  document.querySelector('#api-base-url').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  await app.start('diagnostics');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, `${otherBase}/api/v1/reports`);
+  assert.equal(Object.hasOwn(requests[0].init.headers, 'Authorization'), false);
+  assert.equal(faults.calls.length, 6);
+
+  document.querySelector('#api-base-url').value = `${credentialBase}/`;
+  document.querySelector('#api-base-url').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  await app.start('diagnostics');
+  assert.equal(requests.length, 1);
+  assert.equal(faults.calls.length, 6);
+  assert.equal(app.getState().diagnostics.error.code, 'credential_indeterminate');
+});
+
 test('coverage renders fixed enrichment summaries after available and missing without reflecting prose', async () => {
   const serialized = await readFile(new URL('../testdata/enrichment-failures-report.json', import.meta.url), 'utf8');
   const parsed = JSON.parse(serialized);
-  parsed.analysis.coverage.available = ['SAFE-AVAILABLE'];
-  parsed.analysis.coverage.missing = ['SAFE-MISSING'];
+  parsed.analysis.coverage.available = ['results[0].status'];
+  parsed.analysis.coverage.missing = ['results[0].details'];
   // Isolate the enrichment renderer from the fixture's correctly derived
   // aggregate provider-failure coverage, which is rendered separately.
   parsed.analysis.coverage.provider_failures = [];
@@ -66,18 +370,15 @@ test('coverage renders fixed enrichment summaries after available and missing wi
   const coverage = document.querySelector('[data-analysis-section="coverage"]');
   assert.ok(coverage);
   const text = coverage.textContent;
-  assert.match(text, /SAFE-AVAILABLE/);
-  assert.match(text, /SAFE-MISSING/);
-  assert.match(text, /Source: none/);
-  assert.match(text, /Cache hits: 0/);
-  assert.match(text, /Upstream fetches: 0/);
-  assert.match(text, /Maximum age: 0 ms/);
-  assert.match(text, /busy: 1 \(retryable\)/);
-  assert.match(text, /cancelled: 2 \(not retryable\)/);
-  assert.ok(text.indexOf('SAFE-AVAILABLE') < text.indexOf('Source: none'));
-  assert.ok(text.indexOf('SAFE-MISSING') < text.indexOf('Source: none'));
+  assert.doesNotMatch(text, /SAFE-AVAILABLE|SAFE-MISSING/);
+  assert.match(text, /GeoIP enrichment source category: none/);
+  assert.match(text, /GeoIP cache hits: 0/);
+  assert.match(text, /GeoIP upstream fetches: 0/);
+  assert.match(text, /GeoIP maximum age milliseconds: 0/);
+  assert.match(text, /GeoIP busy failures: 1; retry category: retryable/);
+  assert.match(text, /GeoIP cancelled failures: 2; retry category: not retryable/);
   assert.ok(coverage.compareDocumentPosition(document.querySelector('[data-analysis-section="raw"]')) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
-  assert.doesNotMatch(text, /provider|geoip/i);
+  assert.doesNotMatch(text, /provider/i);
 
   const hostile = JSON.parse(serialized);
   hostile.analysis.coverage.enrichment[0].provider = 'PROVIDER-CANARY';
@@ -94,7 +395,7 @@ test('coverage renders fixed enrichment summaries after available and missing wi
 test('concurrent apps send only their own diagnostics and topology inputs', async () => {
   const callsA = []; const callsB = [];
   const topology = address => report(`topology-${address}`, {
-    results: [result({ kind: 'traceroute', address, details: {} })],
+    results: [compactTraceResult(address)],
     compact_topology: compactTopology()
   });
   const a = setup(async (_url, init) => {
@@ -182,7 +483,7 @@ test('topology checkbox keeps focus across its synchronous filter rebuild', asyn
   const jobs = []; let id = 0;
   const scheduler = { schedule(callback) { jobs.push({ id: ++id, callback }); return id; }, cancel() {} };
   const topologyReport = report('focus-topology', {
-    results: [result({ kind: 'traceroute', address: 'focus.example', details: {} })],
+    results: [compactTraceResult('focus.example')],
     compact_topology: compactTopology()
   });
   const { app, document } = setup(async () => response(JSON.stringify(topologyReport)), { url: 'https://focus.example/#topology', scheduler });
@@ -198,7 +499,7 @@ test('topology all and none actions restore focus across synchronous rebuilds', 
   const jobs = []; let id = 0;
   const scheduler = { schedule(callback) { jobs.push({ id: ++id, callback }); return id; }, cancel() {} };
   const topologyReport = report('focus-actions', {
-    results: [result({ kind: 'traceroute', address: 'focus.example', details: {} })],
+    results: [compactTraceResult('focus.example')],
     compact_topology: compactTopology()
   });
   const { app, document } = setup(async () => response(JSON.stringify(topologyReport)), { url: 'https://focus.example/#topology', scheduler });
@@ -216,7 +517,7 @@ test('zero selected targets renders a bounded explicit empty state without sched
   const jobs = []; let id = 0;
   const scheduler = { schedule(callback) { jobs.push({ id: ++id, callback }); return id; }, cancel() {} };
   const topologyReport = report('empty-selection', {
-    results: [result({ kind: 'traceroute', address: 'focus.example', details: {} })],
+    results: [compactTraceResult('focus.example')],
     compact_topology: compactTopology()
   });
   const { app, document } = setup(async () => response(JSON.stringify(topologyReport)), { url: 'https://empty.example/#topology', scheduler });
@@ -244,8 +545,178 @@ test('destroy then recreate on the same document behaves like HMR without duplic
   submit(dom.window.document); await flush();
   assert.equal(oldFetches, 0);
   assert.equal(newFetches, 1);
-  assert.match(dom.window.document.querySelector('#analysis-report').textContent, /new/);
+  assert.equal(newApp.getState().diagnostics.result.report.id, 'new');
+  assert.doesNotMatch(dom.window.document.querySelector('#analysis-report').textContent, /\bnew\b/);
   assert.equal(newApp.destroy(), true);
+});
+
+test('target rows stop exactly at 20 and survive remove, re-add, and HMR without leaked ownership', t => {
+  let audit;
+  const { dom, document, app } = setup(undefined, { configureWindow(win) {
+    const prototype = win.EventTarget.prototype;
+    const add = prototype.addEventListener;
+    const remove = prototype.removeEventListener;
+    const registrations = [];
+    const belongsToTargetRow = target => target instanceof win.Element && Boolean(target.closest('.target-row'));
+    prototype.addEventListener = function (type, handler, options) {
+      if (belongsToTargetRow(this)) registrations.push({ target: this, type, handler, options, active: true });
+      return add.call(this, type, handler, options);
+    };
+    prototype.removeEventListener = function (type, handler, options) {
+      const registration = registrations.findLast(item => item.active && item.target === this && item.type === type && item.handler === handler);
+      if (registration) registration.active = false;
+      return remove.call(this, type, handler, options);
+    };
+    audit = { active: () => registrations.filter(item => item.active).length };
+  } });
+  const add = document.querySelector('#add-target');
+  const status = document.querySelector('#request-live');
+  const statusCount = document.querySelectorAll('[role="status"]').length;
+  let maximumObserved = document.querySelectorAll('*').length;
+  const observe = () => { maximumObserved = Math.max(maximumObserved, document.querySelectorAll('*').length); };
+  const rows = () => [...document.querySelectorAll('#targets .target-row')];
+  const assertNames = () => rows().forEach((row, offset) => {
+    const number = offset + 1;
+    assert.equal(row.querySelector('select').getAttribute('aria-label'), `${number}번째 검사 종류`);
+    assert.equal(row.querySelector('input:not(.expected)').getAttribute('aria-label'), `${number}번째 검사 주소`);
+    assert.equal(row.querySelector('.expected').getAttribute('aria-label'), `${number}번째 기대 HTTP 상태`);
+    assert.equal(row.querySelector('.icon-button').getAttribute('aria-label'), `${number}번째 검사 삭제`);
+    assert.equal(row.querySelectorAll('[id]').length, 0);
+  });
+
+  assert.equal(rows().length, 4);
+  assert.equal(audit.active(), 8);
+  add.focus();
+  for (let count = 4; count < 19; count++) { add.click(); observe(); }
+  assert.equal(rows().length, 19, '4→19 accepts exactly fifteen additions');
+  assert.equal(document.activeElement, add);
+  const listenersAt19 = audit.active();
+
+  add.click(); observe();
+  assert.equal(rows().length, 20, '19→20 is accepted');
+  assert.equal(audit.active(), listenersAt19 + 2);
+  assert.equal(add.disabled, true);
+  assert.ok(document.activeElement === add || document.activeElement === rows().at(-1).querySelector('.icon-button'));
+  const elementsAt20 = document.querySelectorAll('*').length;
+  const listenersAt20 = audit.active();
+  for (let index = 0; index < 300; index++) {
+    add.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, detail: index % 2 }));
+    observe();
+  }
+  assert.equal(rows().length, 20, '20→304 attempted activations are rejected');
+  assert.equal(document.querySelectorAll('*').length, elementsAt20, 'refusal creates no partial DOM');
+  assert.equal(audit.active(), listenersAt20, 'refusal creates no listeners');
+  assert.equal(document.querySelectorAll('[role="status"]').length, statusCount, 'announcement uses a fixed live region');
+  assert.match(status.textContent, /최대 20|20.*maximum/i);
+  assert.ok(status.textContent.length <= 80);
+  assertNames();
+
+  const removed = rows()[9].querySelector('.icon-button');
+  removed.focus(); removed.click(); observe();
+  assert.equal(rows().length, 19);
+  assert.equal(add.disabled, false);
+  assert.equal(audit.active(), listenersAt20 - 2, 'removed row listeners detach immediately');
+  assert.equal(document.activeElement, rows()[9].querySelector('.icon-button'), 'focus moves to the relevant surviving remove control');
+  assertNames();
+
+  add.click(); observe();
+  assert.equal(rows().length, 20);
+  assert.equal(add.disabled, true);
+  assert.equal(audit.active(), listenersAt20);
+  assertNames();
+
+  app.destroy();
+  assert.equal(audit.active(), 0, 'destroy detaches every row listener');
+  const recreated = createApp({ document, window: dom.window, fetchImpl: async () => response(JSON.stringify(report('hmr'))) });
+  assert.equal(rows().length, 20, 'HMR adopts rather than duplicates retained rows');
+  assert.equal(audit.active(), listenersAt20);
+  const retainedSelect = rows()[0].querySelector('select');
+  retainedSelect.value = 'https';
+  retainedSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(rows()[0].querySelector('.expected').hidden, false, 'successor owns retained row behavior');
+  rows().at(-1).querySelector('.icon-button').click();
+  assert.equal(rows().length, 19);
+  add.click(); observe();
+  assert.equal(rows().length, 20, 'successor owns Add exactly once');
+  recreated.destroy();
+  assert.equal(audit.active(), 0);
+  const staleCount = rows().length;
+  rows()[0].querySelector('.icon-button').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  add.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  assert.equal(rows().length, staleCount, 'destroyed app controls cannot mutate retained rows');
+  assert.ok(maximumObserved <= 1200, `target row peak ${maximumObserved}`);
+  t.diagnostic(`target row DOM peak=${maximumObserved}`);
+});
+
+test('target row admission counts hidden retained views and accepts exact DOM fit but rejects plus one atomically', t => {
+  function boundary(extra) {
+    let audit;
+    const value = setup(undefined, { configureWindow(win) {
+      const prototype = win.EventTarget.prototype;
+      const add = prototype.addEventListener;
+      const remove = prototype.removeEventListener;
+      const registrations = [];
+      const belongsToTargetRow = target => target instanceof win.Element && Boolean(target.closest('.target-row'));
+      prototype.addEventListener = function (type, handler, options) {
+        if (belongsToTargetRow(this)) registrations.push({ target: this, type, handler, active: true });
+        return add.call(this, type, handler, options);
+      };
+      prototype.removeEventListener = function (type, handler, options) {
+        const registration = registrations.findLast(item => item.active && item.target === this && item.type === type && item.handler === handler);
+        if (registration) registration.active = false;
+        return remove.call(this, type, handler, options);
+      };
+      audit = { active: () => registrations.filter(item => item.active).length };
+    } });
+    const { dom, document } = value;
+    const add = document.querySelector('#add-target');
+    for (let count = 4; count < 19; count++) add.click();
+    assert.equal(document.querySelectorAll('#targets .target-row').length, 19);
+    const candidate = document.querySelector('#target-template').content.firstElementChild;
+    const candidateElements = candidate.querySelectorAll('*').length + 1;
+    const ballastElements = 1200 - document.querySelectorAll('*').length - candidateElements + extra;
+    assert.ok(ballastElements >= 1);
+    const ballast = document.createElement('aside');
+    ballast.dataset.retainedViewBallast = 'true';
+    ballast.append(...Array.from({ length: ballastElements - 1 }, () => document.createElement('i')));
+    const retainedView = document.querySelector('#ip-labels-view');
+    assert.equal(retainedView.hidden, true);
+    retainedView.append(ballast);
+    const before = {
+      elements: document.querySelectorAll('*').length,
+      listeners: audit.active(),
+      statusNodes: document.querySelectorAll('[role="status"]').length
+    };
+    let peak = before.elements;
+    add.focus();
+    for (let index = 0; index < (extra ? 100 : 1); index++) {
+      add.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, detail: index % 2 }));
+      peak = Math.max(peak, document.querySelectorAll('*').length);
+    }
+    return { ...value, add, audit, before, peak, candidateElements };
+  }
+
+  const exact = boundary(0);
+  assert.equal(exact.document.querySelectorAll('#targets .target-row').length, 20);
+  assert.equal(exact.document.querySelectorAll('*').length, 1200);
+  assert.equal(exact.audit.active(), exact.before.listeners + 2);
+  assert.equal(exact.add.disabled, true);
+  assert.ok(exact.peak <= 1200);
+  exact.app.destroy();
+
+  const plusOne = boundary(1);
+  assert.equal(plusOne.before.elements, 1200 - plusOne.candidateElements + 1);
+  assert.equal(plusOne.document.querySelectorAll('#targets .target-row').length, 19);
+  assert.equal(plusOne.document.querySelectorAll('*').length, plusOne.before.elements, 'DOM-budget refusal commits no nodes');
+  assert.equal(plusOne.audit.active(), plusOne.before.listeners, 'DOM-budget refusal commits no listeners');
+  assert.equal(plusOne.document.querySelectorAll('[role="status"]').length, plusOne.before.statusNodes);
+  assert.equal(plusOne.add.disabled, false, 'a later retained-view removal can make Add admissible');
+  assert.equal(plusOne.document.activeElement, plusOne.add);
+  assert.match(plusOne.document.querySelector('#request-live').textContent, /문서.*요소.*한도|document.*element.*limit/i);
+  assert.ok(plusOne.document.querySelector('#request-live').textContent.length <= 80);
+  assert.ok(plusOne.peak <= 1200, `plus-one target peak ${plusOne.peak}`);
+  plusOne.app.destroy();
+  t.diagnostic(`target DOM exact=${exact.peak}, plus-one=${plusOne.peak}`);
 });
 
 test('initial stored-label render failure destroys partial app before rethrow and recreation has one submission', async () => {
@@ -268,7 +739,8 @@ test('initial stored-label render failure destroys partial app before rethrow an
   submit(dom.window.document); await flush();
   assert.equal(abandonedFetches, 0);
   assert.equal(recreatedFetches, 1);
-  assert.match(dom.window.document.querySelector('#analysis-report').textContent, /recreated/);
+  assert.equal(recreated.getState().diagnostics.result.report.id, 'recreated');
+  assert.doesNotMatch(dom.window.document.querySelector('#analysis-report').textContent, /recreated/);
   recreated.destroy();
 });
 
@@ -327,6 +799,124 @@ test('stored labels are sanitized, bounded, rewritten, paginated, and progressiv
   assert.equal(document.activeElement?.classList.contains('mapping-delete'), true, 'delete must move focus to a surviving row action');
 });
 
+test('maximum report navigation and 100-row label import stay within the document-wide element budget', async t => {
+  const maximum = JSON.parse(await readFile(new URL('../testdata/maximum-analysis-report.json', import.meta.url), 'utf8'));
+  const queue = []; let peak = 0;
+  const { dom, app, document } = setup(async () => response(JSON.stringify(maximum)), {
+    scheduleLabelRender(callback) { queue.push(callback); return callback; }
+  });
+  const observe = () => { peak = Math.max(peak, document.querySelectorAll('*').length); };
+  const drainObserved = () => { while (queue.length) { queue.shift()(); observe(); } };
+
+  await app.start('diagnostics'); observe();
+  assert.equal(document.querySelectorAll('*').length, 699, 'maximum valid report baseline');
+  document.querySelector('[data-view-link="ip-labels"]').click();
+  const imported = JSON.stringify(labelRows(500));
+  const input = document.querySelector('#ip-label-import');
+  Object.defineProperty(input, 'files', { configurable: true, value: [{ name: 'labels.json', size: imported.length, text: async () => imported }] });
+  input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await flush(); drainObserved();
+
+  assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100);
+  assert.ok(peak <= 1200, `document peak ${peak}`);
+  assert.equal(document.querySelector('#analysis-report').childElementCount, 0, 'inactive report is unmounted, not retained hidden');
+
+  document.querySelector('[data-view-link="diagnostics"]').click(); observe();
+  assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 0);
+  assert.equal(document.querySelectorAll('.finding-toggle').length, 40, 'navigation reconstructs the owned report');
+  assert.ok(document.querySelectorAll('*').length <= 699, 'reconstructed report remains no larger than the original mount');
+  document.querySelector('[data-view-link="ip-labels"]').click(); drainObserved();
+  assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100, 'navigation reconstructs the current label page');
+  assert.ok(peak <= 1200, `document peak after repeated navigation ${peak}`);
+  t.diagnostic(`maximum report/label navigation DOM peak=${peak}`);
+});
+
+test('label chunk admission accepts an exact 1200-element fit and atomically rejects plus one without partial rows', async t => {
+  function addBallast(document, elements) {
+    assert.ok(elements >= 1);
+    const ballast = document.createElement('aside');
+    ballast.append(...Array.from({ length: elements - 1 }, () => document.createElement('i')));
+    document.body.append(ballast);
+  }
+  function boundary(extra) {
+    const queue = []; let peak = 0;
+    const value = setup(undefined, {
+      url: 'https://labels.example/#ip-labels',
+      scheduleLabelRender(callback) { queue.push(callback); return callback; },
+      configureWindow(win) { win.localStorage.setItem('checknetwork.ip-labels.v1', JSON.stringify(labelRows(20))); }
+    });
+    const observe = () => { peak = Math.max(peak, value.document.querySelectorAll('*').length); };
+    assert.equal(queue.length, 1);
+    queue.shift()(); observe();
+    assert.equal(value.document.querySelectorAll('#ip-label-rows tr').length, 10);
+    const secondChunkElements = 90;
+    addBallast(value.document, 1200 - value.document.querySelectorAll('*').length - secondChunkElements + extra);
+    observe();
+    assert.ok(value.document.querySelectorAll('*').length <= 1200);
+    queue.shift()(); observe();
+    return { ...value, peak };
+  }
+
+  const exact = boundary(0);
+  assert.equal(exact.document.querySelectorAll('*').length, 1200);
+  assert.equal(exact.document.querySelectorAll('#ip-label-rows tr').length, 20);
+
+  const plusOne = boundary(1);
+  assert.ok(plusOne.peak <= 1200, `plus-one peak ${plusOne.peak}`);
+  assert.equal(exact.document.querySelector('#ip-labels-view').dataset.state, 'ready');
+  assert.equal(plusOne.document.querySelectorAll('#ip-label-rows tr').length, 0, 'the first committed chunk is rolled back');
+  assert.equal(plusOne.document.querySelector('#ip-labels-view').dataset.state, 'render-limited');
+  assert.equal(plusOne.document.querySelector('#ip-labels-view').getAttribute('aria-busy'), 'false');
+  assert.match(plusOne.document.querySelector('#ip-label-message').textContent, /문서.*요소.*한도|render.*limit/i);
+  assert.ok(plusOne.peak <= 1200, `plus-one peak ${plusOne.peak}`);
+  t.diagnostic(`label chunk exact=${exact.peak}, plus-one=${plusOne.peak}`);
+});
+
+test('stale label owners cannot publish across navigation, HMR, or hidden topology and Geo disposal', async () => {
+  const labelJobs = []; const topologyJobs = [];
+  const options = {
+    url: 'https://owners.example/#ip-labels',
+    scheduleLabelRender(callback) { labelJobs.push(callback); return callback; },
+    cancelLabelRender() { throw new Error('injected label cancellation failure'); },
+    scheduler: { schedule(callback) { topologyJobs.push(callback); return callback; }, cancel() {} },
+    configureWindow(win) {
+      win.localStorage.setItem('checknetwork.ip-labels.v1', JSON.stringify(labelRows(30)));
+      win.HTMLCanvasElement.prototype.getContext = () => null;
+    }
+  };
+  const first = setup(async () => response(JSON.stringify(report('owner-topology', {
+    results: [compactTraceResult('owner.example')], compact_topology: compactTopology()
+  }))), options);
+  const staleFirstChunk = labelJobs.shift();
+  first.document.querySelector('[data-view-link="topology"]').click();
+  await first.app.start('topology'); drain(topologyJobs);
+  first.document.querySelector('[data-view-link="geo-map"]').click(); drain(topologyJobs);
+  assert.ok(first.document.querySelector('#geo-map-result').childElementCount > 0);
+  first.document.querySelector('[data-view-link="ip-labels"]').click();
+  assert.equal(first.document.querySelector('#topology-result').childElementCount, 0);
+  assert.equal(first.document.querySelector('#geo-map-result').childElementCount, 0);
+  assert.ok(labelJobs.length > 0);
+  labelJobs.shift()();
+  const currentText = first.document.querySelector('#ip-label-rows').textContent;
+  staleFirstChunk?.();
+  assert.equal(first.document.querySelector('#ip-label-rows').textContent, currentText);
+  assert.ok(first.document.querySelectorAll('*').length <= 1200);
+
+  const staleRemaining = [...labelJobs];
+  first.app.destroy();
+  const second = createApp({
+    document: first.document, window: first.dom.window, fetchImpl: async () => response('{}'),
+    scheduleLabelRender(callback) { labelJobs.push(callback); return callback; }
+  });
+  const successor = labelJobs.at(-1); successor();
+  const successorText = first.document.querySelector('#ip-label-rows').textContent;
+  for (const callback of staleRemaining) callback();
+  assert.equal(first.document.querySelector('#ip-label-rows').textContent, successorText);
+  assert.notEqual(first.document.querySelector('#ip-labels-view').dataset.state, 'render-limited');
+  assert.ok(first.document.querySelectorAll('*').length <= 1200);
+  second.destroy();
+});
+
 test('oversized label import rejects before reading file text', async () => {
   let textCalls = 0;
   const { dom, document } = setup();
@@ -381,7 +971,7 @@ test('manual labels enforce character and record ceilings with explicit status',
 
 test('new request removes prior report, stale A cannot publish or clear B busy, and owner B finalizes', async () => {
   const a = deferred(); const b = deferred(); let calls = 0;
-  const { document } = setup(() => (++calls === 1 ? a.promise : b.promise));
+  const { document, app } = setup(() => (++calls === 1 ? a.promise : b.promise));
   submit(document); await flush();
   document.querySelector('#timeout').value = '5001';
   submit(document); await flush();
@@ -391,7 +981,8 @@ test('new request removes prior report, stale A cannot publish or clear B busy, 
   assert.equal(document.querySelector('#analysis-report').textContent.includes('리포트 A'), false);
   assert.equal(document.querySelector('#diagnostics-workspace').getAttribute('aria-busy'), 'true');
   b.resolve(response(JSON.stringify(report('B')))); await flush();
-  assert.match(document.querySelector('#analysis-report').textContent, /B/);
+  assert.equal(app.getState().diagnostics.result.report.id, 'B');
+  assert.doesNotMatch(document.querySelector('#analysis-report').textContent, /리포트 B/);
   assert.equal(document.querySelector('#diagnostics-workspace').getAttribute('aria-busy'), 'false');
 });
 
@@ -639,17 +1230,18 @@ test('analysis renders verdict then findings/evidence/actions/coverage/raw and k
   const { document } = setup(async () => response(JSON.stringify(report('analysis-id', { analysis: fullAnalysis(attack) }))));
   submit(document); await flush();
   const root = document.querySelector('#analysis-report');
-  assert.deepEqual([...root.querySelectorAll('[data-analysis-section]')].map(node => node.dataset.analysisSection), ['verdict', 'findings', 'evidence', 'actions', 'coverage', 'raw']);
-  assert.match(root.textContent, /analysis-id/);
-  assert.match(root.textContent, /<img src=x/);
+  assert.deepEqual([...root.querySelectorAll('[data-analysis-section]')].map(node => node.dataset.analysisSection), ['verdict', 'findings', 'coverage', 'raw']);
+  assert.doesNotMatch(root.textContent, /analysis-id|<img src=x|alert\(1\)/);
+  assert.deepEqual([...root.querySelectorAll('article [data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause']);
   assert.equal(root.querySelector('img, script, iframe'), null);
   assert.equal(document.activeElement.id, 'analysis-title');
-  assert.ok(root.querySelector('table caption'));
-  assert.ok(root.querySelector('ol input[type="checkbox"] + label'));
   const toggle = root.querySelector('.finding-toggle');
   toggle.dispatchEvent(new document.defaultView.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-  assert.equal(document.getElementById(toggle.getAttribute('aria-controls')).hidden, false);
+  assert.ok(document.getElementById(toggle.getAttribute('aria-controls'))?.isConnected);
+  assert.deepEqual([...root.querySelectorAll('article [data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action']);
+  assert.ok(root.querySelector('table caption'));
+  assert.ok(root.querySelector('ol input[type="checkbox"] + label'));
 });
 
 test('checker execution findings render generic text instead of backend prose', async () => {
@@ -660,15 +1252,423 @@ test('checker execution findings render generic text instead of backend prose', 
   const { document } = setup(async () => response(JSON.stringify(backend)));
   submit(document); await flush();
   const findings = document.querySelector('[data-analysis-section="findings"]');
-  assert.match(findings.textContent, /Checker execution failed/);
-  assert.match(findings.textContent, /Checker capacity was unavailable/);
+  assert.match(findings.textContent, /checker stopped unexpectedly/i);
+  assert.match(findings.textContent, /execution capacity was unavailable/i);
   assert.doesNotMatch(findings.textContent, /private target|panic prose|secret-token|Bearer/i);
+});
+
+test('Web presentation registry exhaustively matches all producer finding keys with fixed relationships', async () => {
+  const contract = JSON.parse(await readFile(new URL('../testdata/finding-contract.json', import.meta.url), 'utf8'));
+  const { FINDING_PRESENTATION_REGISTRY, EVIDENCE_SIGNAL_PRESENTATION_REGISTRY, COVERAGE_CODE_PRESENTATION_REGISTRY } = await import('./app.js');
+  const expected = contract.findings.map(finding => finding.presentation_key).sort();
+  assert.equal(expected.length, 23);
+  assert.deepEqual(Object.keys(FINDING_PRESENTATION_REGISTRY).sort(), expected);
+  assert.deepEqual(Object.keys(EVIDENCE_SIGNAL_PRESENTATION_REGISTRY).sort(), [
+    'error_code', 'http.status_code', 'tls.certificate_expires_at', 'traceroute.attempts_cancelled',
+    'traceroute.attempts_execution_failed', 'traceroute.attempts_reached', 'traceroute.attempts_timed_out',
+    'traceroute.execution_failures', 'traceroute.path_signatures', 'traceroute.path_status'
+  ]);
+  assert.deepEqual(Object.keys(COVERAGE_CODE_PRESENTATION_REGISTRY).sort(), ['malformed_details', 'missing_details', 'unsupported_details']);
+  for (const key of expected) {
+    const entry = FINDING_PRESENTATION_REGISTRY[key];
+    assert.equal(entry.key, key);
+    assert.equal(entry.actionRelationship, `action.${key.slice('finding.'.length)}`);
+    assert.deepEqual(Object.keys(entry).sort(), ['action', 'actionRelationship', 'cause', 'expectation', 'key', 'limitation', 'signals'].sort());
+    assert.ok(entry.signals.length > 0, key);
+  }
+});
+
+test('all 21 coverage issues combine their fixed private label and category with fixed code text', async () => {
+  const contract = JSON.parse(await readFile(new URL('../testdata/presentation-contract.json', import.meta.url), 'utf8'));
+  const base = contract.scenarios.find(scenario => scenario.name === 'finding.dns_resolution_failed').report;
+  const { COVERAGE_SIGNAL_PRESENTATION_REGISTRY, COVERAGE_CODE_PRESENTATION_REGISTRY, presentReport } = await import('./app.js');
+  const expectedSignals = {
+    certificate_expires_at: ['Certificate expiry timestamp', 'tls'], details: ['Checker details', 'result'],
+    dns_answers: ['DNS answer facts', 'dns'], endpoint: ['Connected endpoint facts', 'connectivity'],
+    error_code: ['Result error code', 'result'], geoip: ['GeoIP result facts', 'geoip'],
+    geoip_enrichment: ['GeoIP enrichment facts', 'geoip'], http_status: ['HTTP status facts', 'http'],
+    kind: ['Result kind', 'result'], response_body: ['Response body facts', 'http'],
+    result: ['Result observation', 'result'], service_verification_details: ['Service verification details', 'service'],
+    service_verification_scope: ['Service verification scope', 'service'], status: ['Result status', 'result'],
+    tls: ['TLS handshake facts', 'tls'], tls_certificate: ['TLS certificate facts', 'tls'],
+    tls_failure_details: ['TLS failure details', 'tls'], trace_attempts: ['Traceroute attempt counters', 'traceroute'],
+    trace_error: ['Traceroute error facts', 'traceroute'], trace_paths: ['Completed traceroute path facts', 'traceroute'],
+    trace_topology: ['Traceroute topology facts', 'traceroute']
+  };
+  assert.deepEqual(Object.keys(expectedSignals).sort(), [...contract.coverage_signals].sort());
+  for (const [signal, [label, category]] of Object.entries(expectedSignals)) {
+    const value = structuredClone(base);
+    const reason = `PRIVATE-REASON-${signal}`;
+    value.analysis.coverage.available = [];
+    value.analysis.coverage.missing = [];
+    value.analysis.coverage.provider_failures = [];
+    value.analysis.coverage.limitations = Object.keys(COVERAGE_CODE_PRESENTATION_REGISTRY).map(code => ({ code, result_index: 0, kind: 'dns', signal, reason }));
+    const { dom, document } = setup();
+    const markdown = presentReport(document, value);
+    assert.equal(COVERAGE_SIGNAL_PRESENTATION_REGISTRY[signal].label, label, signal);
+    assert.equal(COVERAGE_SIGNAL_PRESENTATION_REGISTRY[signal].category, category, signal);
+    for (const codeText of Object.values(COVERAGE_CODE_PRESENTATION_REGISTRY)) {
+      const fact = `${label} (${category}). ${codeText}`;
+      assert.match(document.querySelector('[data-analysis-section="coverage"]').textContent, new RegExp(fact.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${signal}: ${codeText}`);
+      assert.match(markdown, new RegExp(fact.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${signal}: ${codeText}`);
+    }
+    assert.doesNotMatch(document.body.textContent, /PRIVATE-REASON/, signal);
+    assert.doesNotMatch(markdown, /PRIVATE-REASON/, signal);
+    dom.window.close();
+  }
+});
+
+test('maximum producer report lazily owns one bounded finding panel and rejects an oversized atomic commit', async t => {
+  const maximum = JSON.parse(await readFile(new URL('../testdata/maximum-analysis-report.json', import.meta.url), 'utf8'));
+  const poison = 'MAXIMUM_PRIVATE_PROSE_CANARY';
+  for (const resultValue of maximum.results) resultValue.message = poison;
+  for (const finding of maximum.analysis.findings) { finding.title = poison; finding.summary = poison; }
+  for (const evidence of maximum.analysis.evidence) evidence.address = poison;
+  for (const action of maximum.analysis.actions) {
+    action.title = poison; action.step = poison; action.expected_result = poison; action.escalation_condition = poison;
+  }
+  for (const issue of [...maximum.analysis.coverage.provider_failures, ...maximum.analysis.coverage.limitations]) issue.reason = poison;
+  const { dom, document, app } = setup(async () => response(JSON.stringify(maximum)));
+  await app.start('diagnostics');
+  const root = document.querySelector('#analysis-report');
+  const toggles = [...root.querySelectorAll('.finding-toggle')];
+  assert.equal(toggles.length, 40);
+  assert.equal(root.querySelectorAll('.finding-panel').length, 0);
+  assert.equal(root.querySelectorAll('[data-semantic-key="cause"]').length, 40);
+  assert.equal(root.querySelectorAll('[data-semantic-key]:not([data-semantic-key="cause"])').length, 0);
+  const initialElements = document.querySelectorAll('*').length;
+  let peakElements = initialElements;
+  assert.ok(initialElements <= 1200, `initial document elements: ${initialElements}`);
+  let previousPanel;
+  for (const [index, toggle] of toggles.entries()) {
+    toggle.focus();
+    toggle.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: index % 2 ? 'Enter' : ' ', bubbles: true }));
+    const panel = document.getElementById(toggle.getAttribute('aria-controls'));
+    assert.ok(panel?.isConnected, `panel ${index}`);
+    assert.equal(document.activeElement, toggle, `focus ${index}`);
+    assert.equal(root.querySelectorAll('.finding-panel').length, 1, `owned panel ${index}`);
+    assert.deepEqual([...toggle.closest('article').querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey),
+      ['cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action'], `keys ${index}`);
+    if (previousPanel) assert.equal(previousPanel.isConnected, false, `prior panel ${index}`);
+    const elementCount = document.querySelectorAll('*').length;
+    peakElements = Math.max(peakElements, elementCount);
+    assert.ok(elementCount <= 1200, `document elements ${index}: ${elementCount}`);
+    const visible = document.querySelector('#diagnostics-view').cloneNode(true);
+    visible.querySelector('[data-analysis-section="raw"]')?.remove();
+    visible.querySelector('.secondary-results')?.remove();
+    assert.doesNotMatch(visible.textContent, new RegExp(poison), `producer prose ${index}`);
+    for (const item of maximum.results) assert.doesNotMatch(visible.textContent, new RegExp(item.address.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), `raw target ${index}`);
+    previousPanel = panel;
+  }
+  toggles.at(-1).click();
+  assert.equal(root.querySelectorAll('.finding-panel').length, 0);
+
+  toggles[1].focus();
+  for (const [key, expected] of [['ArrowDown', toggles[2]], ['ArrowUp', toggles[1]], ['End', toggles.at(-1)], ['Home', toggles[0]]]) {
+    document.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
+    assert.equal(document.activeElement, expected, key);
+  }
+
+  let markdown = '';
+  dom.window.Blob = class { constructor(parts) { markdown = parts.join(''); } };
+  dom.window.URL.createObjectURL = () => 'blob:human'; dom.window.URL.revokeObjectURL = () => {};
+  dom.window.HTMLAnchorElement.prototype.click = () => {};
+  document.querySelector('#download-human').click();
+  for (const key of ['cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action']) {
+    assert.equal(markdown.match(new RegExp(`^### ${key} \\[finding\\.`, 'gm'))?.length, 40, key);
+  }
+  for (const item of maximum.results) assert.doesNotMatch(markdown, new RegExp(item.address.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+  assert.doesNotMatch(markdown, new RegExp(poison));
+  assert.equal([...root.querySelectorAll('[data-analysis-section]')].at(-1).dataset.analysisSection, 'raw');
+  assert.equal(root.querySelector('[data-analysis-section="raw"] details').open, false);
+
+  const stale = toggles[0];
+  await app.start('diagnostics');
+  stale.click();
+  assert.equal(root.querySelectorAll('.finding-panel').length, 0);
+
+  const { document: guarded } = setup();
+  guarded.querySelector('#summary').append(Object.assign(guarded.createElement('strong'), { textContent: 'old summary' }));
+  guarded.querySelector('#results').append(Object.assign(guarded.createElement('strong'), { textContent: 'old results' }));
+  guarded.querySelector('#analysis-report').append(Object.assign(guarded.createElement('strong'), { textContent: 'old analysis' }));
+  const ballast = guarded.createElement('div');
+  for (let index = 0; index < 1100; index++) ballast.append(guarded.createElement('i'));
+  guarded.body.append(ballast);
+  const { presentReport } = await import('./app.js');
+  assert.throws(() => presentReport(guarded, maximum), error => error.code === 'unsupported_presentation_contract');
+  assert.equal(guarded.querySelector('#summary').textContent, 'old summary');
+  assert.equal(guarded.querySelector('#results').textContent, 'old results');
+  assert.equal(guarded.querySelector('#analysis-report').textContent, 'old analysis');
+
+  const guardedRuntime = setup(async () => response(JSON.stringify(maximum)), {
+    configureWindow(win) {
+      const extra = win.document.createElement('div');
+      for (let index = 0; index < 1200; index++) extra.append(win.document.createElement('i'));
+      win.document.body.append(extra);
+    }
+  });
+  await guardedRuntime.app.start('diagnostics');
+  assert.equal(guardedRuntime.app.getState().diagnostics.phase, 'error');
+  assert.equal(guardedRuntime.document.querySelector('#analysis-report').hidden, true);
+  assert.match(guardedRuntime.document.querySelector('#request-alert').textContent, /cannot be presented safely/i);
+  assert.doesNotMatch(guardedRuntime.document.body.textContent, new RegExp(poison));
+  t.diagnostic(`maximum report DOM elements: initial=${initialElements}, peak=${peakElements}, findings=${toggles.length}`);
+});
+
+test('all 23 finding families render and export only six stable local semantic sections with safe facts', async () => {
+  const contract = JSON.parse(await readFile(new URL('../testdata/finding-contract.json', import.meta.url), 'utf8'));
+  const { FINDING_PRESENTATION_REGISTRY } = await import('./app.js');
+  const poison = {
+    report: 'POISON_REPORT_ID', findingID: 'POISON_FINDING_ID', title: 'POISON_TITLE', summary: 'POISON_SUMMARY',
+    evidenceID: 'POISON_EVIDENCE_ID', observed: 'POISON_ERROR_PANIC_DETAILS', expected: 'POISON_EXPECTATION',
+    actionID: 'POISON_ACTION_ID', action: 'POISON_ACTION_PROSE', target: 'POISON_TARGET_URL_HOST_IP_TOKEN',
+    reason: 'POISON_PROVIDER_REASON'
+  };
+  const findings = contract.findings.map((entry, index) => ({
+    id: `${poison.findingID}_${index}`, code: entry.code, severity: 'warning', category: 'execution',
+    title: `${poison.title}_${index}`, summary: `${poison.summary}_${index}`, confidence: 'direct',
+    evidence_ids: [`${poison.evidenceID}_${index}`], action_ids: [`${poison.actionID}_${index}`]
+  }));
+  const safeEvidence = signal => ({
+    error_code: ['connection_failed', ''],
+    'http.status_code': ['503', '200'],
+    'tls.certificate_expires_at': ['2026-09-09T00:00:00Z', ''],
+    'traceroute.attempts_cancelled': ['1', '0'],
+    'traceroute.attempts_execution_failed': ['1', '0'],
+    'traceroute.attempts_reached': ['1/2 completed attempts reached', '2/2 completed attempts reached'],
+    'traceroute.attempts_timed_out': ['1', '0'],
+    'traceroute.execution_failures': ['2 execution failures: 1 timed out, 1 cancelled, 0 command errors', '0'],
+    'traceroute.path_signatures': ['multiple successful completed path signatures among 2 reached completed attempts', ''],
+    'traceroute.path_status': ['degraded segment observed among 1 completed attempt', '']
+  })[signal];
+  const evidence = contract.findings.map((entry, index) => {
+    const signal = FINDING_PRESENTATION_REGISTRY[entry.presentation_key].signals[0];
+    const [observed, expected] = safeEvidence(signal);
+    return {
+      id: `${poison.evidenceID}_${index}`, result_index: 0, kind: 'dns', address: poison.target,
+      signal, observed, expected, provenance: 'result'
+    };
+  });
+  const actions = contract.findings.map((entry, index) => ({
+    id: `${poison.actionID}_${index}`, title: poison.action, step: poison.action,
+    expected_result: poison.action, escalation_condition: poison.action
+  }));
+  const analysis = {
+    verdict: 'attention', findings, evidence, actions,
+    coverage: {
+      available: ['results[0].status'], missing: ['results[0].details'], enrichment: [], provider_failures: [],
+      limitations: [{ code: 'missing_details', result_index: 0, kind: 'dns', signal: 'details', reason: poison.reason }]
+    }
+  };
+  let exported = '';
+  const { dom, document } = setup(async () => response(JSON.stringify(report(poison.report, {
+    status: 'unreachable', summary: { total: 1, passed: 0, failed: 1 },
+    results: [result({ address: poison.target, status: 'unreachable', error_code: 'connection_failed', message: poison.observed, details: { poison: poison.observed } })], analysis
+  }))));
+  dom.window.Blob = class { constructor(parts) { exported = parts.join(''); } };
+  dom.window.URL.createObjectURL = () => 'blob:human'; dom.window.URL.revokeObjectURL = () => {};
+  dom.window.HTMLAnchorElement.prototype.click = () => {};
+  submit(document); await flush();
+
+  const semanticKeys = ['cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action'];
+  const articles = [...document.querySelectorAll('[data-analysis-section="findings"] article')];
+  assert.equal(articles.length, 23);
+  for (const article of articles) {
+    article.querySelector('.finding-toggle').click();
+    assert.deepEqual([...article.querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), semanticKeys);
+  }
+  const visible = document.querySelector('#diagnostics-view').cloneNode(true);
+  visible.querySelector('[data-analysis-section="raw"]')?.remove();
+  visible.querySelector('.secondary-results')?.remove();
+  const visibleText = visible.textContent;
+  for (const value of Object.values(poison)) assert.doesNotMatch(visibleText, new RegExp(value, 'i'), value);
+
+  document.querySelector('#download-human').click();
+  for (const key of semanticKeys) assert.equal(exported.match(new RegExp(`^### ${key} \\[finding\\.`, 'gm'))?.length, 23, key);
+  assert.match(exported, /Observed code: connection_failed/);
+  assert.match(exported, /Result status was available/);
+  assert.match(exported, /Checker details were not available/);
+  assert.match(exported, /Required checker details were not observed/);
+  for (const value of Object.values(poison)) assert.doesNotMatch(exported, new RegExp(value, 'i'), value);
+});
+
+test('all eight valid greeting then close service kinds retain exact bounded meaning on screen and in Markdown', async () => {
+  const serviceKinds = ['imap', 'imaps', 'pop3', 'pop3s', 'smtp', 'smtps', 'ssh', 'submission'];
+  const meaning = 'Expected server-first greeting observed; command, authentication, STARTTLS, mailbox, and end-to-end service behavior were not tested.';
+  for (const kind of serviceKinds) {
+    let exported = '';
+    const serviceResult = result({ kind, address: `POISON_${kind}_ENDPOINT`, details: { verification_scope: 'server_greeting' } });
+    const analysis = {
+      verdict: 'healthy', findings: [], evidence: [], actions: [],
+      coverage: {
+        available: ['results[0].status', 'results[0].details.verification_scope'], missing: [], enrichment: [], provider_failures: [],
+        limitations: [{ code: 'unsupported_details', result_index: 0, kind, signal: 'service_verification_scope', reason: 'POISON_SERVICE_REASON' }]
+      }
+    };
+    const { dom, document } = setup(async () => response(JSON.stringify(report(`POISON_${kind}_ID`, { results: [serviceResult], analysis }))));
+    dom.window.Blob = class { constructor(parts) { exported = parts.join(''); } };
+    dom.window.URL.createObjectURL = () => 'blob:human'; dom.window.URL.revokeObjectURL = () => {};
+    dom.window.HTMLAnchorElement.prototype.click = () => {};
+    submit(document); await flush();
+    const visible = document.querySelector('#diagnostics-view').cloneNode(true);
+    visible.querySelector('[data-analysis-section="raw"]')?.remove(); visible.querySelector('.secondary-results')?.remove();
+    assert.match(visible.textContent, new RegExp(meaning.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), kind);
+    assert.doesNotMatch(visible.textContent, /\bPASS\b|\bHealthy\b|response is normal|응답이 정상|POISON_/i, kind);
+    document.querySelector('#download-human').click();
+    assert.match(exported, new RegExp(meaning.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), kind);
+    assert.doesNotMatch(exported, /\bPASS\b|\bHealthy\b|response is normal|응답이 정상|POISON_/i, kind);
+    dom.window.close();
+  }
+});
+
+test('producer presentation fixture is consumed exactly across all 33 DOM and Markdown scenarios', async t => {
+  const contract = JSON.parse(await readFile(new URL('../testdata/presentation-contract.json', import.meta.url), 'utf8'));
+  const {
+    PRESENTATION_SEMANTIC_KEYS, FINDING_PRESENTATION_REGISTRY,
+    EVIDENCE_SIGNAL_PRESENTATION_REGISTRY, COVERAGE_SIGNAL_PRESENTATION_REGISTRY, presentReport
+  } = await import('./app.js');
+  const greetingScope = 'Expected server-first greeting observed; command, authentication, STARTTLS, mailbox, and end-to-end service behavior were not tested.';
+  const forbiddenOverclaim = /\bPASS\b|\bHealthy\b|response is normal|응답이 정상/i;
+
+  assert.equal(contract.schema, 'presentation-contract-v1');
+  assert.deepEqual(contract.semantic_keys, [...PRESENTATION_SEMANTIC_KEYS]);
+  assert.deepEqual(Object.keys(contract).sort(), ['action_relationships', 'coverage_signals', 'evidence_signals', 'scenarios', 'schema', 'semantic_keys']);
+  assert.equal(contract.semantic_keys.length, 6);
+  assert.equal(contract.action_relationships.length, 23);
+  assert.equal(contract.evidence_signals.length, 10);
+  assert.equal(contract.coverage_signals.length, 21);
+  assert.equal(contract.scenarios.length, 33);
+  assert.deepEqual(Object.keys(FINDING_PRESENTATION_REGISTRY).sort(), contract.action_relationships.map(item => item.finding_presentation_key).sort());
+  assert.deepEqual(Object.keys(EVIDENCE_SIGNAL_PRESENTATION_REGISTRY).sort(), contract.evidence_signals.map(item => item.signal).sort());
+  assert.deepEqual(Object.keys(COVERAGE_SIGNAL_PRESENTATION_REGISTRY).sort(), [...contract.coverage_signals].sort());
+  for (const fixture of contract.evidence_signals) {
+    const local = EVIDENCE_SIGNAL_PRESENTATION_REGISTRY[fixture.signal];
+    assert.deepEqual(
+      { observed_shape: local.observedShape, expected_shape: local.expectedShape },
+      { observed_shape: fixture.observed_shape, expected_shape: fixture.expected_shape },
+      fixture.signal
+    );
+    assert.equal(typeof local.label, 'string', fixture.signal);
+    assert.equal(typeof local.category, 'string', fixture.signal);
+  }
+  for (const signal of contract.coverage_signals) {
+    assert.equal(typeof COVERAGE_SIGNAL_PRESENTATION_REGISTRY[signal].label, 'string', signal);
+    assert.equal(typeof COVERAGE_SIGNAL_PRESENTATION_REGISTRY[signal].category, 'string', signal);
+  }
+  for (const relationship of contract.action_relationships) {
+    assert.equal(FINDING_PRESENTATION_REGISTRY[relationship.finding_presentation_key].actionRelationship, relationship.key);
+  }
+
+  for (const scenario of contract.scenarios) await t.test(scenario.name, async () => {
+    const { dom, document } = setup();
+    const markdown = presentReport(document, structuredClone(scenario.report));
+
+    const root = document.querySelector('#analysis-report');
+    const articles = [...root.querySelectorAll('[data-analysis-section="findings"] article')];
+    assert.equal(articles.length, scenario.findings.length, scenario.name);
+    for (const article of articles) {
+      assert.deepEqual([...article.querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause'], scenario.name);
+      article.querySelector('.finding-toggle').click();
+    }
+    const visible = document.querySelector('#diagnostics-view').cloneNode(true);
+    visible.querySelector('[data-analysis-section="raw"] pre')?.remove();
+    visible.querySelector('.secondary-results')?.remove();
+    const visibleText = visible.textContent;
+    const status = document.querySelector('#summary .status');
+    const verdict = root.querySelector('.analysis-verdict');
+    assert.ok(status.classList.contains(scenario.report.status), scenario.name);
+    assert.ok(verdict.classList.contains(`verdict-${scenario.report.analysis.verdict}`), scenario.name);
+    assert.match(markdown, /^Report status: /m, scenario.name);
+    assert.match(markdown, /^Analysis verdict: /m, scenario.name);
+    assert.doesNotMatch(visibleText, forbiddenOverclaim, scenario.name);
+    assert.doesNotMatch(markdown, forbiddenOverclaim, scenario.name);
+    assert.ok(document.querySelectorAll('*').length <= 1200, scenario.name);
+    assert.equal(document.activeElement, document.querySelector('#analysis-title'), scenario.name);
+    assert.match(root.querySelector('[data-analysis-section="raw"]').textContent, /raw.*contain.*target|원시.*대상/i, scenario.name);
+
+    assert.equal(scenario.report.analysis.findings.length, scenario.findings.length, scenario.name);
+    for (let index = 0; index < scenario.findings.length; index++) {
+      const fixture = scenario.findings[index];
+      const finding = scenario.report.analysis.findings[index];
+      assert.equal(finding.code, fixture.code, scenario.name);
+      assert.equal(articles[index].dataset.presentationKey, fixture.presentation_key, scenario.name);
+      if (articles[index].querySelectorAll('[data-semantic-key]').length === 1) {
+        articles[index].querySelector('.finding-toggle').click();
+      }
+      assert.deepEqual([...articles[index].querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), contract.semantic_keys, scenario.name);
+      assert.equal(FINDING_PRESENTATION_REGISTRY[fixture.presentation_key].actionRelationship, fixture.action_relationship, scenario.name);
+      const linked = finding.evidence_ids.map(id => scenario.report.analysis.evidence.find(item => item.id === id));
+      assert.deepEqual(linked.map(item => item.signal), fixture.evidence.map(item => item.signal), scenario.name);
+      for (let evidenceIndex = 0; evidenceIndex < fixture.evidence.length; evidenceIndex++) {
+        const expected = fixture.evidence[evidenceIndex];
+        const registry = EVIDENCE_SIGNAL_PRESENTATION_REGISTRY[expected.signal];
+        assert.equal(registry.observedShape, expected.observed_shape, scenario.name);
+        assert.equal(registry.expectedShape, expected.expected_shape, scenario.name);
+      }
+    }
+
+    if (scenario.name === 'control.dns_only_healthy') {
+      assert.doesNotMatch(visibleText, /greeting/i);
+      assert.doesNotMatch(markdown, /greeting/i);
+      assert.match(visibleText, /observed checks/i);
+    }
+    if (scenario.name.startsWith('control.greeting_healthy.')) {
+      assert.equal(visibleText.match(new RegExp(greetingScope, 'g'))?.length, 1, scenario.name);
+      assert.equal(document.body.textContent.match(new RegExp(greetingScope, 'g'))?.length, 2, scenario.name);
+      assert.equal(markdown.match(new RegExp(greetingScope, 'g'))?.length, 2, scenario.name);
+    }
+    if (scenario.name === 'control.mixed_greeting_healthy_dns_failed') {
+      assert.match(status.textContent, /degraded|requires attention/i);
+      assert.match(verdict.textContent, /require attention/i);
+      assert.equal(visibleText.match(new RegExp(greetingScope, 'g'))?.length, 1);
+      assert.equal(document.body.textContent.match(new RegExp(greetingScope, 'g'))?.length, 2);
+      assert.equal(markdown.match(new RegExp(greetingScope, 'g'))?.length, 2);
+      assert.doesNotMatch(status.textContent, /greeting/i);
+      assert.doesNotMatch(verdict.textContent, /greeting/i);
+    }
+    if (scenario.name === 'finding.http_unexpected_status') {
+      assert.match(visibleText, /Expected HTTP status: 200\./);
+      assert.match(visibleText, /Observed HTTP status: 503\./);
+      assert.match(markdown, /Expected HTTP status: 200\./);
+      assert.match(markdown, /Observed HTTP status: 503\./);
+    }
+    if (scenario.name === 'finding.traceroute_unavailable') {
+      for (const rendered of [visibleText, markdown]) {
+        assert.match(rendered, /The bounded observations were insufficient for a conclusion\./);
+        assert.match(rendered, /Traceroute capability was unavailable, so no route observation was established\./);
+        assert.match(rendered, /Observed code: traceroute_unavailable\./);
+        assert.match(rendered, /Restore the supported traceroute capability, then repeat the bounded check\./);
+        assert.doesNotMatch(rendered, /unavailable\.example\.test|traceroute is unavailable|Install or repair the supported traceroute executable|startup capability probe/i);
+      }
+    }
+    dom.window.close();
+  });
+});
+
+test('unknown presentation signals fail closed without fallback or reflection', async t => {
+  const contract = JSON.parse(await readFile(new URL('../testdata/presentation-contract.json', import.meta.url), 'utf8'));
+  const base = contract.scenarios.find(scenario => scenario.name === 'finding.http_unexpected_status').report;
+  for (const mutation of ['evidence', 'coverage-path', 'coverage-issue']) await t.test(mutation, async () => {
+    const hostile = structuredClone(base);
+    const canary = `HOSTILE_${mutation.toUpperCase().replace('-', '_')}_SIGNAL`;
+    if (mutation === 'evidence') hostile.analysis.evidence[0].signal = canary;
+    if (mutation === 'coverage-path') hostile.analysis.coverage.available[0] = `results[0].details.${canary}`;
+    if (mutation === 'coverage-issue') hostile.analysis.coverage.limitations.push({ code: 'unsupported_details', result_index: 0, kind: 'http', signal: canary, reason: canary });
+    const { app, document } = setup(async () => response(JSON.stringify(hostile)));
+    await app.start('diagnostics');
+    assert.equal(app.getState().diagnostics.phase, 'error', mutation);
+    assert.equal(document.querySelector('#analysis-report').hidden, true, mutation);
+    assert.equal(document.querySelector('#download-human').disabled, true, mutation);
+    assert.equal(document.activeElement, document.querySelector('#request-alert'), mutation);
+    assert.match(document.querySelector('#request-alert').textContent, /cannot be presented safely|표시할 수 없/i, mutation);
+    assert.doesNotMatch(document.body.textContent, new RegExp(canary, 'i'), mutation);
+  });
 });
 
 test('legacy report is ready but explicitly unsupported/inconclusive', async () => {
   const { document } = setup(); submit(document); await flush();
   assert.equal(document.querySelector('#diagnostics-workspace').dataset.state, 'ready');
-  assert.match(document.querySelector('#analysis-report').textContent, /미지원|판단 보류/);
+  assert.match(document.querySelector('#analysis-report').textContent, /Automated analysis unavailable|insufficient for a conclusion/);
 });
 
 test('download is unavailable until ready and exports only the owned normalized report', async () => {
@@ -684,13 +1684,54 @@ test('download is unavailable until ready and exports only the owned normalized 
   assert.equal(clicked, 1);
 });
 
-test('normalized HTTP error uses alert and 401 opens credential settings', async () => {
+test('untyped HTTP 401 uses the invalid-response alert without opening credential settings', async () => {
   const { document } = setup(async () => response('<html>secret proxy</html>', 401));
   submit(document); await flush();
-  assert.equal(document.querySelector('#connection-settings').open, true);
-  assert.equal(document.activeElement, document.querySelector('#bearer-token'));
+  assert.equal(document.querySelector('#connection-settings').open, false);
+  assert.equal(document.activeElement, document.querySelector('#request-alert'));
   assert.doesNotMatch(document.body.textContent, /secret proxy/);
   assert.equal(document.querySelector('#diagnostics-workspace').dataset.state, 'error');
+});
+
+test('every exact producer API error fixture renders only local text with classification-owned focus', async () => {
+  const contract = JSON.parse(await readFile(new URL('../testdata/api-error-contract.json', import.meta.url), 'utf8'));
+  assert.equal(contract.errors.length, 16);
+  for (const fixture of contract.errors) {
+    const { dom, app, document } = setup(async () => response(
+      fixture.body, fixture.status,
+      { 'Retry-After': '30' }
+    ));
+    submit(document); await flush();
+    const error = app.getState().diagnostics.error;
+    assert.equal(error.code, fixture.code, fixture.key);
+    assert.equal(error.message, fixture.message, fixture.key);
+    assert.equal(error.retryable, fixture.retryable, fixture.key);
+    assert.doesNotMatch(document.body.textContent, /HOSTILE-SERVER-PROSE/, fixture.key);
+    assert.match(document.querySelector('#request-alert').textContent, new RegExp(fixture.message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(document.querySelector('#request-alert').hidden, false, fixture.key);
+    assert.equal(
+      document.activeElement,
+      fixture.code === 'unauthorized' ? document.querySelector('#bearer-token') : document.querySelector('#request-alert'),
+      fixture.key
+    );
+    dom.window.close();
+  }
+});
+
+test('unknown 401 code cannot trigger credential focus or reflect code, prose, or Retry-After', async () => {
+  const canary = 'HOSTILE-UNKNOWN-CODE-AND-PROSE';
+  const { app, document } = setup(async () => response(
+    JSON.stringify({ error: { code: canary, message: canary } }), 401, { 'Retry-After': '30' }
+  ));
+  submit(document); await flush();
+  const error = app.getState().diagnostics.error;
+  assert.deepEqual(error, {
+    kind: 'invalid-response', code: 'invalid_server_response', status: 401,
+    message: 'The server returned an invalid error response.', retryable: false
+  });
+  assert.equal(document.activeElement, document.querySelector('#request-alert'));
+  assert.equal(document.querySelector('#connection-settings').open, false);
+  assert.doesNotMatch(document.body.textContent, /HOSTILE|Retry-After/);
 });
 
 test('topology request lane is independent and sends bounded traceroute payload', async () => {
@@ -729,7 +1770,7 @@ test('valid compact response progressively publishes through the model renderer 
     cancel(id) { cancelled.add(id); }
   };
   const compactReport = report('compact-render', {
-    results: [result({ kind: 'traceroute', address: 'one.example', details: {} })], compact_topology: compactTopology()
+    results: [compactTraceResult('one.example')], compact_topology: compactTopology()
   });
   const { dom, document } = setup(async () => response(JSON.stringify(compactReport)), {
     url: 'https://ui.example.test/#topology', scheduler,
@@ -787,7 +1828,7 @@ test('active topology and Geo views render lazily, unmount each other, and filte
   ];
   const value = report('views', {
     summary: { total: 2, passed: 2, failed: 0 },
-    results: [result({ kind: 'traceroute', address: 'a.example' }), result({ kind: 'traceroute', address: 'b.example' })],
+    results: [compactTraceResult('a.example'), compactTraceResult('b.example')],
     compact_topology: compactTopology({
       nodes, links, routes,
       stats: { nodes: { total: 3, displayed: 3, omitted: 0 }, links: { total: 2, displayed: 2, omitted: 0 }, routes: { total: 2, displayed: 2, complete: 2, partial: 0, omitted: 0 }, node_observations: { total: 4, displayed: 4, omitted: 0 }, link_observations: { total: 2, displayed: 2, omitted: 0 } },
@@ -835,12 +1876,12 @@ test('expanded and mapped label aliases rerender active topology with notes and 
   const scheduler = { schedule(callback) { const handle = ++id; jobs.push({ handle, callback }); return handle; }, cancel(handle) { cancelled.add(handle); } };
   const runAll = () => { while (jobs.length) { const job = jobs.shift(); if (!cancelled.has(job.handle)) job.callback(); } };
   const topologyReport = report('label-aliases', {
-    results: [result({ kind: 'traceroute', address: 'v6.example', details: {} })],
+    results: [compactTraceResult('v6.example')],
     compact_topology: compactTopology({
       nodes: [
         { id: 'n1', kind: 'local', address: 'local', status: 'healthy', hop_min: 0, hop_max: 0, observations: 1 },
         { id: 'n2', kind: 'ip', address: '2001:db8::1', status: 'degraded', hop_min: 1, hop_max: 2, observations: 7, latency_ms_avg: 12.5, public_ip: true,
-          geolocation: { city: 'Seoul', region: '', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 }, asn: { number: 64500, organization: 'Example Transit' } },
+          geolocation: { city: 'Seoul', country: 'KR', country_code: 'KR', latitude: 37.5, longitude: 127 }, asn: { number: 64500, organization: 'Example Transit' } },
         { id: 'n3', kind: 'ip', address: '192.0.2.1', status: 'healthy', hop_min: 3, hop_max: 3, observations: 1 }
       ],
       links: [{ from: 'n1', to: 'n2', status: 'degraded', observations: 1 }, { from: 'n2', to: 'n3', status: 'healthy', observations: 1 }],
@@ -889,7 +1930,7 @@ test('render commit failure after network success exposes render-error and keeps
   const jobs = []; let id = 0; let downloaded = 0;
   const scheduler = { schedule(callback) { jobs.push({ id: ++id, callback }); return id; }, cancel() {} };
   const topologyReport = report('render-fault', {
-    results: [result({ kind: 'traceroute', address: 'fault.example', details: {} })], compact_topology: compactTopology()
+    results: [compactTraceResult('fault.example')], compact_topology: compactTopology()
   });
   const { dom, app, document } = setup(async () => response(JSON.stringify(topologyReport)), { url: 'https://fault.example/#topology', scheduler });
   dom.window.URL.createObjectURL = () => 'blob:raw'; dom.window.URL.revokeObjectURL = () => {};
@@ -913,7 +1954,7 @@ test('render commit failure after network success exposes render-error and keeps
 
 test('nonrenderable topology exposes render-limited and explains the retained raw download', async () => {
   const topologyReport = report('render-limited', {
-    results: [result({ kind: 'traceroute', address: 'limited.example', details: {} })], compact_topology: compactTopology()
+    results: [compactTraceResult('limited.example')], compact_topology: compactTopology()
   });
   const { app, document } = setup(async () => response(JSON.stringify(topologyReport)), { url: 'https://limited.example/#topology' });
   const blocker = document.createElement('section');
@@ -939,7 +1980,7 @@ test('unresponsive toggle removes unknown tails and reports actual planned omiss
   const nodes = [
     { id: 'local', kind: 'local', address: 'local', status: 'healthy', hop_min: 0, hop_max: 0, observations: 1 },
     { id: 'known', kind: 'ip', address: '192.0.2.1', status: 'healthy', hop_min: 1, hop_max: 1, observations: 1 },
-    { id: 'unknown', kind: 'unknown', address: '', status: 'unknown', hop_min: 2, hop_max: 2, observations: 1 },
+    { id: 'unknown', kind: 'unknown', status: 'unknown', hop_min: 2, hop_max: 2, observations: 1 },
     { id: 'tail', kind: 'ip', address: '192.0.2.3', status: 'healthy', hop_min: 3, hop_max: 3, observations: 1 }
   ];
   const links = nodes.slice(1).map((node, index) => ({ from: nodes[index].id, to: node.id, status: node.status, observations: 1 }));
@@ -950,7 +1991,11 @@ test('unresponsive toggle removes unknown tails and reports actual planned omiss
     node_observations: { total: 4, displayed: 4, omitted: 0 }, link_observations: { total: 3, displayed: 3, omitted: 0 }
   };
   const topologyReport = report('unknown-filter', {
-    results: [result({ kind: 'traceroute', address: 'unknown.example', details: {} })],
+    status: 'unreachable', summary: { total: 1, passed: 0, failed: 1 },
+    results: [compactTraceResult('unknown.example', {
+      status: 'unreachable', errorCode: 'destination_unreached',
+      attemptsReached: 0, attemptsUnreached: 1
+    })],
     compact_topology: compactTopology({
       nodes, links, routes, stats,
       result_stats: [{ result_index: 0, routes: stats.routes, node_observations: stats.node_observations, link_observations: stats.link_observations }],
@@ -997,7 +2042,7 @@ test('max 500/499/20 summary reports the actual bounded plan and dynamic omissio
     node_observations: { total: nodeObservations, displayed: nodeObservations, omitted: 0 },
     link_observations: { total: 499, displayed: 499, omitted: 0 }
   };
-  const results = routes.map((route, index) => result({ kind: 'traceroute', address: `target-${index}.example`, details: {} }));
+  const results = routes.map((_route, index) => compactTraceResult(`target-${index}.example`));
   const value = report('max-plan', {
     summary: { total: 20, passed: 20, failed: 0 }, results,
     compact_topology: compactTopology({
@@ -1038,7 +2083,7 @@ test('starting a same-lane retry clears its stale assertive alert without cleari
   const second = deferred();
   const { document } = setup(async () => {
     calls++;
-    if (calls === 1) return response(JSON.stringify({ error: { code: 'server_busy', message: 'busy' } }), 503);
+    if (calls === 1) return response(JSON.stringify({ error: { code: 'server_busy', message: 'report capacity is temporarily unavailable' } }), 503);
     return second.promise;
   });
   submit(document); await flush();
@@ -1051,7 +2096,7 @@ test('starting a same-lane retry clears its stale assertive alert without cleari
   second.resolve(response(JSON.stringify(report('retry')))); await flush();
 });
 
-test('human export redacts overlap, case variants, and report ID and uses a generic filename', async () => {
+test('human export omits targets, producer prose, and report ID and uses a generic filename', async () => {
   let exported = ''; let filename = '';
   const sensitive = 'Private.Internal.Example';
   const humanAnalysis = fullAnalysis(`Visit PRIVATE.INTERNAL.EXAMPLE then internal.example`);
@@ -1065,8 +2110,9 @@ test('human export redacts overlap, case variants, and report ID and uses a gene
   dom.window.HTMLAnchorElement.prototype.click = function () { filename = this.download; };
   submit(document); await flush(); document.querySelector('#download-human').click();
   assert.equal(filename, 'checknetwork-human-report.md');
-  assert.match(exported, /\[REDACTED TARGET\]/);
   assert.doesNotMatch(exported, /private\.internal\.example|internal\.example/i);
+  assert.doesNotMatch(exported, /Visit|Resolve/);
+  assert.match(exported, /### cause \[finding\.dns_resolution_failed\]/);
 });
 
 test('Content-Length rejects an oversized response before body allocation', async () => {
@@ -1222,7 +2268,7 @@ test('compact vantage and coverage header precedes analysis and folded raw works
   const summary = document.querySelector('#summary');
   const analysisRoot = document.querySelector('#analysis-report');
   const rawCards = document.querySelector('.secondary-results');
-  assert.match(summary.textContent, /관측 위치/);
+  assert.match(summary.textContent, /Observation point/);
   assert.match(summary.textContent, /Coverage/);
   assert.ok(summary.compareDocumentPosition(analysisRoot) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
   assert.ok(analysisRoot.compareDocumentPosition(rawCards) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);

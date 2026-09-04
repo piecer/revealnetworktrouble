@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -222,19 +223,34 @@ func (reader *panicReadCloser) Read([]byte) (int, error) {
 }
 func (*panicReadCloser) Close() error { return nil }
 
-func TestBodyDecodePanicAndSurplusJSONReleaseCapacity(t *testing.T) {
+func TestBodyDecodePanicIsContainedAsRegisteredInternalErrorAndReleasesCapacity(t *testing.T) {
 	checker := &countingChecker{}
-	handler := bodyAdmissionHandler(t, checker, ServerConfig{MaxConcurrentReports: 1, MaxConcurrentBodyDecodes: 1})
+	var logs bytes.Buffer
+	handler, err := NewServerWithConfig(diagnostic.NewRunner(checker), telemetryTestLogger(&logs), "test", ServerConfig{
+		Mode: ModeTrustedLocal, MaxConcurrentReports: 1, MaxConcurrentBodyDecodes: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/reports", bytes.NewReader(nil))
 	request.Body = &panicReadCloser{}
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("body reader panic was unexpectedly swallowed")
-			}
-		}()
-		handler.ServeHTTP(httptest.NewRecorder(), request)
-	}()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError || recorder.Body.String() != string(marshalAPIError(apiErrorInternal)) {
+		t.Fatalf("panic response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	records := decodeTelemetryLines(t, logs.Bytes())
+	if got := telemetryEventNames(records); !reflect.DeepEqual(got, []string{"report_submit", "report_finish", "http_terminal"}) {
+		t.Fatalf("panic events=%v logs=%s", got, logs.String())
+	}
+	for _, record := range records[len(records)-2:] {
+		if record["outcome"] != string(TelemetryOutcomePanicSafeFailure) {
+			t.Fatalf("panic lifecycle=%v", record)
+		}
+	}
+	if strings.Contains(recorder.Body.String(), "BODY_READ_PANIC_CANARY") || strings.Contains(logs.String(), "BODY_READ_PANIC_CANARY") {
+		t.Fatalf("panic value leaked: body=%q logs=%s", recorder.Body.String(), logs.String())
+	}
 
 	surplus := httptest.NewRecorder()
 	valid := `{"targets":[{"kind":"dns","address":"example.test"}]}`
@@ -242,9 +258,10 @@ func TestBodyDecodePanicAndSurplusJSONReleaseCapacity(t *testing.T) {
 	if surplus.Code != http.StatusBadRequest {
 		t.Fatalf("panic leaked slot before surplus JSON: status=%d body=%s", surplus.Code, surplus.Body.String())
 	}
+
 	recovered := httptest.NewRecorder()
 	handler.ServeHTTP(recovered, reportRequest(context.Background()))
 	if recovered.Code != http.StatusOK || checker.callCount() != 1 {
-		t.Fatalf("surplus JSON leaked slot: status=%d calls=%d", recovered.Code, checker.callCount())
+		t.Fatalf("panic leaked body capacity: status=%d calls=%d", recovered.Code, checker.callCount())
 	}
 }

@@ -98,7 +98,7 @@ func TestEmitTelemetryAcceptsOnlyPositiveEventContractsAndHasExactFixedKeys(t *t
 	for _, outcome := range []TelemetryOutcome{
 		TelemetryOutcomeUnauthorized, TelemetryOutcomeRateLimited, TelemetryOutcomeInvalidJSON,
 		TelemetryOutcomeInvalidRequest, TelemetryOutcomeRequestTooLarge, TelemetryOutcomeServerCapacity,
-		TelemetryOutcomeBodyCapacity, TelemetryOutcomePolicy,
+		TelemetryOutcomeServerDraining, TelemetryOutcomeBodyCapacity, TelemetryOutcomePolicy,
 	} {
 		records = append(records, validTelemetryRecord(TelemetryEventReportReject, outcome))
 	}
@@ -118,7 +118,7 @@ func TestEmitTelemetryAcceptsOnlyPositiveEventContractsAndHasExactFixedKeys(t *t
 		{413, TelemetryOutcomeRequestTooLarge}, {422, TelemetryOutcomeInvalidRequest}, {422, TelemetryOutcomePolicy},
 		{429, TelemetryOutcomeRateLimited}, {500, TelemetryOutcomePanicSafeFailure},
 		{500, TelemetryOutcomeSerialization}, {500, TelemetryOutcomeFullSize}, {500, TelemetryOutcomeCompactSize},
-		{503, TelemetryOutcomeServerCapacity}, {503, TelemetryOutcomeBodyCapacity}, {503, TelemetryOutcomeWriteCapacity},
+		{503, TelemetryOutcomeServerCapacity}, {503, TelemetryOutcomeServerDraining}, {503, TelemetryOutcomeBodyCapacity}, {503, TelemetryOutcomeWriteCapacity},
 		{200, TelemetryOutcomeWriteFailedZero}, {200, TelemetryOutcomeWriteFailedPartial},
 	} {
 		record := validTelemetryRecord(TelemetryEventHTTPTerminal, item.outcome)
@@ -788,12 +788,17 @@ func TestCompleteSuccessfulWriteFallsBackToBaseFinishForUnavailableOrInvalidDiag
 			if err != nil {
 				t.Fatal(err)
 			}
-			handler := server.middleware(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				server.writeJSONPayload(writer, request, http.StatusOK, TelemetryOutcomeOK, []byte("{}\n"))
-				server.emitReportFinish(request, TelemetryOutcomeOK, test.report)
-			}))
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, reportRequest(context.Background()))
+			request := reportRequest(context.Background())
+			observation := &requestObservation{
+				started: time.Now(), requestID: NewRequestID(), reportID: NewReportID(),
+				method: http.MethodPost, route: TelemetryRouteReports,
+			}
+			request = request.WithContext(context.WithValue(request.Context(), requestObservationKey{}, observation))
+			writer := &responseWriter{raw: recorder, observation: observation}
+			writer.writeReport(reportJSON{payload: []byte("{}\n")})
+			server.emitReportFinish(request, TelemetryOutcomeOK, test.report)
+			server.emit(request, TelemetryEventHTTPTerminal, observation.outcome, observation.status)
 
 			if recorder.Code != http.StatusOK || recorder.Body.String() != "{}\n" {
 				t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())

@@ -32,6 +32,8 @@ type normalizedResultFacts struct {
 	traceTimedOut      int
 	traceCancelled     int
 	hasTraceCounters   bool
+	tracePathCompleted int
+	tracePathReached   int
 	tracePathDegraded  bool
 	tracePathUnstable  bool
 }
@@ -53,7 +55,7 @@ func Analyze(results []Result, now time.Time) Analysis {
 		findingByKey: make(map[string]int),
 		actionByKey:  make(map[string]int),
 	}
-	facts := normalizeResults(results, &builder.analysis.Coverage)
+	facts := normalizeResults(results, &builder.analysis.Coverage, now.UTC())
 	for _, fact := range facts {
 		builder.analyzeFact(fact, now.UTC())
 	}
@@ -73,7 +75,7 @@ func onlyInconclusiveFindings(findings []Finding) bool {
 		return false
 	}
 	for _, finding := range findings {
-		if finding.Code != FindingExecutionCancelled && finding.Code != FindingCheckerCapacityUnavailable {
+		if finding.Code != FindingExecutionCancelled && finding.Code != FindingCheckerCapacityUnavailable && finding.Code != FindingTracerouteUnavailable {
 			return false
 		}
 	}
@@ -87,6 +89,12 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 	}
 	if !fact.detailsValid {
 		b.hasUnexplained = true
+		if isTLSFailureErrorCode(fact.errorCode) {
+			return
+		}
+		if isServiceGreetingKind(fact.kind) && (fact.status == StatusHealthy || fact.errorCode == ResultErrorServiceGreetingUnverified) {
+			return
+		}
 		if fact.kind == KindTraceroute && traceDetailsRequired(fact.errorCode) {
 			return
 		}
@@ -103,11 +111,7 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 			"Verify TLS end to end", "Inspect each redirect and the final endpoint and verify that HTTPS is preserved throughout.", "Every redirect and the final response use verified TLS.", "Escalate to the endpoint owner if any redirect or final response still leaves TLS.")
 		return
 	}
-	if fact.errorCode == "tls_handshake_failed" {
-		b.add(fact, FindingTLSHandshakeFailed, SeverityCritical, CategorySecurity,
-			"TLS handshake did not complete", "The transport connected, but the TLS handshake failed.", ConfidenceDirect,
-			"error_code", fact.errorCode, "verified TLS handshake", ProvenanceResult,
-			"Verify the TLS endpoint", "Check the certificate chain, server name, protocol versions, and cipher compatibility, then repeat the check.", "The TLS handshake completes with the intended endpoint.", "Escalate to the TLS endpoint owner if the handshake still fails with a valid trust chain and server name.")
+	if b.addTLSFailure(fact) {
 		return
 	}
 	if fact.hasCertificate && !fact.certificateExpires.After(now) {
@@ -132,6 +136,12 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 			"error_code", fact.errorCode, "available checker execution capacity", ProvenanceResult,
 			"Retry after capacity is available", "Repeat the check after existing checker work has completed.", "The repeated check is admitted and completes with an observation.", "Escalate to the runtime owner if checker capacity remains unavailable.")
 		return
+	case "traceroute_unavailable":
+		b.add(fact, FindingTracerouteUnavailable, SeverityInfo, CategoryExecution,
+			"Traceroute is unavailable", "No functional traceroute capability was established at startup, so route health was not observed.", ConfidenceDirect,
+			"error_code", fact.errorCode, "functional traceroute capability established at startup", ProvenanceResult,
+			"Restore traceroute capability", "Install or repair the supported traceroute executable, then restart the service so startup can probe it.", "The restarted service reports ready and a traceroute check produces an observation.", "Escalate to the runtime owner if the startup capability probe remains unavailable.")
+		return
 	case "network_policy_blocked":
 		b.add(fact, FindingTargetPolicyBlocked, SeverityWarning, CategoryInput,
 			"Target is blocked by deployment policy", "The public deployment policy rejected the target before a network connection was attempted.", ConfidenceDirect,
@@ -145,12 +155,18 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 			"Correct the target", "Verify the target syntax, scheme, hostname, and port, then run the check again.", "The corrected target is accepted and produces an observation.", "Escalate to the client or configuration owner if a valid target is still rejected.")
 		return
 	case "timeout":
+		if fact.kind == KindTraceroute {
+			break
+		}
 		b.add(fact, FindingExecutionTimeout, SeverityWarning, CategoryExecution,
 			"Check timed out", "The check did not complete within its execution deadline.", ConfidenceDirect,
 			"error_code", fact.errorCode, "completion before the configured deadline", ProvenanceResult,
 			"Verify the timeout", "Retry once with the same bounded timeout and verify endpoint responsiveness from the same vantage point.", "The check completes before the configured deadline.", "Escalate if repeated bounded checks time out after endpoint availability is independently verified.")
 		return
 	case "cancelled":
+		if fact.kind == KindTraceroute {
+			break
+		}
 		b.add(fact, FindingExecutionCancelled, SeverityInfo, CategoryExecution,
 			"Check was cancelled", "The check ended after cancellation, so service health was not established.", ConfidenceDirect,
 			"error_code", fact.errorCode, "completed observation", ProvenanceResult,
@@ -160,16 +176,15 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 		b.hasUnexplained = true
 		b.analysis.Coverage.Limitations = append(b.analysis.Coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: fact.index, Kind: fact.kind, Signal: "response_body", Reason: "the bounded HTTP response sample could not be completed"})
 		return
+	case ResultErrorServiceGreetingUnverified:
+		b.add(fact, FindingServiceGreetingUnverified, SeverityWarning, CategoryApplication,
+			"Service greeting was not verified", "The transport connected, but the expected server-first service greeting was not verified.", ConfidenceDirect,
+			"error_code", fact.errorCode, "expected server-first greeting", ProvenanceResult,
+			"Verify the service greeting", "Verify that the intended service is listening and returns its expected server-first greeting without client input, then repeat the check.", "The endpoint returns the expected bounded server-first greeting.", "Escalate to the service owner if the expected greeting is still not verified after listener and protocol configuration are confirmed.")
+		return
 	}
 
 	if fact.kind == KindTraceroute {
-		if fact.errorCode == "traceroute_failed" {
-			b.add(fact, FindingTracerouteExecutionFailed, SeverityWarning, CategoryExecution,
-				"Traceroute execution did not complete", "The traceroute command failed, so destination reachability was not established.", ConfidenceDirect,
-				"error_code", fact.errorCode, "completed traceroute execution", ProvenanceResult,
-				"Verify traceroute execution", "Verify the traceroute executable and permissions, then repeat the bounded check.", "The command completes and produces a parseable route observation.", "Escalate to the runtime owner if the traceroute command still cannot complete.")
-			return
-		}
 		b.analyzeTrace(fact)
 		return
 	}
@@ -211,6 +226,7 @@ func (b *analysisBuilder) analyzeTrace(fact normalizedResultFacts) {
 		return
 	}
 	if fact.traceExecutionFail > 0 {
+		genericFailed := fact.traceExecutionFail - fact.traceTimedOut - fact.traceCancelled
 		switch {
 		case fact.traceTimedOut == fact.traceExecutionFail:
 			b.add(fact, FindingExecutionTimeout, SeverityWarning, CategoryExecution,
@@ -219,38 +235,53 @@ func (b *analysisBuilder) analyzeTrace(fact normalizedResultFacts) {
 				"Repeat the timed-out trace", "Repeat the bounded trace from the same vantage point.", "Every attempt completes before its deadline.", "Escalate if bounded attempts repeatedly time out after runtime availability is verified.")
 		case fact.traceCancelled == fact.traceExecutionFail:
 			b.add(fact, FindingExecutionCancelled, SeverityInfo, CategoryExecution,
-				"Traceroute attempts were cancelled", "Traceroute execution was cancelled, so route reachability was not established.", ConfidenceDirect,
+				"Traceroute attempts were cancelled", "One or more traceroute attempts ended after cancellation.", ConfidenceDirect,
 				"traceroute.attempts_cancelled", strconv.Itoa(fact.traceCancelled), "0", ProvenanceDetails,
 				"Repeat the cancelled trace", "Run the trace again when the request can remain active.", "The repeated trace completes.", "Escalate if traces are cancelled without caller cancellation.")
+		case genericFailed == fact.traceExecutionFail:
+			b.add(fact, FindingTracerouteExecutionFailed, SeverityWarning, CategoryExecution,
+				"Traceroute command attempts failed", "One or more traceroute command attempts did not produce a completed route observation.", ConfidenceDirect,
+				"traceroute.attempts_execution_failed", strconv.Itoa(fact.traceExecutionFail), "0", ProvenanceDetails,
+				"Verify traceroute execution", "Verify the traceroute executable and permissions, then repeat the bounded check.", "Every command attempt completes and produces a parseable route observation.", "Escalate to the runtime owner if traceroute command attempts still cannot complete.")
 		default:
-			b.hasUnexplained = true
-			b.analysis.Coverage.Limitations = append(b.analysis.Coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: fact.index, Kind: fact.kind, Signal: "trace_execution", Reason: "traceroute attempts ended with mixed execution outcomes"})
+			observed := fmt.Sprintf("%d execution failures: %d timed out, %d cancelled, %d command errors", fact.traceExecutionFail, fact.traceTimedOut, fact.traceCancelled, genericFailed)
+			b.add(fact, FindingTracerouteExecutionFailed, SeverityWarning, CategoryExecution,
+				"Traceroute attempts had multiple execution failures", "Traceroute attempts ended with more than one recorded execution-failure class.", ConfidenceDirect,
+				"traceroute.execution_failures", observed, "0 execution failures", ProvenanceDetails,
+				"Verify traceroute execution", "Repeat the bounded trace and verify each execution-failure class separately.", "Every command attempt completes and produces a parseable route observation.", "Escalate to the runtime owner if execution failures recur.")
 		}
-		return
 	}
-	observed := fmt.Sprintf("%d/%d attempts reached", fact.traceReached, fact.traceTotal)
+
+	completed := fact.traceReached + fact.traceUnreached
+	observed := fmt.Sprintf("%d/%d completed attempts reached", fact.traceReached, completed)
 	switch {
-	case fact.traceTotal > 0 && fact.traceReached == 0:
+	case fact.traceReached == 0 && fact.traceUnreached > 0:
 		b.add(fact, FindingTracerouteUnreachable, SeverityCritical, CategoryRouting,
-			"No traceroute attempt reached the destination", "The destination was not observed as reached in any recorded traceroute attempt.", ConfidenceDirect,
-			"traceroute.attempts_reached", observed, fmt.Sprintf("%d/%d attempts reached", fact.traceTotal, fact.traceTotal), ProvenanceDetails,
-			"Verify the route from the same vantage point", "Repeat the bounded trace and compare the last responsive hop and destination reachability.", "At least one trace reaches the destination or identifies a stable last responsive hop.", "Escalate with the recorded hops if repeated traces still do not reach the destination.")
-	case fact.traceReached < fact.traceTotal:
+			"No completed traceroute attempt reached the destination", "The destination was not observed as reached in any completed traceroute attempt.", ConfidenceDirect,
+			"traceroute.attempts_reached", observed, fmt.Sprintf("%d/%d completed attempts reached", completed, completed), ProvenanceDetails,
+			"Verify the route from the same vantage point", "Repeat the bounded trace and compare the last responsive hop and destination reachability.", "At least one completed trace reaches the destination or identifies a stable last responsive hop.", "Escalate with the recorded hops if repeated completed traces still do not reach the destination.")
+	case fact.traceReached > 0 && fact.traceUnreached > 0:
 		b.add(fact, FindingTraceroutePartialReachability, SeverityWarning, CategoryRouting,
-			"Traceroute reachability varied across attempts", "Some recorded traceroute attempts reached the destination and others did not.", ConfidenceDirect,
-			"traceroute.attempts_reached", observed, fmt.Sprintf("%d/%d attempts reached", fact.traceTotal, fact.traceTotal), ProvenanceDetails,
-			"Compare repeated routes", "Compare reached and unreached attempts for the first stable divergence while preserving the same vantage point.", "Repeated attempts show consistent reachability or a reproducible divergence.", "Escalate with both route sets if the variation persists.")
-	case fact.tracePathUnstable:
-		b.add(fact, FindingTraceroutePathUnstable, SeverityWarning, CategoryRouting,
-			"Traceroute paths varied across attempts", "Successful attempts observed more than one hop sequence from the same vantage point.", ConfidenceDirect,
-			"traceroute.path_signatures", "multiple successful path signatures", "one stable successful path signature", ProvenanceDetails,
-			"Compare path variants", "Repeat the bounded trace and compare the first hop where successful paths diverge.", "The path stabilizes or the same divergence is reproduced.", "Escalate with the successful path variants if the divergence persists.")
-	case fact.tracePathDegraded:
-		b.add(fact, FindingTraceroutePathDegraded, SeverityWarning, CategoryRouting,
-			"A degraded route segment was observed", "The traceroute producer classified at least one recorded hop or link as degraded.", ConfidenceLimited,
-			"traceroute.path_status", "degraded segment observed", "no producer-classified degraded segment", ProvenanceDetails,
-			"Verify the degraded segment", "Repeat the trace and compare the same hop transition across attempts and another approved vantage point.", "The segment is either consistently degraded or returns to the normal baseline.", "Escalate with repeated hop evidence; do not infer packet loss or a root cause from traceroute alone.")
-	default:
+			"Traceroute reachability varied across completed attempts", "Some completed traceroute attempts reached the destination and others did not.", ConfidenceDirect,
+			"traceroute.attempts_reached", observed, fmt.Sprintf("%d/%d completed attempts reached", completed, completed), ProvenanceDetails,
+			"Compare repeated routes", "Compare reached and unreached completed attempts for the first stable divergence while preserving the same vantage point.", "Repeated completed attempts show consistent reachability or a reproducible divergence.", "Escalate with both route sets if the variation persists.")
+	}
+
+	if fact.tracePathCompleted > 0 {
+		switch {
+		case fact.tracePathUnstable && fact.tracePathReached >= 2:
+			b.add(fact, FindingTraceroutePathUnstable, SeverityWarning, CategoryRouting,
+				"Traceroute paths varied across attempts", "Successful completed attempts observed more than one hop sequence from the same vantage point.", ConfidenceDirect,
+				"traceroute.path_signatures", fmt.Sprintf("multiple successful completed path signatures among %d reached completed attempts", fact.tracePathReached), "one stable successful completed path signature", ProvenanceDetails,
+				"Compare path variants", "Repeat the bounded trace and compare the first hop where successful completed paths diverge.", "The path stabilizes or the same divergence is reproduced.", "Escalate with the successful completed path variants if the divergence persists.")
+		case fact.tracePathDegraded:
+			b.add(fact, FindingTraceroutePathDegraded, SeverityWarning, CategoryRouting,
+				"A degraded route segment was observed", "The traceroute producer classified at least one completed route hop or link as degraded.", ConfidenceLimited,
+				"traceroute.path_status", completedPathEvidenceCount(fact.tracePathCompleted), "no producer-classified degraded segment in completed path evidence", ProvenanceDetails,
+				"Verify the degraded segment", "Repeat the trace and compare the same hop transition across completed attempts and another approved vantage point.", "The repeated observations show whether the segment status remains degraded.", "Escalate with the repeated hop and route observations if the segment status remains degraded.")
+		}
+	}
+	if fact.traceExecutionFail == 0 && fact.traceUnreached == 0 && !fact.tracePathUnstable && !fact.tracePathDegraded {
 		b.hasUnexplained = true
 	}
 }
@@ -259,6 +290,37 @@ func (b *analysisBuilder) addCertificate(fact normalizedResultFacts, code Findin
 	b.add(fact, code, severity, CategorySecurity, title, summary, ConfidenceDirect,
 		"tls.certificate_expires_at", fact.certificateExpires.UTC().Format(time.RFC3339), "certificate valid beyond the 30-day renewal window", ProvenanceDetails,
 		"Verify certificate renewal", "Confirm the deployed certificate chain and renewal schedule on the observed endpoint.", "The endpoint presents a currently valid certificate with adequate renewal margin.", "Escalate to the certificate owner if renewal or deployment cannot be confirmed before expiry.")
+}
+
+func (b *analysisBuilder) addTLSFailure(fact normalizedResultFacts) bool {
+	type template struct {
+		code           FindingCode
+		title          string
+		summary        string
+		actionTitle    string
+		step           string
+		expectedResult string
+		escalation     string
+	}
+	var value template
+	switch fact.errorCode {
+	case ResultErrorTLSCertificateExpired:
+		value = template{FindingTLSCertificateExpired, "TLS certificate is expired", "The TLS certificate was expired at the verification time.", "Renew the TLS certificate", "Renew and deploy the intended certificate chain, then repeat the check.", "The endpoint presents a certificate that is valid at verification time.", "Escalate to the certificate owner if a current certificate cannot be deployed."}
+	case ResultErrorTLSCertificateNotYetValid:
+		value = template{FindingTLSCertificateNotYetValid, "TLS certificate is not yet valid", "The TLS certificate was not yet valid at the verification time.", "Verify certificate activation", "Verify the endpoint certificate deployment and system clocks, then repeat the check.", "The endpoint presents a certificate that is valid at verification time.", "Escalate to the certificate owner if the validity window or deployment remains incorrect."}
+	case ResultErrorTLSHostnameMismatch:
+		value = template{FindingTLSHostnameMismatch, "TLS certificate name does not match", "The TLS certificate did not match the requested server name.", "Correct the TLS server identity", "Deploy a certificate for the requested server name and verify endpoint routing, then repeat the check.", "Certificate verification succeeds for the requested server name.", "Escalate to the TLS endpoint owner if the intended name still does not verify."}
+	case ResultErrorTLSUntrusted:
+		value = template{FindingTLSUntrusted, "TLS certificate is not trusted", "The TLS certificate chain did not verify to a trusted authority.", "Correct the TLS trust chain", "Deploy the intended complete certificate chain and verify its trust anchor, then repeat the check.", "The endpoint certificate chain verifies to an approved trust anchor.", "Escalate to the certificate owner if the intended chain remains untrusted."}
+	case ResultErrorTLSHandshakeFailed:
+		value = template{FindingTLSHandshakeFailed, "TLS handshake did not complete", "The transport connected, but the TLS handshake failed.", "Verify the TLS endpoint", "Check the certificate chain, server name, protocol versions, and cipher compatibility, then repeat the check.", "The TLS handshake completes with the intended endpoint.", "Escalate to the TLS endpoint owner if the handshake still fails with a valid trust chain and server name."}
+	default:
+		return false
+	}
+	b.add(fact, value.code, SeverityCritical, CategorySecurity, value.title, value.summary, ConfidenceDirect,
+		"error_code", fact.errorCode, "verified TLS handshake", ProvenanceResult,
+		value.actionTitle, value.step, value.expectedResult, value.escalation)
+	return true
 }
 
 func (b *analysisBuilder) add(fact normalizedResultFacts, code FindingCode, severity FindingSeverity, category FindingCategory, title, summary string, confidence Confidence, signal, observed, expected string, provenance EvidenceProvenance, actionTitle, step, expectedResult, escalation string) {
@@ -288,6 +350,14 @@ func (b *analysisBuilder) finalize() {
 	sortCoverageIssues(b.analysis.Coverage.ProviderFailures)
 	sort.SliceStable(b.analysis.Findings, func(i, j int) bool {
 		a, c := b.analysis.Findings[i], b.analysis.Findings[j]
+		aFamily, aTrace := tracerouteFindingFamily(a, b.analysis.Evidence)
+		cFamily, cTrace := tracerouteFindingFamily(c, b.analysis.Evidence)
+		if aTrace != cTrace {
+			return aTrace
+		}
+		if aTrace && aFamily != cFamily {
+			return aFamily < cFamily
+		}
 		if severityRank(a.Severity) != severityRank(c.Severity) {
 			return severityRank(a.Severity) < severityRank(c.Severity)
 		}
@@ -296,6 +366,31 @@ func (b *analysisBuilder) finalize() {
 		}
 		return a.ID < c.ID
 	})
+}
+
+func tracerouteFindingFamily(finding Finding, evidence []Evidence) (int, bool) {
+	traceEvidence := false
+	for _, evidenceID := range finding.EvidenceIDs {
+		for _, item := range evidence {
+			if item.ID == evidenceID && item.Kind == KindTraceroute {
+				traceEvidence = true
+				break
+			}
+		}
+	}
+	if !traceEvidence {
+		return 0, false
+	}
+	switch finding.Code {
+	case FindingExecutionTimeout, FindingExecutionCancelled, FindingTracerouteExecutionFailed:
+		return 0, true
+	case FindingTracerouteUnreachable, FindingTraceroutePartialReachability:
+		return 1, true
+	case FindingTraceroutePathDegraded, FindingTraceroutePathUnstable:
+		return 2, true
+	default:
+		return 0, false
+	}
 }
 
 func sortCoverageIssues(issues []CoverageIssue) {
@@ -333,7 +428,7 @@ func sortedUnique(values []string) []string {
 	return result
 }
 
-func normalizeResults(results []Result, coverage *Coverage) []normalizedResultFacts {
+func normalizeResults(results []Result, coverage *Coverage, now time.Time) []normalizedResultFacts {
 	facts := make([]normalizedResultFacts, 0, len(results))
 	for index, result := range results {
 		fact := normalizedResultFacts{index: index, kind: result.Kind, address: result.Address, status: result.Status, statusValid: validStatus(result.Status), detailsValid: true, errorCode: result.ErrorCode}
@@ -349,9 +444,35 @@ func normalizeResults(results []Result, coverage *Coverage) []normalizedResultFa
 		if !supportedKind(result.Kind) {
 			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: index, Kind: result.Kind, Signal: "kind", Reason: "result kind is unsupported by this analysis version"})
 		}
-		if result.Details == nil {
+		tlsFailure := result.Status == StatusUnreachable && isTLSKind(result.Kind) && isTLSFailureErrorCode(result.ErrorCode)
+		greetingFailure := isServiceGreetingKind(result.Kind) && result.ErrorCode == ResultErrorServiceGreetingUnverified
+		tracerouteUnavailable := result.Kind == KindTraceroute && result.Status == StatusUnreachable && result.ErrorCode == "traceroute_unavailable"
+		if result.Details == nil && !(tlsFailure && tlsFailurePermitsNoDetails(result.ErrorCode)) && !greetingFailure && !tracerouteUnavailable {
 			coverage.Missing = append(coverage.Missing, fmt.Sprintf("results[%d].details", index))
 			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMissingDetails, ResultIndex: index, Kind: result.Kind, Signal: "details", Reason: "checker details were not observed"})
+		}
+		if tlsFailure {
+			if valid, missing := validTLSFailureDetails(result.ErrorCode, result.Details, now); !valid {
+				fact.detailsValid = false
+				if missing {
+					coverage.Missing = append(coverage.Missing, fmt.Sprintf("results[%d].details.tls_validity", index))
+				}
+				coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "tls_failure_details", Reason: "TLS failure details did not match the closed error-code contract"})
+			}
+		}
+		if isServiceGreetingKind(result.Kind) && (result.Status == StatusHealthy || greetingFailure) {
+			if !validServiceGreetingDetails(result) {
+				fact.detailsValid = false
+				if result.Status == StatusHealthy {
+					if _, exists := result.Details[ResultDetailVerificationScope]; !exists {
+						coverage.Missing = append(coverage.Missing, fmt.Sprintf("results[%d].details.verification_scope", index))
+					}
+				}
+				coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "service_verification_details", Reason: "service greeting status, error code, scope, or details did not match the closed result contract"})
+			} else if result.Status == StatusHealthy {
+				coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.verification_scope", index))
+				coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: index, Kind: result.Kind, Signal: "service_verification_scope", Reason: "only the expected server-first greeting was observed; command, authentication, STARTTLS, mailbox, and end-to-end service behavior were not tested"})
+			}
 		}
 		if result.Status == StatusHealthy && result.Kind == KindDNS {
 			addresses, addressesOK := stringSliceDetail(result.Details, "addresses")
@@ -405,25 +526,25 @@ func normalizeResults(results []Result, coverage *Coverage) []normalizedResultFa
 		}
 		if isTLSKind(result.Kind) && result.Details != nil {
 			if result.Status == StatusHealthy {
-				if version, ok := stringDetail(result.Details, "tls_version"); !ok || strings.TrimSpace(version) == "" {
+				if version, ok := stringDetail(result.Details, ResultDetailTLSVersion); !ok || strings.TrimSpace(version) == "" {
 					fact.detailsValid = false
 					coverage.Missing = append(coverage.Missing, fmt.Sprintf("results[%d].details.tls", index))
 					coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMissingDetails, ResultIndex: index, Kind: result.Kind, Signal: "tls", Reason: "healthy TLS result lacked handshake facts"})
 				}
-				if _, exists := result.Details["certificate_expires_at"]; !exists {
+				if _, exists := result.Details[ResultDetailCertificateExpires]; !exists {
 					fact.detailsValid = false
 					coverage.Missing = append(coverage.Missing, fmt.Sprintf("results[%d].details.tls_certificate", index))
 					coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMissingDetails, ResultIndex: index, Kind: result.Kind, Signal: "tls_certificate", Reason: "healthy TLS result lacked certificate expiry facts"})
 				}
 			}
-			if expires, ok := timeDetail(result.Details, "certificate_expires_at"); ok {
+			if expires, ok := timeDetail(result.Details, ResultDetailCertificateExpires); ok {
 				fact.certificateExpires, fact.hasCertificate = expires, true
 				coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.tls_certificate", index))
-			} else if _, exists := result.Details["certificate_expires_at"]; exists {
-				coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "certificate_expires_at", Reason: "certificate expiry detail was malformed"})
+			} else if _, exists := result.Details[ResultDetailCertificateExpires]; exists {
+				coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: ResultDetailCertificateExpires, Reason: "certificate expiry detail was malformed"})
 			}
 		}
-		if result.Kind == KindTraceroute {
+		if result.Kind == KindTraceroute && !tracerouteUnavailable {
 			legacyGeoIPFailures, legacyGeoIPFailuresOK := integerDetail(result.Details, "geoip_provider_failures")
 			if legacyGeoIPFailuresOK && legacyGeoIPFailures > 0 {
 				coverage.ProviderFailures = append(coverage.ProviderFailures, CoverageIssue{Code: CoverageMissingDetails, ResultIndex: index, Kind: result.Kind, Signal: "geoip", Reason: fmt.Sprintf("%d GeoIP enrichment lookups failed", legacyGeoIPFailures)})
@@ -450,44 +571,41 @@ func normalizeResults(results []Result, coverage *Coverage) []normalizedResultFa
 			_, executionExists := result.Details["attempts_execution_failed"]
 			_, timedOutExists := result.Details["attempts_timed_out"]
 			_, cancelledExists := result.Details["attempts_cancelled"]
-			legacyCounters := !unreachedExists && !executionExists && !timedOutExists && !cancelledExists
-			if legacyCounters {
-				switch result.ErrorCode {
-				case "timeout":
-					unreached, executionFailed, timedOut, cancelled = 0, failed, failed, 0
-				case "cancelled":
-					unreached, executionFailed, timedOut, cancelled = 0, failed, 0, failed
-				case "traceroute_failed", "traceroute_execution_incomplete":
-					unreached, executionFailed, timedOut, cancelled = 0, failed, 0, 0
-				default:
-					unreached, executionFailed, timedOut, cancelled = failed, 0, 0, 0
-				}
-				unreachedOK, executionOK, timedOutOK, cancelledOK = true, true, true, true
-			}
-			if totalOK && reachedOK && failedOK && unreachedOK && executionOK && timedOutOK && cancelledOK && total > 0 && total <= MaxTraceAttempts && reached >= 0 && failed >= 0 && unreached >= 0 && executionFailed >= 0 && timedOut >= 0 && cancelled >= 0 && reached+failed == total && reached+unreached+executionFailed == total && timedOut+cancelled <= executionFailed && traceCountersMatchStatus(result.Status, total, reached) {
+			if totalOK && reachedOK && failedOK && unreachedOK && executionOK && timedOutOK && cancelledOK && total > 0 && total <= MaxTraceAttempts && reached >= 0 && reached <= total && failed >= 0 && failed <= total && unreached >= 0 && unreached <= total && executionFailed >= 0 && executionFailed <= total && timedOut >= 0 && timedOut <= executionFailed && cancelled >= 0 && cancelled <= executionFailed && failed == unreached+executionFailed && total-reached == failed && timedOut <= executionFailed-cancelled && traceCountersMatchStatus(result.Status, total, reached) {
 				fact.traceTotal, fact.traceReached, fact.traceFailed, fact.hasTraceCounters = total, reached, failed, true
 				fact.traceUnreached, fact.traceExecutionFail, fact.traceTimedOut, fact.traceCancelled = unreached, executionFailed, timedOut, cancelled
 				topologyValue, topologyExists := result.Details["topology"]
 				topology, topologyOK := normalizedTopology(topologyValue)
-				if topologyOK {
-					fact.tracePathDegraded = topologyDegraded(topology)
-				}
 				attemptsObserved := false
 				if attemptsValue, exists := result.Details["attempts"]; exists {
 					attemptsObserved = true
 					attempts, ok := normalizedTraceAttempts(attemptsValue)
-					if ok && traceAttemptsMatchCounters(attempts, total, reached, unreached, executionFailed, timedOut, cancelled) {
-						fact.tracePathUnstable = tracePathsUnstable(attempts)
+					eligible, eligibleOK := eligibleCompletedTraceAttempts(attempts, reached, unreached)
+					if ok && traceAttemptsMatchCounters(attempts, total, reached, unreached, executionFailed, timedOut, cancelled) && eligibleOK {
+						attemptsDegraded := traceAttemptsDegraded(eligible)
+						if topologyOK && topologyDegraded(topology) && !attemptsDegraded {
+							coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "trace_paths", Reason: "traceroute aggregate topology contradicted completed attempt path evidence"})
+						}
+						fact.tracePathCompleted = len(eligible)
+						fact.tracePathReached = reached
+						fact.tracePathDegraded = attemptsDegraded
+						fact.tracePathUnstable = tracePathsUnstable(eligible)
 						coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.trace_paths", index))
 					} else {
 						fact.hasTraceCounters = false
 						fact.detailsValid = false
 						reason := "traceroute attempts were malformed"
 						if ok {
-							reason = "traceroute attempts contradicted aggregate counters"
+							reason = "traceroute attempts contradicted aggregate counters or completed path evidence"
 						}
 						coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "trace_paths", Reason: reason})
 					}
+				} else if executionFailed == 0 && topologyOK && ((topology.Reached && reached > 0) || (!topology.Reached && unreached > 0)) {
+					fact.tracePathCompleted = 1
+					if topology.Reached {
+						fact.tracePathReached = 1
+					}
+					fact.tracePathDegraded = topologyDegraded(topology)
 				}
 				if !traceOuterErrorMatches(result.ErrorCode, result.Status, total, reached, unreached, executionFailed, timedOut, cancelled) {
 					fact.hasTraceCounters = false
@@ -518,7 +636,7 @@ func normalizeResults(results []Result, coverage *Coverage) []normalizedResultFa
 				}
 			} else {
 				fact.detailsValid = false
-				if !totalExists || !reachedExists || !failedExists || (!legacyCounters && (!unreachedExists || !executionExists || !timedOutExists || !cancelledExists)) {
+				if !totalExists || !reachedExists || !failedExists || !unreachedExists || !executionExists || !timedOutExists || !cancelledExists {
 					coverage.Missing = append(coverage.Missing, fmt.Sprintf("results[%d].details.trace_attempts", index))
 				}
 				coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "trace_attempts", Reason: "traceroute counters were missing, malformed, or inconsistent"})
@@ -705,11 +823,11 @@ func traceOuterErrorMatches(errorCode string, status Status, total, reached, unr
 	case "":
 		return status == StatusHealthy || status == StatusDegraded
 	case "timeout":
-		return status == StatusUnreachable && executionFailed == total && timedOut == total
+		return status == StatusUnreachable && reached == 0 && executionFailed > 0 && timedOut == executionFailed
 	case "cancelled":
-		return status == StatusUnreachable && executionFailed == total && cancelled == total
+		return status == StatusUnreachable && reached == 0 && executionFailed > 0 && cancelled == executionFailed
 	case "traceroute_failed":
-		return status == StatusUnreachable && executionFailed == total && timedOut == 0 && cancelled == 0
+		return status == StatusUnreachable && reached == 0 && executionFailed > 0 && timedOut == 0 && cancelled == 0
 	case "traceroute_execution_incomplete":
 		genericFailed := executionFailed - timedOut - cancelled
 		categories := 0
@@ -722,7 +840,7 @@ func traceOuterErrorMatches(errorCode string, status Status, total, reached, unr
 		if cancelled > 0 {
 			categories++
 		}
-		return status == StatusUnreachable && executionFailed == total && categories >= 2
+		return status == StatusUnreachable && reached == 0 && executionFailed > 0 && categories >= 2
 	case "destination_unreached":
 		return status == StatusUnreachable && reached == 0 && unreached == total && executionFailed == 0
 	default:
@@ -740,15 +858,71 @@ func validErrorCode(fact normalizedResultFacts) bool {
 	switch fact.errorCode {
 	case "network_policy_blocked", "invalid_url", "invalid_address", "timeout", "cancelled", "connection_failed", "response_read_failed", "checker_panic", "checker_capacity_unavailable":
 		return true
+	case "traceroute_unavailable":
+		return fact.kind == KindTraceroute
+	case ResultErrorServiceGreetingUnverified:
+		return fact.status == StatusDegraded && isServiceGreetingKind(fact.kind)
 	case "tls_downgrade", "unexpected_status":
 		return fact.kind == KindHTTP || fact.kind == KindHTTPS
-	case "tls_handshake_failed":
-		return isTLSKind(fact.kind)
+	case ResultErrorTLSCertificateExpired, ResultErrorTLSCertificateNotYetValid, ResultErrorTLSHostnameMismatch, ResultErrorTLSUntrusted, ResultErrorTLSHandshakeFailed:
+		return fact.status == StatusUnreachable && isTLSKind(fact.kind)
 	case "destination_unreached", "traceroute_failed", "traceroute_execution_incomplete":
 		return fact.kind == KindTraceroute
 	default:
 		return false
 	}
+}
+
+func isTLSFailureErrorCode(code string) bool {
+	switch code {
+	case ResultErrorTLSCertificateExpired, ResultErrorTLSCertificateNotYetValid, ResultErrorTLSHostnameMismatch, ResultErrorTLSUntrusted, ResultErrorTLSHandshakeFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func tlsFailurePermitsNoDetails(code string) bool {
+	return code == ResultErrorTLSHostnameMismatch || code == ResultErrorTLSUntrusted || code == ResultErrorTLSHandshakeFailed
+}
+
+func validTLSFailureDetails(code string, details map[string]any, now time.Time) (valid, missing bool) {
+	if tlsFailurePermitsNoDetails(code) {
+		return len(details) == 0, false
+	}
+	if code != ResultErrorTLSCertificateExpired && code != ResultErrorTLSCertificateNotYetValid {
+		return false, false
+	}
+	if len(details) != 2 {
+		_, before := details[ResultDetailCertificateBefore]
+		_, after := details[ResultDetailCertificateAfter]
+		return false, !before || !after
+	}
+	before, beforeOK := canonicalUTCRFC3339Detail(details, ResultDetailCertificateBefore)
+	after, afterOK := canonicalUTCRFC3339Detail(details, ResultDetailCertificateAfter)
+	if !beforeOK || !afterOK || !before.Before(after) {
+		return false, false
+	}
+	switch code {
+	case ResultErrorTLSCertificateExpired:
+		return !now.Before(after), false
+	case ResultErrorTLSCertificateNotYetValid:
+		return now.Before(before), false
+	default:
+		return false, false
+	}
+}
+
+func canonicalUTCRFC3339Detail(details map[string]any, key string) (time.Time, bool) {
+	text, ok := details[key].(string)
+	if !ok {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339, text)
+	if err != nil || parsed.UTC().Format(time.RFC3339) != text {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
 }
 
 func isTLSKind(kind Kind) bool {
@@ -758,6 +932,58 @@ func isTLSKind(kind Kind) bool {
 	default:
 		return false
 	}
+}
+
+func isServiceGreetingKind(kind Kind) bool {
+	switch kind {
+	case KindSSH, KindSMTP, KindSubmission, KindSMTPS, KindIMAP, KindIMAPS, KindPOP3, KindPOP3S:
+		return true
+	default:
+		return false
+	}
+}
+
+func validServiceGreetingDetails(result Result) bool {
+	if result.ErrorCode == ResultErrorServiceGreetingUnverified {
+		return result.Status == StatusDegraded && len(result.Details) == 0
+	}
+	if result.Status != StatusHealthy || result.ErrorCode != "" || result.Details == nil {
+		return false
+	}
+	scope, ok := stringDetail(result.Details, ResultDetailVerificationScope)
+	if !ok || scope != VerificationScopeServerGreeting {
+		return false
+	}
+	allowed := map[string]struct{}{ResultDetailVerificationScope: struct{}{}}
+	if isTLSKind(result.Kind) {
+		for _, key := range []string{ResultDetailTLSVersion, ResultDetailCipherSuite, ResultDetailCertificateSubject, ResultDetailCertificateExpires} {
+			allowed[key] = struct{}{}
+		}
+		if value, exists := result.Details[ResultDetailTLSVersion]; exists {
+			text, valid := value.(string)
+			if !valid || strings.TrimSpace(text) == "" {
+				return false
+			}
+		}
+		for _, key := range []string{ResultDetailCipherSuite, ResultDetailCertificateSubject} {
+			if value, exists := result.Details[key]; exists {
+				if _, valid := value.(string); !valid {
+					return false
+				}
+			}
+		}
+		if _, exists := result.Details[ResultDetailCertificateExpires]; exists {
+			if _, valid := timeDetail(result.Details, ResultDetailCertificateExpires); !valid {
+				return false
+			}
+		}
+	}
+	for key := range result.Details {
+		if _, ok := allowed[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func isEndpointKind(kind Kind) bool {
@@ -771,7 +997,7 @@ func isEndpointKind(kind Kind) bool {
 
 func isConnectionDetailKind(kind Kind) bool {
 	switch kind {
-	case KindTCP, KindSSH, KindSMTP, KindSubmission, KindSMTPS, KindIMAP, KindIMAPS, KindPOP3, KindPOP3S:
+	case KindTCP:
 		return true
 	default:
 		return false
@@ -975,10 +1201,62 @@ func traceAttemptsMatchCounters(attempts []TraceAttempt, total, reached, unreach
 	return observedReached == reached && observedUnreached == unreached && observedExecution == executionFailed && observedTimedOut == timedOut && observedCancelled == cancelled
 }
 
+func eligibleCompletedTraceAttempts(attempts []TraceAttempt, reached, unreached int) ([]TraceAttempt, bool) {
+	if len(attempts) == 0 || reached < 0 || unreached < 0 {
+		return nil, false
+	}
+	eligible := make([]TraceAttempt, 0, reached+unreached)
+	observedReached, observedUnreached := 0, 0
+	for _, attempt := range attempts {
+		if attempt.ErrorCode != "" {
+			continue
+		}
+		if attempt.Topology == nil || attempt.Status != topologyStatus(*attempt.Topology) {
+			return nil, false
+		}
+		eligible = append(eligible, attempt)
+		if attempt.Topology.Reached {
+			observedReached++
+		} else {
+			observedUnreached++
+		}
+	}
+	if len(eligible) != reached+unreached || observedReached != reached || observedUnreached != unreached {
+		return nil, false
+	}
+	return eligible, true
+}
+
+func completedPathEvidenceCount(count int) string {
+	noun := "attempts"
+	if count == 1 {
+		noun = "attempt"
+	}
+	return fmt.Sprintf("degraded segment observed among %d completed %s", count, noun)
+}
+
+func traceAttemptsDegraded(attempts []TraceAttempt) bool {
+	for _, attempt := range attempts {
+		if attempt.ErrorCode == "" && attempt.Topology != nil && topologyDegraded(*attempt.Topology) {
+			return true
+		}
+	}
+	return false
+}
+
 func tracePathsUnstable(attempts []TraceAttempt) bool {
+	reachedAttempts := 0
+	for _, attempt := range attempts {
+		if attempt.ErrorCode == "" && attempt.Topology != nil && attempt.Topology.Reached {
+			reachedAttempts++
+		}
+	}
+	if reachedAttempts < 2 {
+		return false
+	}
 	signatures := make(map[string]struct{})
 	for _, attempt := range attempts {
-		if attempt.Topology == nil || !attempt.Topology.Reached {
+		if attempt.ErrorCode != "" || attempt.Topology == nil || !attempt.Topology.Reached {
 			continue
 		}
 		nodes := append([]TopologyNode(nil), attempt.Topology.Nodes...)

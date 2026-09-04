@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +96,81 @@ func TestCIIsFreshSelfContainedAndNonRecursive(t *testing.T) {
 	}
 }
 
+func TestAPIOfflineArchiveFoundationIsTaglessAndDaemonReadOnly(t *testing.T) {
+	realTest := repositoryFile(t, "scripts/verify_api_archive_real_test.sh")
+	exactPrefix := "docker buildx build --platform linux/amd64 --no-cache --provenance=false"
+	if count := strings.Count(realTest, exactPrefix); count != 2 {
+		t.Fatalf("real API archive test must define exactly two no-cache tagless buildx builds, got %d", count)
+	}
+	for _, required := range []string{
+		"--build-arg \"VERSION=$version\"",
+		"--build-arg \"REVISION=$revision\"",
+		"--build-arg \"SOURCE_DATE_EPOCH=$source_date_epoch\"",
+		"--output=type=docker,dest=\"$archive_one\",rewrite-timestamp=true .",
+		"--output=type=docker,dest=\"$archive_two\",rewrite-timestamp=true .",
+		"verify_api_archive.py", "--extract-dir", "--binary-sha256",
+		"daemon image inventory changed", "daemon tag inventory changed",
+	} {
+		if !strings.Contains(realTest, required) {
+			t.Errorf("offline API archive real test missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"--load", "--tag", "docker load", "docker import", "docker image rm", "docker rmi"} {
+		if strings.Contains(realTest, forbidden) {
+			t.Errorf("offline API archive build must not use %q", forbidden)
+		}
+	}
+	validator := repositoryFile(t, "scripts/verify_api_archive.py")
+	for _, forbidden := range []string{"import subprocess", "import docker", "extractall(", ".extract("} {
+		if strings.Contains(validator, forbidden) {
+			t.Errorf("offline validator contains forbidden dependency/unsafe extraction %q", forbidden)
+		}
+	}
+}
+
+func TestWebOfflineArchiveRealBuildxGateIsSinglePlatformTaglessAndDaemonReadOnly(t *testing.T) {
+	realTest := repositoryFile(t, "scripts/verify_web_archive_real_test.sh")
+	for _, required := range []string{
+		"web-base-context", "chmod 0700", "FROM nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10",
+		"--platform linux/amd64", "--no-cache --provenance=false", "SOURCE_DATE_EPOCH=0",
+		"rewrite-timestamp=true", "verify_web_archive.py", "cmp -s \"$base_archive_one\" \"$base_archive_two\"",
+		"cmp -s \"$archive_one\" \"$archive_two\"", "daemon image inventory changed",
+		"daemon tag inventory changed", "daemon container inventory changed", "daemon network inventory changed",
+		"trap cleanup EXIT", "trap 'handle_signal 129' HUP", "trap 'handle_signal 130' INT", "trap 'handle_signal 143' TERM",
+		"rm -rf -- \"$tmp\"", "real_test_hook base_archive_1",
+	} {
+		if !strings.Contains(realTest, required) {
+			t.Errorf("real Web archive gate missing %q", required)
+		}
+	}
+	if count := strings.Count(realTest, "docker buildx build --platform linux/amd64 --no-cache --provenance=false"); count != 4 {
+		t.Fatalf("real Web gate must perform two base and two derived single-platform Buildx exports, got %d", count)
+	}
+	for _, forbidden := range []string{"--load", "--tag", "docker load", "docker import", "docker image save", "docker image rm", "docker rmi"} {
+		if strings.Contains(realTest, forbidden) {
+			t.Errorf("real Web archive gate must not use %q", forbidden)
+		}
+	}
+	validator := repositoryFile(t, "scripts/verify_web_archive.py")
+	for _, required := range []string{"PINNED_NGINX_CONFIG_DIGEST", "PINNED_NGINX_LAYER_DIGESTS", "PINNED_NGINX_DIFF_IDS", "PINNED_NGINX_HISTORY_DIGEST", "base archive platform is not exact linux/amd64"} {
+		if !strings.Contains(validator, required) {
+			t.Errorf("Web validator exact base contract missing %q", required)
+		}
+	}
+}
+
+func TestOptInRealArchiveBuildxGoAndMakeGatesAreWired(t *testing.T) {
+	makefile := repositoryFile(t, "Makefile")
+	for _, required := range []string{
+		"verify-api-archive-real:", "verify-web-archive-real:", "verify-archives-real:",
+		"CHECKNETWORK_RUN_REAL_BUILDX_TESTS=1", "TestAPIOfflineArchiveRealBuildx", "TestWebOfflineArchiveRealBuildx",
+	} {
+		if !strings.Contains(makefile, required) {
+			t.Errorf("Makefile real archive gate missing %q", required)
+		}
+	}
+}
+
 func TestDockerImagesUseNonRootAPIAndFixedNginxWorkers(t *testing.T) {
 	apiDockerfile := repositoryFile(t, "Dockerfile")
 	if !strings.Contains(apiDockerfile, "USER 65532:65532") {
@@ -147,6 +223,14 @@ func TestComposeRuntimeContract(t *testing.T) {
 
 func TestReleaseDockerfileIsImmutableAndCarriesExactIdentity(t *testing.T) {
 	dockerfile := repositoryFile(t, "Dockerfile")
+	const alpineDigest = "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+	if count := strings.Count(dockerfile, "alpine@"+alpineDigest); count != 2 {
+		t.Fatalf("Dockerfile must use the exact audited Alpine digest for traceroute and final runtime stages, got %d", count)
+	}
+	validator := repositoryFile(t, "scripts/verify_api_archive.py")
+	if !strings.Contains(validator, `PINNED_ALPINE_IMAGE_DIGEST = "`+alpineDigest+`"`) {
+		t.Fatal("offline archive validator Alpine digest contract must match Dockerfile")
+	}
 	fromDigest := regexp.MustCompile(`(?m)^FROM [^[:space:]]+@sha256:[0-9a-f]{64}( AS (build|traceroute))?$`)
 	if matches := fromDigest.FindAllString(dockerfile, -1); len(matches) != 3 {
 		t.Fatalf("Dockerfile must pin builder, traceroute extraction, and runtime FROM images by digest, got %d: %s", len(matches), dockerfile)
@@ -173,19 +257,21 @@ func TestReleaseDockerfileIsImmutableAndCarriesExactIdentity(t *testing.T) {
 	}
 }
 
-func TestReleaseVerifierPublishesOnlyTheVerifiedImageBinary(t *testing.T) {
+func TestReleaseVerifierPublishesOnlyTheVerifiedArchiveBinary(t *testing.T) {
 	script := repositoryFile(t, "scripts/verify-release.sh")
 	for _, required := range []string{
-		"docker create --name", "docker cp", ":/checknetwork-api", "checknetwork-api-image-1", "checknetwork-api-image-2",
-		"binary reproducibility mismatch", "cp \"$tmp/checknetwork-api-image-1\" \"$publish_tmp\"",
+		"verify_api_archive.py", "--extract-dir \"$api_extract\"",
+		"API binary bytes differ between no-cache archives", "cp \"$api_extract_one/checknetwork-api\" \"$publish_tmp\"",
 		"mv -f \"$publish_tmp\" \"$release_output\"", "working tree changed during release verification",
 	} {
 		if !strings.Contains(script, required) {
-			t.Errorf("image binary publication contract missing %q", required)
+			t.Errorf("archive binary publication contract missing %q", required)
 		}
 	}
-	if strings.Contains(script, " go build ") || strings.Contains(script, "\ngo build ") {
-		t.Fatal("release verifier must not publish a separately host-built binary")
+	for _, forbidden := range []string{"docker cp", "docker load", "docker import", "docker image rm", "docker rmi", "--load", "--tag", "--iidfile", "api_image"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("release verifier retains forbidden derived API image lifecycle %q", forbidden)
+		}
 	}
 }
 
@@ -215,13 +301,24 @@ func TestReleaseVerifierAndMakeTargetsAreStrict(t *testing.T) {
 		"git ls-files --error-unmatch -- VERSION", "git show \"$revision:VERSION\"", "cmp -s - VERSION",
 		"git get-tar-commit-id", "git archive \"$revision\"", "cmp -s \"$archive_tar\" \"$canonical_archive\"",
 		"tar -xf \"$canonical_archive\"", "archive differs from canonical git archive", "SOURCE_DATE_EPOCH",
-		"for pass in 1 2", "sha256sum", "docker info", "DOCKER_BUILDKIT=1 docker build", "--no-cache", "--provenance=false", "docker image inspect", "RootFS.Layers",
-		"org.opencontainers.image.version", "org.opencontainers.image.revision", "test -x /traceroute", "/livez", "/readyz", "/api/v1/health",
+		"for pass in 1 2", "sha256sum", "docker info", "docker buildx build --no-cache --provenance=false", "rewrite-timestamp=true",
+		"verify_api_archive.py", "api_archive", "api_config", "api_manifest", "api_rootfs", "api_binary", "api_traceroute", "/livez", "/readyz", "/api/v1/health",
 		"trap cleanup EXIT", "trap 'handle_signal 129' HUP", "trap 'handle_signal 130' INT", "trap 'handle_signal 143' TERM",
-		"docker container rm -f --", "docker image rm -f --", "docker network rm --",
+		"create_owned_api_network", "create_owned_api_container", "docker container start \"$api_smoke_container_id\"",
+		"only proves pinned-base mount compatibility; it does not execute the derived API archive",
 	} {
 		if !strings.Contains(script, required) {
 			t.Errorf("release verifier missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"docker run ",
+		"docker cp", "docker load", "docker import", "docker image rm", "docker rmi", "--load", "--tag", "--iidfile",
+		"api_image", "api_container_role=extract",
+		"docker network rm -- \"$network_name\"",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("release verifier retains unsafe shared-daemon lifecycle %q", forbidden)
 		}
 	}
 	if strings.Contains(script, "eval ") || strings.Contains(script, "eval	") {
@@ -391,7 +488,7 @@ func TestReleaseVerifierRejectsStandaloneTarDespiteAmbientClaims(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -405,7 +502,7 @@ func TestReleaseVerifierRejectsStandaloneTarDespiteAmbientClaims(t *testing.T) {
 		}
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -442,7 +539,7 @@ func TestReleaseVerifierRejectsMutatedGitArchiveBeforeDocker(t *testing.T) {
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -465,7 +562,7 @@ func TestReleaseVerifierRejectsMutatedGitArchiveBeforeDocker(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "README.fixture", "scripts/verify-release.sh"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "README.fixture", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -526,7 +623,7 @@ func TestReleaseVerifierStandaloneUsesCanonicalTreeAndRejectsCheckoutMutation(t 
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -542,31 +639,15 @@ func TestReleaseVerifierStandaloneUsesCanonicalTreeAndRejectsCheckoutMutation(t 
 	if err := os.WriteFile(filepath.Join(repo, "payload"), []byte("original\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fakeDocker := `#!/bin/sh
-set -eu
-printf 'PWD=%s ARGS=%s\n' "$PWD" "$*" >>"$FAKE_DOCKER_LOG"
-case "$*" in
-  info) if [ "${FAKE_MUTATE_CHECKOUT:-}" = true ]; then printf 'mutated\n' >"$FAKE_REPO/payload"; fi ;;
-  build*) test "$PWD" != "$FAKE_REPO"; test "$(cat payload)" = original ;;
-  cp*) destination=
-       for argument in "$@"; do destination=$argument; done
-       printf one >"$destination" ;;
-  *"{{.Id}}"*) printf 'sha256:same\n' ;;
-  *"RootFS.Layers"*) printf '["sha256:root"]\n' ;;
-  *"org.opencontainers.image.version"*) printf '0.1.0\n' ;;
-  *"org.opencontainers.image.revision"*) printf '%s\n' "$FAKE_REVISION" ;;
-  *"/readyz") printf '{"status":"ready"}\n' ;;
-  *"/livez") printf '{"status":"live"}\n' ;;
-  *"/api/v1/health") printf '{"status":"ok","version":"0.1.0","revision":"%s"}\n' "$FAKE_REVISION" ;;
-  *"traceroute -n -m 1 -w 1 127.0.0.1") printf '1  127.0.0.1  0.01 ms\n' ;;
-  logs*) printf '{"msg":"server started","version":"0.1.0","revision":"%s"}\n' "$FAKE_REVISION" ;;
-esac
-`
+	fakeDocker := releaseLifecycleFakeDocker()
 	if err := os.WriteFile(filepath.Join(fakeBin, "docker"), []byte(fakeDocker), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "verify_api_archive.py"), []byte(releaseLifecycleFakeValidator()), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -604,10 +685,19 @@ esac
 	if runErr != nil {
 		t.Fatalf("clean standalone release failed: %v\n%s\n%s", runErr, output, calls)
 	}
-	if strings.Contains(calls, "PWD="+repo+" ARGS=build --no-cache") {
+	if strings.Contains(calls, "PWD="+repo+" ARGS=buildx build --no-cache") {
 		t.Fatalf("standalone release built the mutable checkout:\n%s", calls)
 	}
-	if built, err := os.ReadFile(cleanOutput); err != nil || string(built) != "one" {
+	for _, forbidden := range []string{"ARGS=build ", "ARGS=load", "ARGS=import", "ARGS=image rm", "ARGS=image tag", "--tag", "--iidfile", "--load"} {
+		if strings.Contains(calls, forbidden) {
+			t.Fatalf("standalone release attempted derived API daemon action %q:\n%s", forbidden, calls)
+		}
+	}
+	stateBytes, err := os.ReadFile(filepath.Join(fakeBin, "docker-state", "state.json"))
+	if err != nil || string(stateBytes) != `{"containers": {}, "images": {}, "networks": {}}` {
+		t.Fatalf("standalone daemon inventory changed: err=%v state=%s", err, stateBytes)
+	}
+	if built, err := os.ReadFile(cleanOutput); err != nil || string(built) != "canonical-image-binary" {
 		t.Fatalf("clean standalone output=%q err=%v", built, err)
 	}
 
@@ -652,7 +742,7 @@ func TestReleaseVerifierPublicationMutationPreservesExistingOutput(t *testing.T)
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -669,29 +759,12 @@ func TestReleaseVerifierPublicationMutationPreservesExistingOutput(t *testing.T)
 		t.Fatal(err)
 	}
 
-	fakeDocker := `#!/bin/sh
-set -eu
-case "$*" in
-  info) ;;
-  cp*) destination=
-       for argument in "$@"; do destination=$argument; done
-       printf one >"$destination" ;;
-  *"{{.Id}}"*) printf 'sha256:same\n' ;;
-  *"RootFS.Layers"*) printf '["sha256:root"]\n' ;;
-  *"org.opencontainers.image.version"*) printf '0.1.0\n' ;;
-  *"org.opencontainers.image.revision"*) printf '%s\n' "$FAKE_REVISION" ;;
-  *"/readyz") printf '{"status":"ready"}\n' ;;
-  *"/livez") printf '{"status":"live"}\n' ;;
-  *"/api/v1/health") printf '{"status":"ok","version":"0.1.0","revision":"%s"}\n' "$FAKE_REVISION" ;;
-  *"traceroute -n -m 1 -w 1 127.0.0.1") printf '1  127.0.0.1  0.01 ms\n' ;;
-  logs*) printf '{"msg":"server started","version":"0.1.0","revision":"%s"}\n' "$FAKE_REVISION" ;;
-esac
-`
+	fakeDocker := releaseLifecycleFakeDocker()
 	fakeCP := `#!/bin/sh
 set -eu
 for argument in "$@"; do
     case "$argument" in
-        */checknetwork-api-image-1)
+        */api-extract-one/checknetwork-api)
             printf 'mutated by cp\n' >"$FAKE_REPO/payload"
             break
             ;;
@@ -719,6 +792,9 @@ exec "$REAL_MV" "$@"
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "verify_api_archive.py"), []byte(releaseLifecycleFakeValidator()), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	realCP, err := exec.LookPath("cp")
 	if err != nil {
 		t.Fatal(err)
@@ -728,7 +804,7 @@ exec "$REAL_MV" "$@"
 		t.Fatal(err)
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, gitErr := command.CombinedOutput(); gitErr != nil {
@@ -829,7 +905,7 @@ func newReleaseSignalFixture(t *testing.T) releaseSignalFixture {
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -842,24 +918,7 @@ func newReleaseSignalFixture(t *testing.T) releaseSignalFixture {
 			t.Fatal(err)
 		}
 	}
-	fakeDocker := `#!/bin/sh
-set -eu
-case "$*" in
-  info) ;;
-  cp*) destination=
-       for argument in "$@"; do destination=$argument; done
-       printf canonical-image-binary >"$destination" ;;
-  *"{{.Id}}"*) printf 'sha256:same\n' ;;
-  *"RootFS.Layers"*) printf '["sha256:root"]\n' ;;
-  *"org.opencontainers.image.version"*) printf '0.1.0\n' ;;
-  *"org.opencontainers.image.revision"*) printf '%s\n' "$FAKE_REVISION" ;;
-  *"/readyz") printf '{"status":"ready"}\n' ;;
-  *"/livez") printf '{"status":"live"}\n' ;;
-  *"/api/v1/health") printf '{"status":"ok","version":"0.1.0","revision":"%s"}\n' "$FAKE_REVISION" ;;
-  *"traceroute -n -m 1 -w 1 127.0.0.1") printf '1  127.0.0.1  0.01 ms\n' ;;
-  logs*) printf '{"msg":"server started","version":"0.1.0","revision":"%s"}\n' "$FAKE_REVISION" ;;
-esac
-`
+	fakeDocker := releaseLifecycleFakeDocker()
 	fakeCP := `#!/bin/sh
 set -eu
 "$REAL_CP" "$@"
@@ -869,7 +928,7 @@ for argument in "$@"; do
     [ "$argument" = "-p" ] || { source_path=$destination; destination=$argument; }
 done
 case "$source_path:$destination:$FAKE_SIGNAL_POINT" in
-    */checknetwork-api-image-1:*/.checknetwork-release-output.*:copy)
+    */api-extract-one/checknetwork-api:*/.checknetwork-release-output.*:copy)
         kill -s "$FAKE_SIGNAL" "$PPID"
         ;;
 esac
@@ -909,8 +968,11 @@ exec "$REAL_MV" "$@"
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "verify_api_archive.py"), []byte(releaseLifecycleFakeValidator()), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -932,7 +994,7 @@ exec "$REAL_MV" "$@"
 	return releaseSignalFixture{root: root, repo: repo, fakeBin: fakeBin, head: strings.TrimSpace(string(headBytes)), realCP: realCP, realMV: realMV}
 }
 
-func (fixture releaseSignalFixture) run(t *testing.T, name, signal, point string, existing, hostile bool) (string, error, string) {
+func (fixture releaseSignalFixture) run(t *testing.T, name, signal, point string, existing, hostile bool, extraEnv ...string) (string, error, string) {
 	t.Helper()
 	outputPath := filepath.Join(fixture.root, "published-"+name)
 	if existing {
@@ -945,6 +1007,7 @@ func (fixture releaseSignalFixture) run(t *testing.T, name, signal, point string
 	command.Env = append(os.Environ(),
 		"PATH="+fixture.fakeBin+":"+os.Getenv("PATH"),
 		"FAKE_REVISION="+fixture.head,
+		"FAKE_DOCKER_BINARY=canonical-image-binary",
 		"FAKE_SIGNAL="+signal,
 		"FAKE_SIGNAL_POINT="+point,
 		"FAKE_HOSTILE_DESTINATION="+map[bool]string{false: "false", true: "true"}[hostile],
@@ -952,6 +1015,7 @@ func (fixture releaseSignalFixture) run(t *testing.T, name, signal, point string
 		"REAL_MV="+fixture.realMV,
 		"CHECKNETWORK_RELEASE_OUTPUT="+outputPath,
 	)
+	command.Env = append(command.Env, extraEnv...)
 	output, err := command.CombinedOutput()
 	return string(output), err, outputPath
 }
@@ -1090,6 +1154,66 @@ func TestReleaseVerifierSuccessfulPublicationCommitsAndRemovesBackup(t *testing.
 	assertNoPublicationTemps(t, fixture.root)
 }
 
+func TestReleaseVerifierCleanupBarrierRollsBackPublication(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		env  string
+	}{
+		{"container-removal-failure", "FAKE_CLEANUP_REMOVE_FAILURE=container"},
+		{"pre-inspect-daemon-error", "FAKE_CLEANUP_INSPECT_ERROR=pre"},
+		{"post-inspect-daemon-error", "FAKE_CLEANUP_INSPECT_ERROR=post"},
+		{"container-replacement", "FAKE_CLEANUP_REPLACEMENT=container"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newReleaseSignalFixture(t)
+			output, runErr, outputPath := fixture.run(t, "cleanup-"+test.name, "TERM", "none", true, false, test.env)
+			if runErr == nil || strings.Contains(output, "release verified:") {
+				t.Fatalf("cleanup ambiguity reported release success: err=%v output=%s", runErr, output)
+			}
+			if strings.Count(output, "release cleanup failed") != 1 {
+				t.Fatalf("cleanup failure diagnostic was not fixed and singular: %q", output)
+			}
+			contents, err := os.ReadFile(outputPath)
+			if err != nil || string(contents) != "prior-output" {
+				t.Fatalf("cleanup failure did not restore exact publication bytes=%q err=%v", contents, err)
+			}
+			info, err := os.Lstat(outputPath)
+			if err != nil || info.Mode().Perm() != 0o751 {
+				t.Fatalf("cleanup failure did not restore publication mode=%v err=%v", info.Mode().Perm(), err)
+			}
+			assertNoPublicationTemps(t, fixture.root)
+		})
+	}
+}
+
+func TestReleaseVerifierCleanupFailurePreservesOrdinaryAndSignalStatus(t *testing.T) {
+	for _, signal := range []struct {
+		name string
+		code int
+	}{{"HUP", 129}, {"INT", 130}, {"TERM", 143}} {
+		t.Run(strings.ToLower(signal.name), func(t *testing.T) {
+			fixture := newReleaseSignalFixture(t)
+			output, runErr, outputPath := fixture.run(t, "cleanup-signal-"+strings.ToLower(signal.name), signal.name, "post-mv", true, false, "FAKE_CLEANUP_REMOVE_FAILURE=container")
+			assertFixedSignalExit(t, runErr, signal.code, output)
+			if strings.Contains(output, "release verified:") || strings.Count(output, "release cleanup failed") != 1 {
+				t.Fatalf("signal cleanup failure output was unsafe or successful: %q", output)
+			}
+			contents, err := os.ReadFile(outputPath)
+			if err != nil || string(contents) != "prior-output" {
+				t.Fatalf("signal cleanup failure did not restore publication bytes=%q err=%v", contents, err)
+			}
+		})
+	}
+
+	fixture := newReleaseSignalFixture(t)
+	output, runErr, _ := fixture.run(t, "cleanup-ordinary", "TERM", "none", true, false,
+		"CHECKNETWORK_RELEASE_FAIL_AT=api_identity_smoke", "FAKE_CLEANUP_REMOVE_FAILURE=container")
+	exitError, ok := runErr.(*exec.ExitError)
+	if !ok || exitError.ExitCode() == 0 || strings.Contains(output, "release verified:") || strings.Count(output, "release cleanup failed") != 1 {
+		t.Fatalf("ordinary failure cleanup contract changed: err=%v output=%q", runErr, output)
+	}
+}
+
 func TestReleaseVerifierBuildsTwiceDetectsMismatchAndCleans(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -1100,7 +1224,7 @@ func TestReleaseVerifierBuildsTwiceDetectsMismatchAndCleans(t *testing.T) {
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -1122,32 +1246,17 @@ while [ "$#" -gt 0 ]; do
 done
 case "${FAKE_BINARY_MISMATCH:-}:$out" in true:*-2) printf two >"$out" ;; *) printf one >"$out" ;; esac
 `
-	fakeDocker := `#!/bin/sh
-set -eu
-printf 'PWD=%s ARGS=%s\n' "$PWD" "$*" >>"$FAKE_DOCKER_LOG"
-case "$*" in
-  info) exit 0 ;;
-  cp*) destination=
-       for argument in "$@"; do destination=$argument; done
-       case "${FAKE_BINARY_MISMATCH:-}:$*" in true:*extract-two*) printf two >"$destination" ;; *) printf one >"$destination" ;; esac ;;
-  *"{{.Id}}"*) case "${FAKE_IMAGE_MISMATCH:-}:$*" in true:*:two*) printf 'sha256:two\n' ;; *) printf 'sha256:same\n' ;; esac ;;
-  *"RootFS.Layers"*) printf '["sha256:root"]\n' ;;
-  *"org.opencontainers.image.version"*) printf '%s\n' "$FAKE_VERSION" ;;
-  *"org.opencontainers.image.revision"*) printf '%s\n' "$FAKE_REVISION" ;;
-  *"/readyz") printf '{"status":"ready"}\n' ;;
-  *"/livez") printf '{"status":"live"}\n' ;;
-  *"/api/v1/health") printf '{"status":"ok","version":"%s","revision":"%s"}\n' "$FAKE_VERSION" "$FAKE_REVISION" ;;
-  *"traceroute -n -m 1 -w 1 127.0.0.1") printf '1  127.0.0.1  0.01 ms\n' ;;
-  logs*) printf '{"msg":"server started","version":"%s","revision":"%s"}\n' "$FAKE_VERSION" "$FAKE_REVISION" ;;
-esac
-`
+	fakeDocker := releaseLifecycleFakeDocker()
 	for name, body := range map[string]string{"go": fakeGo, "docker": fakeDocker} {
 		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "verify_api_archive.py"), []byte(releaseLifecycleFakeValidator()), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -1177,9 +1286,19 @@ esac
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(root, "docker.log")
+	stateDir := filepath.Join(fakeBin, "docker-state")
+	if err := os.Mkdir(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	callerID := "sha256:" + strings.Repeat("c", 64)
+	initialDaemonState := `{"containers": {}, "images": {"` + callerID + `": {"id": "` + callerID + `", "labels": {}}}, "networks": {}}`
 	baseEnv := append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "FAKE_DOCKER_LOG="+logPath, "FAKE_VERSION=0.1.0", "FAKE_REVISION="+head)
 	run := func(extra ...string) (string, string, error) {
 		_ = os.Remove(logPath)
+		statePath := filepath.Join(stateDir, "state.json")
+		if err := os.WriteFile(statePath, []byte(initialDaemonState), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		command := exec.Command("sh", "scripts/verify-release.sh", head, archivePath)
 		command.Dir = repo
 		command.Env = append(append([]string(nil), baseEnv...), extra...)
@@ -1188,6 +1307,10 @@ esac
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
+		after, readErr := os.ReadFile(statePath)
+		if readErr != nil || string(after) != initialDaemonState {
+			t.Fatalf("daemon inventory or original tagless caller ID changed byte-for-byte: id=%s err=%v state=%s", callerID, readErr, after)
+		}
 		return string(output), string(calls), runErr
 	}
 
@@ -1195,18 +1318,30 @@ esac
 	if runErr != nil {
 		t.Fatalf("stubbed verifier failed: %v\n%s\n%s", runErr, output, calls)
 	}
-	if strings.Count(calls, "build --no-cache") != 2 {
+	if strings.Count(calls, "buildx build --no-cache") != 2 {
 		t.Fatalf("Docker builds != 2:\n%s", calls)
 	}
-	if strings.Contains(calls, "PWD="+repo+" ARGS=build --no-cache") {
+	if strings.Contains(calls, "PWD="+repo+" ARGS=buildx build --no-cache") {
 		t.Fatalf("archive release built in the caller checkout instead of its private extraction:\n%s", calls)
 	}
 	if strings.Contains(calls, " -p ") || strings.Contains(calls, "--publish") {
 		t.Fatalf("smoke published a port:\n%s", calls)
 	}
-	for _, exact := range []string{"container rm -f --", "image rm -f --", "network rm --"} {
-		if strings.Count(calls, exact) != 1 {
-			t.Fatalf("cleanup %q count != 1:\n%s", exact, calls)
+	for _, forbidden := range []string{"ARGS=build ", "ARGS=load", "ARGS=import", "ARGS=image rm", "ARGS=image tag", "--tag", "--iidfile", "--load"} {
+		if strings.Contains(calls, forbidden) {
+			t.Fatalf("derived API daemon action %q was attempted:\n%s", forbidden, calls)
+		}
+	}
+	if strings.Count(calls, "ARGS=image inspect alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc --format {{.Id}}") != 1 {
+		t.Fatalf("borrowed-base inspection was not exact:\n%s", calls)
+	}
+	successLines := regexp.MustCompile(`(?m)^release verified: api_archive=[0-9a-f]{64} api_config=sha256:[0-9a-f]{64} api_manifest=sha256:[0-9a-f]{64} api_rootfs=sha256:[0-9a-f]{64} api_binary=[0-9a-f]{64} api_traceroute=[0-9a-f]{64}$`).FindAllString(output, -1)
+	if len(successLines) != 1 || strings.Contains(output, "api_image=") {
+		t.Fatalf("release output schema is not the exact six-field API contract: %s", output)
+	}
+	for exact, want := range map[string]int{"container rm -f --": 1, "network rm --": 1} {
+		if strings.Count(calls, exact) != want {
+			t.Fatalf("cleanup %q count = %d, want %d:\n%s", exact, strings.Count(calls, exact), want, calls)
 		}
 	}
 	releaseOutput := filepath.Join(root, "published-api")
@@ -1215,25 +1350,277 @@ esac
 		t.Fatalf("release output run failed: %v\n%s", runErr, output)
 	}
 	published, err := os.ReadFile(releaseOutput)
-	if err != nil || string(published) != "one" {
-		t.Fatalf("published image binary=%q err=%v", published, err)
+	if err != nil || string(published) != "canonical-image-binary" {
+		t.Fatalf("published archive binary=%q err=%v", published, err)
 	}
 
 	output, calls, runErr = run("FAKE_BINARY_MISMATCH=true")
-	if runErr == nil || !strings.Contains(output, "binary reproducibility mismatch") {
+	if runErr == nil || !strings.Contains(output, "binary SHA-256 does not match expected value") {
 		t.Fatalf("binary mismatch not detected: err=%v output=%s", runErr, output)
 	}
-	if strings.Count(calls, "container rm -f --") != 1 {
+	if strings.Count(calls, "container rm -f --") != 0 || strings.Count(calls, "network rm --") != 0 {
 		t.Fatalf("binary failure cleanup missing:\n%s", calls)
 	}
 
 	output, calls, runErr = run("FAKE_IMAGE_MISMATCH=true")
-	if runErr == nil || !strings.Contains(output, "image/config digest mismatch") {
-		t.Fatalf("image mismatch not detected: err=%v output=%s\n%s", runErr, output, calls)
+	if runErr == nil || !strings.Contains(output, "API archive byte reproducibility mismatch") {
+		t.Fatalf("archive mismatch not detected: err=%v output=%s\n%s", runErr, output, calls)
 	}
-	for _, exact := range []string{"container rm -f --", "image rm -f --", "network rm --"} {
-		if strings.Count(calls, exact) != 1 {
-			t.Fatalf("mismatch cleanup %q count != 1:\n%s", exact, calls)
+	for exact, want := range map[string]int{"container rm -f --": 0, "network rm --": 0} {
+		if strings.Count(calls, exact) != want {
+			t.Fatalf("mismatch cleanup %q count = %d, want %d:\n%s", exact, strings.Count(calls, exact), want, calls)
+		}
+	}
+	for _, stage := range []string{"api_archive_build_1", "api_archive_validation_1", "api_archive_build_2", "api_archive_validation_2"} {
+		for _, signalAndCode := range []struct {
+			name string
+			code int
+		}{{"HUP", 129}, {"INT", 130}, {"TERM", 143}} {
+			output, calls, runErr = run("CHECKNETWORK_RELEASE_SIGNAL_AT="+stage, "CHECKNETWORK_RELEASE_SIGNAL="+signalAndCode.name)
+			exitError, ok := runErr.(*exec.ExitError)
+			if !ok || exitError.ExitCode() != signalAndCode.code || strings.Contains(output, "release verified:") {
+				t.Fatalf("%s/%s signal contract failed: err=%v output=%s", stage, signalAndCode.name, runErr, output)
+			}
+			for _, forbidden := range []string{"ARGS=load", "ARGS=import", "ARGS=image rm", "ARGS=image tag", "--tag", "--iidfile", "--load"} {
+				if strings.Contains(calls, forbidden) {
+					t.Fatalf("%s/%s attempted derived API daemon action %q:\n%s", stage, signalAndCode.name, forbidden, calls)
+				}
+			}
+		}
+	}
+}
+
+func TestReleaseLifecycleFakeCleanupRestoresInventoryAndRecordsEventsSeparately(t *testing.T) {
+	fakeBin := t.TempDir()
+	dockerPath := filepath.Join(fakeBin, "docker")
+	if err := os.WriteFile(dockerPath, []byte(releaseLifecycleFakeDocker()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(fakeBin, "docker-state")
+	if err := os.Mkdir(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	callerImageID := "sha256:" + strings.Repeat("c", 64)
+	baseline := `{"containers": {"caller-container": {"id": "container-caller", "image": "` + callerImageID + `", "labels": {}, "name": "caller-container"}}, "images": {"caller-image": {"id": "` + callerImageID + `", "labels": {}}}, "networks": {"caller-network": {"id": "network-caller", "labels": {}, "name": "caller-network"}}}`
+	statePath := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(statePath, []byte(baseline), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDocker := func(args ...string) string {
+		t.Helper()
+		command := exec.Command(dockerPath, args...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("fake docker %v: %v\n%s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	ownedNetworkID := runDocker("network", "create", "--label", "com.checknetwork.release.owner=test", "owned-network")
+	ownedContainerID := runDocker("container", "create", "--name", "owned-container", "--label", "com.checknetwork.release.owner=test", callerImageID)
+	runDocker("logs", ownedContainerID)
+	runDocker("container", "rm", "-f", "--", ownedContainerID)
+	runDocker("network", "rm", "--", ownedNetworkID)
+
+	after, err := os.ReadFile(statePath)
+	if err != nil || string(after) != baseline {
+		t.Fatalf("successful cleanup did not restore exact caller daemon inventory: image=%s err=%v\nbefore=%s\nafter=%s", callerImageID, err, baseline, after)
+	}
+	events, err := os.ReadFile(filepath.Join(stateDir, "events.log"))
+	if err != nil || string(events) != "smoke_complete\ncleanup_removed:containers\ncleanup_removed:networks\n" {
+		t.Fatalf("cleanup event log=%q err=%v", events, err)
+	}
+}
+
+type generatedArtifactIgnoreRequirement struct {
+	pattern string
+	path    string
+	isDir   bool
+}
+
+var generatedArtifactIgnoreRequirements = []generatedArtifactIgnoreRequirement{
+	{pattern: "/checknetwork-api", path: "checknetwork-api"},
+	{pattern: ".*.swp", path: ".SPEC.md.swp"},
+	{pattern: "/scripts/__pycache__/", path: "scripts/__pycache__", isDir: true},
+}
+
+func validateGeneratedArtifactIgnoreRules(t *testing.T, gitignorePath string) error {
+	t.Helper()
+	contents, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		return fmt.Errorf("read .gitignore: %w", err)
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("find git: %w", err)
+	}
+
+	repo := t.TempDir()
+	gitEnv := make([]string, 0, len(os.Environ())+4)
+	for _, entry := range os.Environ() {
+		name := strings.SplitN(entry, "=", 2)[0]
+		if strings.HasPrefix(name, "GIT_") || name == "HOME" || name == "XDG_CONFIG_HOME" {
+			continue
+		}
+		gitEnv = append(gitEnv, entry)
+	}
+	gitEnv = append(gitEnv,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"HOME="+repo,
+		"XDG_CONFIG_HOME="+filepath.Join(repo, ".config"),
+	)
+	runGit := func(args ...string) ([]byte, error) {
+		command := exec.Command("git", args...)
+		command.Dir = repo
+		command.Env = gitEnv
+		return command.CombinedOutput()
+	}
+	if output, err := runGit("init", "-q"); err != nil {
+		return fmt.Errorf("initialize private Git repository: %w: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), contents, 0o600); err != nil {
+		return fmt.Errorf("write candidate .gitignore: %w", err)
+	}
+	for _, required := range generatedArtifactIgnoreRequirements {
+		artifact := filepath.Join(repo, filepath.FromSlash(required.path))
+		if required.isDir {
+			if err := os.MkdirAll(artifact, 0o700); err != nil {
+				return fmt.Errorf("create representative directory %s: %w", required.path, err)
+			}
+		} else if err := os.WriteFile(artifact, []byte("generated\n"), 0o600); err != nil {
+			return fmt.Errorf("create representative file %s: %w", required.path, err)
+		}
+	}
+
+	for _, required := range generatedArtifactIgnoreRequirements {
+		output, err := runGit("check-ignore", "-v", "--no-index", "--", required.path)
+		if err != nil {
+			return fmt.Errorf("%s must be ignored after complete .gitignore rule ordering: %w: %s", required.path, err, output)
+		}
+		line := strings.TrimSuffix(string(output), "\n")
+		parts := strings.SplitN(line, "	", 2)
+		metadata := strings.SplitN(parts[0], ":", 3)
+		if len(parts) != 2 || len(metadata) != 3 {
+			return fmt.Errorf("unexpected git check-ignore output for %s: %q", required.path, output)
+		}
+		pattern := metadata[2]
+		matchedPath := parts[1]
+		if pattern != required.pattern || matchedPath != required.path {
+			return fmt.Errorf("%s must be the exact effective non-negated .gitignore rule (effective rule %q for %q)", required.pattern, pattern, matchedPath)
+		}
+	}
+	return nil
+}
+
+func TestGeneratedArtifactIgnoreRulesRejectInvalidFiles(t *testing.T) {
+	valid := "/checknetwork-api\n.*.swp\n/scripts/__pycache__/\n"
+	tests := []struct {
+		name     string
+		contents string
+		wantOK   bool
+	}{
+		{name: "exact rules", contents: "\n# generated files\n" + valid, wantOK: true},
+		{name: "escaped comment is a literal pattern", contents: "\\# not a comment\n" + valid, wantOK: true},
+		{name: "missing", contents: "/checknetwork-api\n.*.swp\n"},
+		{name: "commented", contents: "/checknetwork-api\n# .*.swp\n/scripts/__pycache__/\n"},
+		{name: "negated", contents: "/checknetwork-api\n!.*.swp\n/scripts/__pycache__/\n"},
+		{name: "escaped leading negation", contents: "/checknetwork-api\n\\!.*.swp\n/scripts/__pycache__/\n"},
+		{name: "overridden", contents: valid + "!/checknetwork-api\n"},
+		{name: "unanchored override", contents: valid + "!scripts/__pycache__/\n"},
+		{name: "character class override", contents: valid + "!/checknetwork-[!b]pi\n"},
+		{name: "POSIX character class override", contents: valid + "!/checknetwork-[[:alpha:]]pi\n"},
+		{name: "escaped pattern override", contents: valid + "!/checknetwork-a\\pi\n"},
+		{name: "root globstar override", contents: valid + "!/**\n/checknetwork-api\n.*.swp\n"},
+		{name: "unescaped trailing spaces do not disable override", contents: valid + "!/checknetwork-api   \n"},
+		{name: "escaped trailing space does not override", contents: valid + "!/checknetwork-api\\ \n", wantOK: true},
+		{name: "later exact rule restores ignore", contents: valid + "!/checknetwork-api\n/checknetwork-api\n", wantOK: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gitignore := filepath.Join(t.TempDir(), ".gitignore")
+			if err := os.WriteFile(gitignore, []byte(test.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := validateGeneratedArtifactIgnoreRules(t, gitignore)
+			if (err == nil) != test.wantOK {
+				t.Fatalf("validateGeneratedArtifactIgnoreRules() error = %v, wantOK %t", err, test.wantOK)
+			}
+		})
+	}
+}
+
+func TestCurrentGitignoreExcludesGeneratedArtifactsWithoutRepositoryMetadata(t *testing.T) {
+	if err := validateGeneratedArtifactIgnoreRules(t, filepath.Join("..", "..", ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReleaseVerifierResourceOwnershipLifecycle(t *testing.T) {
+	command := exec.Command("sh", filepath.Join("scripts", "verify-release-resource-ownership-test.sh"))
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("release resource ownership lifecycle: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "release resource ownership tests passed") {
+		t.Fatalf("release resource ownership lifecycle omitted success evidence: %s", output)
+	}
+}
+
+func TestReleaseVerifierAPIResourceOwnershipMatrix(t *testing.T) {
+	command := exec.Command("python3", filepath.Join("scripts", "verify_release_api_resource_ownership_test.py"))
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("API release resource ownership matrix: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "API release resource ownership matrix passed") {
+		t.Fatalf("API release resource ownership matrix omitted success evidence: %s", output)
+	}
+}
+
+func TestReleaseVerifierResourceOwnershipLifecycleRealDocker(t *testing.T) {
+	if os.Getenv("CHECKNETWORK_RUN_REAL_DOCKER_TESTS") != "1" {
+		t.Skip("set CHECKNETWORK_RUN_REAL_DOCKER_TESTS=1 for focused real-daemon ownership coverage")
+	}
+	command := exec.Command("sh", filepath.Join("scripts", "verify-release-resource-ownership-real-test.sh"))
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("real Docker release resource ownership lifecycle: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "real Docker API ownership tests passed") {
+		t.Fatalf("real Docker release resource ownership lifecycle omitted success evidence: %s", output)
+	}
+}
+
+func TestAPIOfflineArchiveRealBuildx(t *testing.T) {
+	if os.Getenv("CHECKNETWORK_RUN_REAL_BUILDX_TESTS") != "1" {
+		t.Skip("set CHECKNETWORK_RUN_REAL_BUILDX_TESTS=1 for the real API Buildx archive gate")
+	}
+	command := exec.Command("sh", filepath.Join("scripts", "verify_api_archive_real_test.sh"))
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("real API Buildx archive gate: %v\n%s", err, output)
+	}
+	if !bytes.Contains(output, []byte(`"first"`)) || !bytes.Contains(output, []byte(`"second"`)) {
+		t.Fatalf("real API Buildx archive gate omitted comparison evidence: %s", output)
+	}
+}
+
+func TestWebOfflineArchiveRealBuildx(t *testing.T) {
+	if os.Getenv("CHECKNETWORK_RUN_REAL_BUILDX_TESTS") != "1" {
+		t.Skip("set CHECKNETWORK_RUN_REAL_BUILDX_TESTS=1 for the real Web Buildx archive gate")
+	}
+	command := exec.Command("sh", filepath.Join("scripts", "verify_web_archive_real_test.sh"))
+	command.Dir = filepath.Join("..", "..")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("real Web Buildx archive gate: %v\n%s", err, output)
+	}
+	for _, field := range []string{`"base_archive"`, `"derived_archive"`, `"validation"`} {
+		if !bytes.Contains(output, []byte(field)) {
+			t.Fatalf("real Web Buildx archive gate omitted %s: %s", field, output)
 		}
 	}
 }

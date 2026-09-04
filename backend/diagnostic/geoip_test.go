@@ -727,8 +727,8 @@ func (r *recordingGeoIP) Lookup(_ context.Context, ip net.IP) (IPMetadata, error
 func TestEnrichTopologiesOnlyLooksUpUniquePublicIPs(t *testing.T) {
 	lookup := &recordingGeoIP{calls: make(map[string]int)}
 	attempts := []TraceAttempt{
-		{Topology: &Topology{Nodes: []TopologyNode{{Address: "10.0.0.1"}, {Address: "8.8.8.8"}, {Address: "8.8.8.8"}}}},
-		{Topology: &Topology{Nodes: []TopologyNode{{Address: "192.0.2.1"}, {Address: "1.1.1.1"}}}},
+		{Status: StatusUnreachable, Topology: &Topology{Nodes: []TopologyNode{{Address: "10.0.0.1"}, {Address: "8.8.8.8"}, {Address: "8.8.8.8"}}}},
+		{Status: StatusUnreachable, Topology: &Topology{Nodes: []TopologyNode{{Address: "192.0.2.1"}, {Address: "1.1.1.1"}}}},
 	}
 	enrichTopologies(context.Background(), attempts, lookup)
 
@@ -745,7 +745,7 @@ func TestEnrichTopologiesOnlyLooksUpUniquePublicIPs(t *testing.T) {
 }
 
 func TestEnrichTopologiesCountsProviderFailures(t *testing.T) {
-	attempts := []TraceAttempt{{Topology: &Topology{Nodes: []TopologyNode{{Address: "8.8.8.8"}, {Address: "1.1.1.1"}}}}}
+	attempts := []TraceAttempt{{Status: StatusUnreachable, Topology: &Topology{Nodes: []TopologyNode{{Address: "8.8.8.8"}, {Address: "1.1.1.1"}}}}}
 	if failures := enrichTopologies(context.Background(), attempts, failingGeoIP{}); failures != 2 {
 		t.Fatalf("failures = %d", failures)
 	}

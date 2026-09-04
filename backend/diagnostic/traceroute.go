@@ -74,15 +74,44 @@ type TraceAttempt struct {
 type traceCommand func(context.Context, string, ...string) ([]byte, error)
 
 type TracerouteChecker struct {
-	Command traceCommand
-	GeoIP   GeoIPLookup
-	Policy  *NetworkPolicy
+	command    traceCommand
+	capability *TracerouteCapability
+	geoIP      GeoIPLookup
+	Policy     *NetworkPolicy
+}
+
+// NewTracerouteChecker constructs the production checker from the exact
+// capability selected at startup. A nil capability remains unavailable for the
+// lifetime of the checker; execution never probes PATH again.
+func NewTracerouteChecker(capability *TracerouteCapability, geoIP GeoIPLookup, policy *NetworkPolicy) TracerouteChecker {
+	if capability == nil {
+		return TracerouteChecker{Policy: policy}
+	}
+	return newTracerouteCheckerWithCommand(capability, runTraceCommand, geoIP, policy)
+}
+
+// NewInjectedTracerouteChecker constructs a checker around an explicit command
+// implementation for tests and fixtures. It does not probe PATH.
+func NewInjectedTracerouteChecker(command func(context.Context, string, ...string) ([]byte, error), geoIP GeoIPLookup, policy *NetworkPolicy) TracerouteChecker {
+	grammar := traceCommandGrammars()[0]
+	capability := &TracerouteCapability{executable: traceExecutableName(), grammar: grammar}
+	return newTracerouteCheckerWithCommand(capability, command, geoIP, policy)
+}
+
+func newTracerouteCheckerWithCommand(capability *TracerouteCapability, command traceCommand, geoIP GeoIPLookup, policy *NetworkPolicy) TracerouteChecker {
+	return TracerouteChecker{command: command, capability: capability, geoIP: geoIP, Policy: policy}
 }
 
 func (TracerouteChecker) Kind() Kind { return KindTraceroute }
 
 func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 	started := time.Now().UTC()
+	if c.capability == nil || c.command == nil {
+		return Result{
+			Kind: KindTraceroute, Address: target.Address, Status: StatusUnreachable,
+			StartedAt: started, ErrorCode: "traceroute_unavailable", Message: "traceroute is unavailable",
+		}
+	}
 	destination, err := traceDestination(target.Address)
 	if err != nil {
 		result := baseResult(KindTraceroute, target.Address, started, err)
@@ -90,10 +119,7 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 		return result
 	}
 
-	run := c.Command
-	if run == nil {
-		run = runTraceCommand
-	}
+	run := c.command
 	result := baseResult(KindTraceroute, target.Address, started, nil)
 	attemptCount := target.Attempts
 	if attemptCount == 0 {
@@ -119,7 +145,7 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 			}
 			commandDestination = addresses[0].String()
 		}
-		name, args := traceCommandSpec(attemptDuration, commandDestination)
+		name, args := c.capability.commandSpec(attemptDuration, commandDestination)
 		output, commandErr := run(attemptCtx, name, args...)
 		if contextErr := attemptCtx.Err(); contextErr != nil {
 			commandErr = contextErr
@@ -157,22 +183,27 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 			}
 		}
 		attempts = append(attempts, attempt)
-		if representative == nil || (!representative.Reached && topology.Reached) {
-			representative = &topologyCopy
+		if traceAttemptEligible(attempt) {
+			// Preserve the first completed topology, promoting only the first
+			// completed reached route over an earlier completed unreached route.
+			// Failed, timed-out, and cancelled attempts are never representatives.
+			if representative == nil || (!representative.Reached && topology.Reached) {
+				representative = &topologyCopy
+			}
+			if topology.Reached {
+				reached++
+			} else {
+				unreached++
+			}
 		}
-		if topology.Reached && commandErr == nil {
-			reached++
-		} else if commandErr == nil {
-			unreached++
-		}
-		if attemptStatus == StatusDegraded {
+		if traceAttemptEligible(attempt) && attemptStatus == StatusDegraded {
 			degraded = true
 		}
 	}
 	geoIPProviderFailures := 0
 	var geoIPEnrichment *EnrichmentCoverage
-	if c.GeoIP != nil {
-		coverage := enrichTopologiesWithCoverage(ctx, attempts, c.GeoIP)
+	if c.geoIP != nil {
+		coverage := enrichTopologiesWithCoverage(ctx, attempts, c.geoIP)
 		geoIPProviderFailures = enrichmentFailureCount(coverage.Failures)
 		geoIPEnrichment = &coverage
 	}
@@ -251,6 +282,10 @@ func summarizeTraceExecutionErrors(total, timedOut, cancelled int) string {
 	}
 }
 
+func traceAttemptEligible(attempt TraceAttempt) bool {
+	return attempt.ErrorCode == "" && attempt.Topology != nil && attempt.Status == topologyStatus(*attempt.Topology)
+}
+
 func enrichTopologies(ctx context.Context, attempts []TraceAttempt, lookup GeoIPLookup) int {
 	return enrichmentFailureCount(enrichTopologiesWithCoverage(ctx, attempts, lookup).Failures)
 }
@@ -263,7 +298,7 @@ func enrichTopologiesWithCoverage(ctx context.Context, attempts []TraceAttempt, 
 	cache := make(map[string]enrichment)
 	addresses := make(map[string]net.IP)
 	for attemptIndex := range attempts {
-		if attempts[attemptIndex].Topology == nil {
+		if !traceAttemptEligible(attempts[attemptIndex]) {
 			continue
 		}
 		for nodeIndex := range attempts[attemptIndex].Topology.Nodes {
@@ -321,7 +356,7 @@ func enrichTopologiesWithCoverage(ctx context.Context, attempts []TraceAttempt, 
 	workers.Wait()
 
 	for attemptIndex := range attempts {
-		if attempts[attemptIndex].Topology == nil {
+		if !traceAttemptEligible(attempts[attemptIndex]) {
 			continue
 		}
 		for nodeIndex := range attempts[attemptIndex].Topology.Nodes {

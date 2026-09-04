@@ -16,7 +16,8 @@ func compactTestAttempt(number int, nodes ...TopologyNode) TraceAttempt {
 	for i := 1; i < len(nodes); i++ {
 		links = append(links, TopologyLink{From: nodes[i-1].ID, To: nodes[i].ID, Status: nodes[i].Status})
 	}
-	return TraceAttempt{Attempt: number, Status: StatusHealthy, Topology: &Topology{Reached: true, Nodes: nodes, Links: links}}
+	topology := Topology{Reached: true, Nodes: nodes, Links: links}
+	return TraceAttempt{Attempt: number, Status: topologyStatus(topology), Topology: &topology}
 }
 
 func compactTestReport(attemptValues ...any) Report {
@@ -25,6 +26,60 @@ func compactTestReport(attemptValues ...any) Report {
 		results[i] = Result{Kind: KindTraceroute, Status: StatusHealthy, Details: map[string]any{"attempts": attempts}}
 	}
 	return Report{Results: results}
+}
+
+func TestCloneCompactTopologyPreservesCanonicalEmptyGraphSlices(t *testing.T) {
+	source := &CompactTopology{
+		Schema: CompactTopologySchemaV1, Selection: CompactTopologySelectionV1,
+		Nodes: []CompactTopologyNode{}, Links: []CompactTopologyLink{}, Routes: []CompactTopologyRoute{},
+	}
+	clone := CloneCompactTopology(source)
+	if clone.Nodes == nil || clone.Links == nil || clone.Routes == nil {
+		t.Fatalf("clone changed non-nil empty graph slices to nil: nodes=%#v links=%#v routes=%#v", clone.Nodes, clone.Links, clone.Routes)
+	}
+	got, err := json.Marshal(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"schema":"compact-v1","selection":"fair-complete-prefix-v1","limits":{"nodes":0,"links":0,"max_response_bytes_exclusive":0,"max_geo_bundle_bytes":0},"nodes":[],"links":[],"routes":[],"stats":{"nodes":{"total":0,"displayed":0,"omitted":0},"links":{"total":0,"displayed":0,"omitted":0},"routes":{"total":0,"displayed":0,"complete":0,"partial":0,"omitted":0},"node_observations":{"total":0,"displayed":0,"omitted":0},"link_observations":{"total":0,"displayed":0,"omitted":0}},"geo":{"eligible":0,"available":0,"included":0,"omitted":0,"unavailable":0},"truncated":false}`
+	if string(got) != want {
+		t.Fatalf("canonical empty clone JSON = %s, want %s", got, want)
+	}
+}
+
+func TestBuildCompactTopologyCanonicalizesEmptyASNBeforeAccountingAndSerialization(t *testing.T) {
+	report := compactTestReport([]TraceAttempt{compactTestAttempt(1,
+		TopologyNode{ID: "local", Hop: 0, Address: "local", Status: "healthy"},
+		TopologyNode{ID: "public", Hop: 1, Address: "8.8.8.8", Status: "healthy", PublicIP: true, ASN: &ASNInfo{}},
+	)})
+	compact := BuildCompactTopology(report)
+	if compact.Nodes[1].ASN != nil {
+		t.Fatalf("empty ASN was projected: %+v", compact.Nodes[1])
+	}
+	if got, want := compact.Geo, (CompactGeoStats{Eligible: 1, Unavailable: 1}); got != want {
+		t.Fatalf("empty ASN affected Geo accounting: got %+v want %+v", got, want)
+	}
+	encoded, err := json.Marshal(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"asn":{}`)) || bytes.Contains(encoded, []byte(`"asn"`)) {
+		t.Fatalf("empty ASN leaked into compact JSON: %s", encoded)
+	}
+}
+
+func TestBuildCompactTopologySerializesValidEmptyGraphWithArrays(t *testing.T) {
+	compact := BuildCompactTopology(Report{Results: []Result{}})
+	if compact.Nodes == nil || compact.Links == nil || compact.Routes == nil {
+		t.Fatalf("producer empty graph is non-canonical: %+v", compact)
+	}
+	encoded, err := json.Marshal(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"nodes":[],"links":[],"routes":[]`)) {
+		t.Fatalf("empty graph arrays were not serialized exactly: %s", encoded)
+	}
 }
 
 func TestBuildCompactTopologyCanonicalizesAndAggregatesTypedAndLegacyRoutes(t *testing.T) {
@@ -36,7 +91,7 @@ func TestBuildCompactTopologyCanonicalizesAndAggregatesTypedAndLegacyRoutes(t *t
 		TopologyNode{ID: "e", Hop: 4, Status: "failure"},
 	)}
 	legacy := []any{map[string]any{
-		"attempt": 2, "status": "healthy",
+		"attempt": 2, "status": "degraded",
 		"topology": map[string]any{"reached": true, "nodes": []any{
 			map[string]any{"id": "a", "hop": 0, "address": "LOCAL", "status": "healthy"},
 			map[string]any{"id": "b", "hop": 1, "address": "2001:db8::1", "status": "degraded", "latency_ms": 3},
@@ -167,6 +222,7 @@ func TestBuildCompactTopologyMaximumUnreachedRouteHasThirtyTwoNodes(t *testing.T
 	nodes = append(nodes, TopologyNode{ID: "destination", Hop: MaxTraceHops + 1, Address: "example.test", Status: "failure"})
 	attempt := compactTestAttempt(1, nodes...)
 	attempt.Topology.Reached = false
+	attempt.Status = StatusUnreachable
 
 	compact := BuildCompactTopology(compactTestReport([]TraceAttempt{attempt}))
 	if CompactTopologyMaxRouteNodes != 32 {
@@ -518,6 +574,30 @@ func TestBuildCompactTopologyCountsEmptyAndDuplicateTopologyAttempts(t *testing.
 	}
 	if compact.Routes[0].NodeIDs[1] == compact.Routes[1].NodeIDs[1] {
 		t.Fatalf("malformed route-scoped unknown identities collided: %+v", compact.Routes)
+	}
+}
+
+func TestBuildCompactTopologyRejectsFailedAndInconsistentAttempts(t *testing.T) {
+	reached := Topology{Reached: true, Nodes: []TopologyNode{{ID: "local", Hop: 0, Address: "local", Status: "healthy"}, {ID: "public", Hop: 1, Address: "8.8.8.8", Status: "healthy", PublicIP: true}}, Links: []TopologyLink{{From: "local", To: "public", Status: "healthy"}}}
+	unreached := Topology{Reached: false, Nodes: []TopologyNode{{ID: "local", Hop: 0, Address: "local", Status: "healthy"}, {ID: "destination", Hop: 1, Address: "example.test", Status: "failure"}}, Links: []TopologyLink{{From: "local", To: "destination", Status: "failure"}}}
+	report := compactTestReport([]TraceAttempt{
+		{Attempt: 1, Status: StatusUnreachable, Topology: &reached, ErrorCode: "traceroute_failed", Message: "raw command diagnostic"},
+		{Attempt: 2, Status: StatusUnreachable, Topology: &reached},
+		{Attempt: 3, Status: StatusHealthy, Topology: &unreached},
+		{Attempt: 4, Status: StatusUnreachable, Topology: &unreached},
+	})
+	compact := BuildCompactTopology(report)
+	if got, want := len(compact.Routes), 1; got != want {
+		t.Fatalf("compact routes=%d, want %d: %+v", got, want, compact.Routes)
+	}
+	if compact.Routes[0].Attempt != 4 || compact.Routes[0].Reached || compact.Routes[0].Status != StatusUnreachable {
+		t.Fatalf("only eligible status-consistent attempt should remain: %+v", compact.Routes)
+	}
+	if got, want := compact.Stats.Routes.Total, 1; got != want {
+		t.Fatalf("route stats total=%d, want %d", got, want)
+	}
+	if compact.Geo.Eligible != 0 || compact.Geo.Available != 0 || compact.Geo.Included != 0 {
+		t.Fatalf("ineligible reached public node contaminated Geo stats: %+v", compact.Geo)
 	}
 }
 
