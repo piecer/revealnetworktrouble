@@ -50,6 +50,46 @@ function fakeContext() {
   return context;
 }
 
+test('hidden return to the same responsive node has a visible presentation curve', () => {
+  const h = harness(); const model = topologyModel(2); model.showUnresponsive = false;
+  Object.assign(model.nodes[1], { kind: 'unknown', address: '', status: 'unknown' });
+  model.links = [{from:'n0',to:'n1',status:'unknown'},{from:'n1',to:'n0',status:'unknown'}];
+  model.routes = [{result_index:0,attempt:1,status:'healthy',complete:true,node_ids:['n0','n1','n0']}];
+  h.context.quadraticCurveTo = (...args) => h.context.calls.push(['curve',...args]);
+  h.coordinator.start({ownerId:1,inputSignature:'return',view:'topology',model,root:h.root,status:h.status}); h.runAll();
+  const curve = h.context.calls.find(c => c[0] === 'curve');
+  assert.ok(Math.hypot(curve[1]-curve[3],curve[2]-curve[4]) >= 20);
+});
+
+test('folded and hidden spans mount separately, draw dashed and follow individual drag in both modes', () => {
+  for (const mode of ['2d', '3d']) for (const showUnresponsive of [true, false]) {
+    const context = fakeContext(); context.setLineDash = (...args) => context.calls.push(['setLineDash', ...args]);
+    const h = harness({ context, html: '<div id="tip" hidden></div>' });
+    const model = topologyModel(5); model.showUnresponsive = showUnresponsive;
+    for (const i of [1, 2]) Object.assign(model.nodes[i], { kind: 'unknown', address: '', status: 'unknown' });
+    model.links = model.nodes.slice(1).map((n, i) => ({ from: model.nodes[i].id, to: n.id, status: 'healthy' }));
+    model.routes = [{ result_index: 0, attempt: 1, status: 'healthy', complete: true, node_ids: model.nodes.map(n => n.id) }];
+    h.coordinator.start({ ownerId: 1, inputSignature: 'gap', view: 'topology', mode, model, root: h.root, status: h.status, workspace: { tooltip: h.document.querySelector('#tip') } }); h.runAll();
+    assert.equal(h.root.querySelector('canvas').dataset.drawState, 'rendered');
+    assert.equal(h.root.querySelectorAll('.topology-node').length, showUnresponsive ? 4 : 3);
+    assert.equal(h.root.querySelectorAll('.topology-connector').length, showUnresponsive ? 2 : 1);
+    assert.ok(context.calls.some(c => c[0] === 'setLineDash' && c[1].length));
+    const before = structuredClone(h.coordinator.current.projection);
+    const node = before.nodes.find(n => showUnresponsive ? n.kind === 'unknown-group' : n.id === 'n0');
+    const canvas = h.root.querySelector('canvas');
+    const event = (type, x, y) => canvas.dispatchEvent(new h.dom.window.MouseEvent(type, { clientX: x, clientY: y, button: 0 }));
+    event('pointermove', node.screen.x, node.screen.y);
+    assert.match(h.document.querySelector('#tip').textContent, showUnresponsive ? /무응답 2홉 접음/ : /192.0.2.0/);
+    event('pointerdown', node.screen.x, node.screen.y); event('pointermove', node.screen.x + 20, node.screen.y + 20); event('pointerup', node.screen.x + 20, node.screen.y + 20);
+    const after = h.coordinator.current.projection;
+    const attached = before.connectors.find(c => c.from === node.id || c.to === node.id);
+    const key = attached.from === node.id ? 'from_screen' : 'to_screen';
+    assert.notDeepEqual(after.connectors.find(c => c.id === attached.id)[key], attached[key]);
+    assert.equal(h.root.querySelectorAll('button[data-node-id^="presentation:"]').length, 0);
+    assert.ok(h.document.getElementsByTagName('*').length <= 1200);
+  }
+});
+
 test('narrow rich graph labels do not overlap each other', () => {
   for (const count of [4, 500]) for (const mode of ['2d', '3d']) for (const width of [289, 1298]) {
     const context = fakeContext(), model = topologyModel(count);

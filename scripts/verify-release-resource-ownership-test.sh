@@ -5,7 +5,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 root=$(mktemp -d "${TMPDIR:-/tmp}/checknetwork-release-ownership-test.XXXXXX")
 trap 'rm -rf -- "$root"' EXIT HUP INT TERM
 mkdir -p "$root/bin" "$root/frontend"
-for asset in nginx.conf app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-visualizer.js; do
+for asset in nginx.conf app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-presentation.js topology-visualizer.js; do
     : >"$root/frontend/$asset"
 done
 

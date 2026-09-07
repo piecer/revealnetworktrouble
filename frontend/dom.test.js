@@ -2127,7 +2127,7 @@ test('nonrenderable topology exposes render-limited and explains the retained ra
   assert.equal(document.querySelector('#download-topology').disabled, false);
 });
 
-test('unresponsive toggle removes unknown tails and reports actual planned omissions', async () => {
+test('unresponsive toggle preserves responsive tails and reports distinct presentation spans', async () => {
   const jobs = []; const cancelled = new Set(); let id = 0;
   const scheduler = {
     schedule(callback) { const handle = ++id; jobs.push({ handle, callback }); return handle; },
@@ -2170,12 +2170,13 @@ test('unresponsive toggle removes unknown tails and reports actual planned omiss
   assert.match(document.querySelector('#topology-result-summary').textContent, /계획 중|pending/i);
   runAll();
 
-  assert.deepEqual([...document.querySelectorAll('#topology-result .topology-node')].map(node => node.dataset.nodeId), ['local', 'known']);
+  assert.deepEqual([...document.querySelectorAll('#topology-result .topology-node')].map(node => node.dataset.nodeId), ['known', 'local', 'tail']);
   assert.deepEqual([...document.querySelectorAll('#topology-result .topology-link')].map(link => `${link.dataset.from}>${link.dataset.to}`), ['local>known']);
-  assert.equal(document.querySelector('#topology-result .topology-route').dataset.complete, 'false');
+  assert.equal(document.querySelector('#topology-result .topology-route').dataset.complete, 'true');
+  assert.match(document.querySelector('.topology-connector').textContent, /무응답 1홉 생략/);
   const summary = document.querySelector('#topology-result-summary').textContent;
-  assert.match(summary, /노드 2\/4[^·]*생략 2/);
-  assert.match(summary, /링크 1\/3[^·]*생략 2/);
+  assert.match(summary, /노드 4\/4[^·]*생략 0/);
+  assert.match(summary, /링크 3\/3[^·]*생략 0/);
 });
 
 test('max 500/499/20 summary reports the actual bounded plan and dynamic omissions', async () => {

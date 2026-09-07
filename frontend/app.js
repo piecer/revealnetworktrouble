@@ -926,7 +926,9 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
         return `${label} ${stats.displayed}/${stats.total} (생략 ${stats.omitted})`;
       }).join(' · ')
       : '계획 중';
-    line.textContent = `${serverText} · 현재 보기 ${viewText}${limited}`;
+    const p = owned ? finalTopologyPlan.plan.presentation : null;
+    const screen = p ? ` · 화면 노드 ${p.nodes.length} · 관측 링크 ${p.links.length} · 점선 구간 ${p.connectors.length}` : '';
+    line.textContent = `${serverText} · 검증 원본 ${viewText}${screen}${limited}`;
     root.append(line);
   }
   function renderTopologyTargetFilter(results, restore = null) {

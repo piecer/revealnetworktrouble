@@ -1,5 +1,6 @@
 :root { color-scheme: dark; --ink:#f4f1e8; --muted:#9b9b92; --line:#343630; --lime:#c9ff46; --red:#ff725e; --amber:#ffc857; --panel:#161815; }
 * { box-sizing:border-box; }
+.topology-connector { border-left:2px dashed #94a3b8; padding:8px; color:#94a3b8; overflow-wrap:anywhere; }
 body { margin:0; min-height:100vh; background:#0d0f0d; color:var(--ink); font:15px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
 body::before { content:""; position:fixed; inset:0; pointer-events:none; opacity:.35; background-image:linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px); background-size:32px 32px; }
 .shell { width:min(1120px, calc(100% - 40px)); margin:auto; padding:72px 0 96px; position:relative; }

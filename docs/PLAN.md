@@ -37,9 +37,9 @@
 Stage 8의 semantic renderer가 node/link/route마다 단일 텍스트 요소만 만들고 visual layer를 만들지 않아 graph가 사라진 회귀를 복구한다. 같은 validated facts를 default 2D/optional 3D Canvas로 투영하고 report/analysis/diagnosis는 바꾸지 않는다. Pointer/wheel/keyboard/reset/fullscreen interaction, no continuous animation, bounded semantic inspector와 Canvas fallback을 유지한다. Limits는 nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,152), DPR 4다.
 
 - [x] 2D/3D Canvas core, UI, lifecycle, semantic inspector/fallback 구현
-- [x] production seven-asset Docker/archive/served-byte closure 및 unexpected-file rejection
+- [x] production eight-asset Docker/archive/served-byte closure 및 unexpected-file rejection
 - Historical Stage 9 plan/closure record: current source inventory was Web 283 tests; synthetic archive validator 25도 당시 closure에 반영했다.
-- [x] Compose SemVer fix 뒤 current source-level Web inventory 291 반영
+- [x] Compose SemVer fix 뒤 current source-level Web inventory 298 반영
 - Historical Stage 9 record: Compose SemVer 직후 Web inventory는 284 tests였다. Graph-first slice는 collapsed native inspector, projected-bounds fit과 overflow 회귀를 추가하며 isolated Chromium replay만 검증한다. 배포·physical browser·screen-reader 및 independent parent review는 별도 acceptance다.
 ### Rich topology restoration slice
 

@@ -72,7 +72,7 @@ function drawTopologyCanvas(context, topology, options = {}) {
   const viewport = normalizeViewport(options.viewport ?? {});
   const mode = options.mode ?? '2d';
   const transform = createViewTransform(options.transform ?? {});
-  const projection = projectTopology(topology, { mode, transform, viewport });
+  const projection = projectTopology(topology, { mode, transform, viewport, ...(options.presentation ? { presentation: options.presentation } : {}) });
   // Session-local presentation offsets never enter the report or identity model.
   for (const node of projection.nodes) {
     const offset = options.nodeOffsets?.get(node.id);
@@ -81,7 +81,7 @@ function drawTopologyCanvas(context, topology, options = {}) {
     node.screen.y = Math.max(0, Math.min(viewport.height, node.screen.y + offset.y));
   }
   const moved = new Map(projection.nodes.map(node => [node.id, node]));
-  for (const link of projection.links) {
+  for (const link of [...projection.links, ...projection.connectors]) {
     const from = moved.get(link.from).screen, to = moved.get(link.to).screen;
     link.from_screen = { x: from.x, y: from.y };
     link.to_screen = { x: to.x, y: to.y };
@@ -100,12 +100,13 @@ function drawTopologyCanvas(context, topology, options = {}) {
   context.stroke();
 
   const nodes = new Map(projection.nodes.map(node => [node.id, node]));
-  for (const link of projection.links) {
+  for (const link of [...projection.links, ...projection.connectors]) {
     if (!link.visible) continue;
     const target = nodes.get(link.to);
     context.strokeStyle = link.color;
     context.fillStyle = link.color;
     context.lineWidth = 2;
+    context.setLineDash?.(link.kind ? [7, 5] : []);
     context.beginPath();
     context.moveTo(link.from_screen.x, link.from_screen.y);
     const dx = link.to_screen.x - link.from_screen.x;
@@ -114,11 +115,16 @@ function drawTopologyCanvas(context, topology, options = {}) {
     const bend = Math.min(42, length * 0.16);
     const control = { x: (link.from_screen.x + link.to_screen.x) / 2 - dy / length * bend,
       y: (link.from_screen.y + link.to_screen.y) / 2 + dx / length * bend };
+    if (link.kind && link.from === link.to) {
+      control.x += link.from_screen.x < viewport.width / 2 ? 48 : -48;
+      control.y += link.from_screen.y < viewport.height / 2 ? 48 : -48;
+    }
     if (typeof context.quadraticCurveTo === 'function') context.quadraticCurveTo(control.x, control.y, link.to_screen.x, link.to_screen.y);
     else context.lineTo(link.to_screen.x, link.to_screen.y);
     context.stroke();
-    drawArrowhead(context, control, link.to_screen, target?.screen.radius ?? 8);
+    if (link.directed) drawArrowhead(context, control, link.to_screen, target?.screen.radius ?? 8);
   }
+  context.setLineDash?.([]);
 
   const preservesState = typeof context.save === 'function' && typeof context.restore === 'function';
   if (preservesState) context.save();
@@ -181,6 +187,7 @@ function hopDetail(value) {
 }
 
 function nodeDetail(value) {
+  if (value.kind === 'unknown-group') return `${value.display_label} · ${hopDetail(value)} · 구간 표시 (IP 아님)`;
   const address = elementText(value.address, elementText(value.id, '알 수 없는 노드'));
   const label = elementText(value.display_label);
   const parts = [label && label !== address ? label : '', address, elementText(value.display_note), elementText(value.status, 'unknown'), hopDetail(value)];
@@ -245,6 +252,16 @@ function materializeTopologyItem(item, detachedDocument) {
       element.setAttribute('aria-label', detail);
       element.title = detail;
       element.textContent = detail;
+      return element;
+    }
+    case 'topology-connector': {
+      const element = detachedDocument.createElement('div');
+      element.className = 'topology-connector';
+      setData(element, 'from', value.from); setData(element, 'to', value.to);
+      setData(element, 'kind', value.kind);
+      element.textContent = value.label;
+      element.title = value.label;
+      element.setAttribute('aria-label', value.label);
       return element;
     }
     case 'topology-link': {
@@ -557,7 +574,7 @@ class TopologyRenderCoordinator {
       session.projection = drawTopologyCanvas(context, session.plan.topology, {
         mode: session.mode,
         transform: session.transform,
-        viewport, nodeOffsets: session.nodeOffsets
+        viewport, nodeOffsets: session.nodeOffsets, presentation: session.plan.presentation
       });
       if (!this.#active(session)) return false;
       canvas.dataset.mode = session.mode;
@@ -608,7 +625,7 @@ class TopologyRenderCoordinator {
     } else {
       const inspector = session.root.querySelector('details.topology-inspector');
       if (inspector) for (const item of [...session.root.children]) {
-        if (item.matches('.topology-node, .topology-link, .topology-route')) inspector.append(item);
+        if (item.matches('.topology-node, .topology-link, .topology-connector, .topology-route')) inspector.append(item);
       }
       const buttons = [...session.root.querySelectorAll('button.topology-node')];
       if (buttons.length && !buttons.some(button => button.tabIndex === 0)) buttons[0].tabIndex = 0;
@@ -655,7 +672,7 @@ class TopologyRenderCoordinator {
     if (session.view !== 'topology' || !session.projection) return;
     const canvas = session.root.querySelector('canvas.topology-canvas');
     const tooltip = session.workspace?.tooltip;
-    const facts = new Map(session.plan.topology.nodes.map(node => [node.id, node]));
+    const facts = new Map(session.plan.presentation.nodes.map(node => [node.id, node]));
     let drag = null;
     let selected = session.projection.nodes[0]?.id;
     let suppressClick = false;

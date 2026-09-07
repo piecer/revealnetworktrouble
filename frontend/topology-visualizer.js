@@ -394,7 +394,34 @@ export function projectTopology(input, inputOptions = {}) {
   if (mode !== MODE_2D && mode !== MODE_3D) throw new TypeError('mode must be 2d or 3d');
   const viewport = normalizeViewport(options.viewport ?? {});
   const transform = createViewTransform(options.transform ?? {});
-  const layout = layoutValidated(validateTopology(input));
+  const validated = validateTopology(input);
+  const presentation = options.presentation;
+  if (presentation) {
+    requireArray(presentation.connectors, 'presentation.connectors', VISUAL_LINKS);
+    requireArray(presentation.routes, 'presentation.routes', VISUAL_ROUTES);
+    if (presentation.links.length + presentation.connectors.length > VISUAL_LINKS) throw new RangeError('presentation connections must contain at most 1000 entries');
+    validateTopology({ nodes: presentation.nodes, links: presentation.links, routes: [] });
+    const ids = new Set(presentation.nodes.map(n => n.id));
+    const observed = new Set(validated.links.map(l => `${l.from}\u0000${l.to}`));
+    for (const link of presentation.links) if (!observed.has(`${link.from}\u0000${link.to}`)) throw new TypeError('presentation link is not observed');
+    for (const route of presentation.routes) {
+      requireArray(route.node_ids, 'presentation route nodes', VISUAL_NODES);
+      if (route.node_ids.some(id => !ids.has(id))) throw new TypeError('presentation route references missing node');
+    }
+    const keys = new Set();
+    for (const connector of presentation.connectors) {
+      requireString(connector.id, 'connector.id', { nonempty: true });
+      if (keys.has(connector.id) || !ids.has(connector.from) || !ids.has(connector.to) || !['fold', 'bypass'].includes(connector.kind)) throw new TypeError('invalid presentation connector');
+      keys.add(connector.id);
+    }
+  }
+  const layout = layoutValidated(presentation ? { nodes: presentation.nodes, links: presentation.links, routes: presentation.routes } : validated);
+  // Separate from observed links; these only describe presentation spans.
+  const connectorIDs = new Set();
+  for (const connector of presentation?.connectors ?? []) {
+    connectorIDs.add(connector.id);
+    layout.links.push({ ...connector, directed: false, color: STATUS_COLORS.unknown });
+  }
   const extents = {
     x: extent(layout.nodes, 'x'),
     y: extent(layout.nodes, 'y'),
@@ -431,6 +458,7 @@ export function projectTopology(input, inputOptions = {}) {
     viewport,
     transform,
     nodes: projectedNodes,
-    links: projectedLinks
+    links: projectedLinks.filter(link => !connectorIDs.has(link.id)),
+    connectors: projectedLinks.filter(link => connectorIDs.has(link.id))
   };
 }

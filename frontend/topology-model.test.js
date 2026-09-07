@@ -336,7 +336,7 @@ test('planner truncates routes at the first missing directed link and never inve
   assert.equal(plan.viewTruncation.truncated, true);
 });
 
-test('unresponsive filtering stops each route before its first unknown node without inventing edges', () => {
+test('unresponsive visibility keeps observed routes intact and separately presents hidden spans', () => {
   const model = {
     nodes: [
       { id: 'local', kind: 'local', status: 'healthy' },
@@ -356,15 +356,17 @@ test('unresponsive filtering stops each route before its first unknown node with
   };
 
   const filtered = filterTopologyModel(model, new Set([0]), { showUnresponsive: false });
-  assert.deepEqual(filtered.nodes.map(node => node.id), ['local', 'known']);
-  assert.deepEqual(filtered.links.map(link => `${link.from}>${link.to}`), ['local>known']);
-  assert.deepEqual(filtered.routes[0].node_ids, ['local', 'known']);
-  assert.equal(filtered.routes[0].complete, false);
+  assert.deepEqual(filtered.nodes.map(node => node.id), ['local', 'known', 'unknown', 'tail']);
+  assert.deepEqual(filtered.links.map(link => `${link.from}>${link.to}`), ['local>known', 'known>unknown', 'unknown>tail']);
+  assert.deepEqual(filtered.routes[0].node_ids, ['local', 'known', 'unknown', 'tail']);
+  assert.equal(filtered.routes[0].complete, true);
   assert.deepEqual(filtered.viewTotals, { nodes: 4, links: 3, routes: 1 });
 
   const plan = planTopologyDOM(filtered);
-  assert.deepEqual(plan.viewStats.nodes, { total: 4, displayed: 2, omitted: 2 });
-  assert.deepEqual(plan.viewStats.links, { total: 3, displayed: 1, omitted: 2 });
+  assert.deepEqual(plan.viewStats.nodes, { total: 4, displayed: 4, omitted: 0 });
+  assert.deepEqual(plan.viewStats.links, { total: 3, displayed: 3, omitted: 0 });
+  assert.deepEqual(plan.presentation.nodes.map(n => n.id), ['known', 'local', 'tail']);
+  assert.equal(plan.presentation.connectors[0].kind, 'bypass');
   assert.deepEqual(plan.viewStats.routes, { total: 1, displayed: 1, omitted: 0 });
 });
 

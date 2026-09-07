@@ -224,11 +224,11 @@ class ArchiveSafetyTest(unittest.TestCase):
     def assert_production_asset_contract(self, fx, result):
         self.assertEqual(
             validator.ASSETS,
-            ("app.js", "index.html", "state.js", "styles.css", "topology-model.js", "topology-renderer.js", "topology-visualizer.js"),
+            ("app.js", "index.html", "state.js", "styles.css", "topology-model.js", "topology-renderer.js", "topology-presentation.js", "topology-visualizer.js"),
         )
         expected_identity = "".join(
             f"{hashlib.sha256(fx.asset_data[name]).hexdigest()}  {name}\n"
-            for name in validator.ASSETS
+            for name in sorted(validator.ASSETS)
         ).encode()
         self.assertEqual(result["asset_manifest"], hashlib.sha256(expected_identity).hexdigest())
 

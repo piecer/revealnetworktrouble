@@ -1,4 +1,5 @@
 'use strict';
+import { presentTopology } from './topology-presentation.js';
 
 import { normalizeCompactTopology } from './state.js';
 
@@ -416,7 +417,7 @@ function topologyModelFromReport(input) {
 function filterTopologyModel(inputModel, selectedResultIndexes, { showUnresponsive = true } = {}) {
   const model = snapshotPlainData(inputModel, 'model');
   const selected = new Set(selectedResultIndexes ?? []);
-  const nodeByID = new Map((Array.isArray(model.nodes) ? model.nodes : []).map(node => [node.id, node]));
+
   const selectedRoutes = (Array.isArray(model.routes) ? model.routes : [])
     .filter(route => selected.has(route.result_index));
   const totalNodeIDs = new Set(selectedRoutes.flatMap(route => route.node_ids));
@@ -424,11 +425,7 @@ function filterTopologyModel(inputModel, selectedResultIndexes, { showUnresponsi
     .map((id, index) => `${route.node_ids[index]}\u0000${id}`)));
   const routes = [];
   for (const route of selectedRoutes) {
-    let node_ids = [...route.node_ids];
-    if (!showUnresponsive) {
-      const unknownAt = node_ids.findIndex(id => nodeByID.get(id)?.kind === 'unknown');
-      if (unknownAt >= 0) node_ids = node_ids.slice(0, unknownAt);
-    }
+    const node_ids = [...route.node_ids];
     if (node_ids.length === 0) continue;
     routes.push({ ...route, complete: Boolean(route.complete && node_ids.length === route.node_ids.length), node_ids });
   }
@@ -436,7 +433,7 @@ function filterTopologyModel(inputModel, selectedResultIndexes, { showUnresponsi
   const linkKeys = new Set(routes.flatMap(route => route.node_ids.slice(1)
     .map((id, index) => `${route.node_ids[index]}\u0000${id}`)));
   return {
-    ...model,
+    ...model, showUnresponsive,
     nodes: (model.nodes ?? []).filter(node => nodeIDs.has(node.id)),
     links: (model.links ?? []).filter(link => linkKeys.has(`${link.from}\u0000${link.to}`)),
     routes,
@@ -656,6 +653,10 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
   const labelsTruncated = normalizedLabels.length > LABEL_RECORDS;
   const labelRecords = normalizedLabels.slice(0, LABEL_RECORDS).map(({ order: _order, ...record }) => record);
 
+  const presentation = presentTopology({ nodes: selectedNodes, links: selectedLinks, routes: selectedRoutes }, {
+    showUnresponsive: model.showUnresponsive !== false, elementBudget: topologyBudget
+  });
+  if (Object.values(presentation.stats).some(stat => stat.omitted > 0)) reasons.push('presentation_budget');
   const mountItems = [];
   let mountCost = 0;
   const mount = (kind, value, domCost) => {
@@ -668,9 +669,10 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
   if (view === 'topology') {
     mount('topology-canvas', null, DOM_COSTS.topology.canvas);
     mount('topology-inspector', null, DOM_COSTS.topology.inspector);
-    for (const value of selectedNodes) mount('topology-node', value, DOM_COSTS.topology.node);
-    for (const value of selectedLinks) mount('topology-link', value, DOM_COSTS.topology.link);
-    for (const value of selectedRoutes) mount('topology-route', value, DOM_COSTS.topology.route);
+    for (const value of presentation.nodes) mount('topology-node', value, DOM_COSTS.topology.node);
+    for (const value of presentation.links) mount('topology-link', value, DOM_COSTS.topology.link);
+    for (const value of presentation.connectors) mount('topology-connector', value, DOM_COSTS.topology.link);
+    for (const value of presentation.routes) mount('topology-route', value, DOM_COSTS.topology.route);
   } else if (view === 'geo') {
     mount('geo-canvas', null, DOM_COSTS.geo.canvas);
     if (mount('geo-accessible-list', null, DOM_COSTS.geo.accessibleList)) {
@@ -700,13 +702,13 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
   if (chunk.length) chunks.push(chunk);
   const plannedElements = mountCost;
   const semanticCounts = {
-    topology: { nodes: selectedNodes.length, links: selectedLinks.length, routes: selectedRoutes.length },
+    topology: { nodes: presentation.nodes.length, links: presentation.links.length + presentation.connectors.length, routes: presentation.routes.length },
     geo: { markers: markers.length, segments: segments.length, arrows: arrows.length },
     labels: { records: labelRecords.length }
   };
   const estimatedDOMElements = renderable ? existingDOMElements + reserve + mountCost : existingDOMElements;
   return {
-    view, renderable,
+    view, renderable, presentation,
     topology: { nodes: selectedNodes, links: selectedLinks, routes: selectedRoutes },
     geo: { markers, segments, arrows },
     labels: {
