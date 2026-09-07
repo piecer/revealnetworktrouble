@@ -1,4 +1,5 @@
 'use strict';
+import { asnContextLabel } from './topology-presentation.js';
 
 export const VISUAL_NODES = 500;
 export const VISUAL_LINKS = 1000;
@@ -309,11 +310,14 @@ function layoutValidated(value) {
   const nodes = value.nodes.map(item => {
     const member = memberships.get(item.id);
     const routeDepth = member.length ? average(member, entry => entry.lane) : laneByID.get(item.id) * 0.75;
+    const context = asnContextLabel(item).replace(' 사이 사설 구간 · 추정', ' 문맥·추정');
     return {
       id: item.id,
       kind: item.kind ?? 'unknown',
       status: normalizedStatus(item.status),
-      label: nodeLabel(item),
+      // Keep the inference qualifier even when an alias reaches its input limit.
+      label: context ? `${nodeLabel(item).slice(0, Math.max(0, 28 - context.length - 3))} · ${context}` : nodeLabel(item),
+      asn_context: Boolean(context),
       color: STATUS_COLORS[normalizedStatus(item.status)],
       route_keys: member.map(entry => entry.key),
       world: { x: depths.get(item.id), y: laneByID.get(item.id), z: routeDepth }

@@ -191,6 +191,7 @@ func TestCommittedCompactCanonicalFixturesMatchGoProducerBytes(t *testing.T) {
 		name   string
 		report func(*testing.T) diagnostic.Report
 	}{
+		{name: "compact-asn-context-report.json", report: compactASNContextFixtureReport},
 		{name: "compact-zero-route-report.json", report: compactZeroRouteFixtureReport},
 		{name: "compact-zero-node-attempt-report.json", report: compactZeroNodeAttemptFixtureReport},
 		{name: "compact-empty-asn-report.json", report: compactEmptyASNFixtureReport},
@@ -381,6 +382,31 @@ func checkerExecutionFixtureReport(t *testing.T) diagnostic.Report {
 		t.Fatalf("checker execution results = %v", got)
 	}
 	return report
+}
+
+// Synthetic observed trace, never a live ASN lookup. Production runner,
+// analysis and compact encoder generate the exact consumer fixture bytes.
+func compactASNContextFixtureReport(t *testing.T) diagnostic.Report {
+	t.Helper()
+	topology := &diagnostic.Topology{Reached: true}
+	for index, address := range []string{"8.8.8.8", "10.1.2.3", "192.168.2.3", "8.8.4.4"} {
+		node := diagnostic.TopologyNode{ID: fmt.Sprintf("hop-%d", index+1), Hop: index + 1, Address: address, Status: "healthy", LatencyMS: float64(index + 1)}
+		if diagnostic.IsPublicDiagnosticIP(net.ParseIP(address)) {
+			node.PublicIP = true
+			node.ASN = &diagnostic.ASNInfo{Number: 15169, Organization: fmt.Sprintf("Fixture endpoint %d", index)}
+		}
+		topology.Nodes = append(topology.Nodes, node)
+		if index > 0 {
+			topology.Links = append(topology.Links, diagnostic.TopologyLink{From: topology.Nodes[index-1].ID, To: node.ID, Status: "healthy"})
+		}
+	}
+	result := diagnostic.Result{Kind: diagnostic.KindTraceroute, Address: "8.8.4.4", Status: diagnostic.StatusHealthy, StartedAt: fixtureTime,
+		Details: map[string]any{
+			"attempts":       []diagnostic.TraceAttempt{{Attempt: 1, Status: diagnostic.StatusHealthy, Topology: topology}},
+			"attempts_total": 1, "attempts_reached": 1, "attempts_failed": 0, "attempts_unreached": 0,
+			"attempts_execution_failed": 0, "attempts_timed_out": 0, "attempts_cancelled": 0,
+		}}
+	return runFixtureResult(t, "999999999999999999999999", diagnostic.Target{Kind: diagnostic.KindTraceroute, Address: result.Address, Attempts: 1}, result, 7)
 }
 
 func compactZeroRouteFixtureReport(t *testing.T) diagnostic.Report {

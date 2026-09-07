@@ -1,4 +1,5 @@
 'use strict';
+import { asnContextLabel, ASN_CONTEXT_DISCLAIMER } from './topology-presentation.js';
 
 import { planTopologyDOM, commitDOMChunk } from './topology-model.js';
 import { createViewTransform, normalizeViewport, projectTopology } from './topology-visualizer.js';
@@ -140,6 +141,15 @@ function drawTopologyCanvas(context, topology, options = {}) {
       context.beginPath();
       context.arc(node.screen.x, node.screen.y, node.screen.radius, 0, Math.PI * 2);
       context.fill();
+      if (node.asn_context) {
+        context.strokeStyle = '#c4b5fd';
+        context.lineWidth = 1.5;
+        context.setLineDash?.([3, 3]);
+        context.beginPath();
+        context.arc(node.screen.x, node.screen.y, node.screen.radius + 6, 0, Math.PI * 2);
+        context.stroke();
+        context.setLineDash?.([]);
+      }
     }
     // Fixed candidate count and conservative maxWidth boxes: no font-metric or
     // frame-dependent relaxation, no moved graph nodes, and no synthetic links.
@@ -190,7 +200,13 @@ function nodeDetail(value) {
   if (value.kind === 'unknown-group') return `${value.display_label} · ${hopDetail(value)} · 구간 표시 (IP 아님)`;
   const address = elementText(value.address, elementText(value.id, '알 수 없는 노드'));
   const label = elementText(value.display_label);
-  const parts = [label && label !== address ? label : '', address, elementText(value.display_note), elementText(value.status, 'unknown'), hopDetail(value)];
+  const contextLabel = asnContextLabel(value);
+  // Put the disclaimer before long user-authored notes: bounded hover text must
+  // never truncate away the distinction between observation and inference.
+  const contextParts = contextLabel ? [contextLabel, ASN_CONTEXT_DISCLAIMER,
+    ...(value.asn_contexts ?? []).map(c => `경로 ${c.result_index + 1} · 시도 ${c.attempt} · 구간 ${c.start}–${c.end} (출현 ${c.route_occurrence + 1}): AS${c.asn} 사이`),
+    value.asn_contexts_omitted ? `추가 경로 문맥 ${value.asn_contexts_omitted}개 생략` : ''] : [];
+  const parts = [...contextParts, label && label !== address ? label : '', address, elementText(value.display_note), elementText(value.status, 'unknown'), hopDetail(value)];
   if (Number.isFinite(value.observations)) parts.push(`${value.observations} observations`);
   if (Number.isFinite(value.latency_ms_avg)) parts.push(`${value.latency_ms_avg} ms`);
   if (value.public_ip === true) parts.push('public IP');
@@ -367,6 +383,8 @@ function addCleanups(session, result) {
 
 function truncationSummary(plan, localLimitation = null) {
   const parts = ['표시 완료'];
+  const contexts = plan.presentation?.stats.asn_contexts;
+  if (plan.view === 'topology' && contexts?.total) parts.push(`ASN 문맥 ${contexts.displayed}개 표시 · ${contexts.omitted}개 생략 (추정)`);
   if (plan.serverTruncation?.truncated) parts.push('서버 제한');
   if (plan.adapterTruncation?.truncated) parts.push('변환 제한');
   if (plan.viewTruncation?.truncated || plan.labelTruncation?.truncated) parts.push('보기 제한');

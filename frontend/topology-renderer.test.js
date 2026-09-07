@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
+import { normalizeReport } from './state.js';
+import { readFileSync } from 'node:fs';
+import { topologyModelFromReport, planTopologyDOM } from './topology-model.js';
 import { drawTopologyCanvas, TopologyRenderCoordinator } from './topology-renderer.js';
 
 function harness({ owns = () => true, html = '', context = fakeContext() } = {}) {
@@ -49,6 +52,23 @@ function fakeContext() {
   }
   return context;
 }
+
+test('producer private contexts draw exactly two lavender dashed halos and reset dash state in both modes', () => {
+  const model = topologyModelFromReport(normalizeReport(JSON.parse(readFileSync(new URL('../testdata/compact-asn-context-report.json', import.meta.url), 'utf8'))));
+  const plan = planTopologyDOM(model);
+  for (const mode of ['2d','3d']) {
+    const context = fakeContext(); context.setLineDash = dash => context.calls.push(['dash', dash]);
+    const projection = drawTopologyCanvas(context, model, {mode, presentation:plan.presentation});
+    const halos = context.calls.flatMap((call,i) => call[0] === 'strokeStyle' && call[1] === '#c4b5fd' ? [context.calls.slice(i,i+7)] : []);
+    assert.equal(halos.length,2);
+    for (const halo of halos) {
+      assert.deepEqual(halo.map(c=>c[0]), ['strokeStyle','lineWidth','dash','beginPath','arc','stroke','dash']);
+      assert.deepEqual(halo[2],['dash',[3,3]]); assert.deepEqual(halo[6],['dash',[]]);
+      assert.ok(projection.nodes.some(n=>n.asn_context && n.screen.x===halo[4][1] && n.screen.y===halo[4][2] && n.screen.radius+6===halo[4][3]));
+    }
+    assert.equal(context.calls.filter(c=>c[0]==='fillText' && /AS15169.*추정/.test(c[1])).length,2);
+  }
+});
 
 test('hidden return to the same responsive node has a visible presentation curve', () => {
   const h = harness(); const model = topologyModel(2); model.showUnresponsive = false;
@@ -574,6 +594,26 @@ test('topology uses safe one-element items and roving arrow-key focus', () => {
   assert.deepEqual(buttons.map(button => button.tabIndex), [-1, 0]);
   buttons[1].dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
   assert.strictEqual(h.document.activeElement, buttons[0]);
+});
+
+test('private context semantics disclose route-specific inference without adding DOM or breaking editing', () => {
+  const h = harness();
+  const model = { nodes: ['8.8.8.8','10.1.2.3','8.8.4.4'].map((address, i) => ({ id: `n${i}`, kind: 'ip', address, status: 'healthy', observations: 1,
+    ...(i !== 1 ? { public_ip: true, asn: { number: 15169, organization: 'Observed only' } } : { display_label: 'Router', display_note: 'x'.repeat(1024) }) })),
+    links: [{ from: 'n0', to: 'n1', status: 'healthy', observations: 1 }, { from: 'n1', to: 'n2', status: 'healthy', observations: 1 }],
+    routes: [{ result_index: 0, attempt: 1, node_ids: ['n0','n1','n2'], status: 'healthy', complete: true, reached: true }] };
+  h.coordinator.start({ ownerId: 'A', inputSignature: 'a', view: 'topology', model, root: h.root, status: h.status });
+  h.runAll();
+  assert.match(h.status.textContent, /ASN 문맥 1개 표시 · 0개 생략 \(추정\)/);
+  const node = h.root.querySelector('[data-node-id="n1"]');
+  for (const text of [node.textContent, node.title, node.getAttribute('aria-label'), node.dataset.detail.slice(0, 2048)]) {
+    assert.match(text, /AS15169 사이 사설 구간 · 추정/);
+    assert.match(text, /경로 1 · 시도 1 · 구간 1–1/);
+    assert.match(text, /양끝 공인 IP의 ASN이 같아 표시한 경로 문맥이며, 사설 IP의 ASN 소속을 확인한 것은 아닙니다/);
+    assert.doesNotMatch(text, /Observed only|public IP/);
+  }
+  assert.equal(node.tagName, 'BUTTON'); assert.equal(node.draggable, true); assert.equal(node.childElementCount, 0);
+  assert.equal(node.dataset.labelAddress, '10.1.2.3');
 });
 
 test('bounded topology elements expose rich semantics and reorder without adding DOM', () => {

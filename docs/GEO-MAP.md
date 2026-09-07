@@ -1,6 +1,6 @@
 # Offline Geo map: provenance, boundaries and verification
 
-This uncommitted Geo slice is ready for independent source review after its fresh gates; it is not a release or deployment claim. Historical Stage 8/9 counts and release acceptance remain separate. Current Node runner inventory is **308 tests**, including ten Geo unit cases; initial Geo inventory 304 and pre-Geo 298 remain historical. Browser scenarios are separate, not added to the Node count.
+This uncommitted Geo slice is ready for independent source review after its fresh gates; it is not a release or deployment claim. Historical Stage 8/9 counts and release acceptance remain separate. Current Node runner inventory is **320 tests**, including ten Geo unit cases and the ASN-context slice. Geo inventories 308/304 and pre-Geo 298 remain historical. Browser scenarios are separate, not added to the Node count.
 
 ## Geographic source and reproducibility
 
