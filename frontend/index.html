@@ -126,8 +126,10 @@ google.com</textarea></label>
           <div><p class="step">GEO / ROUTE MAP</p><h2 id="geo-map-title">공인 IP 경로 지도</h2></div>
           <div class="report-actions"><button class="secondary" id="geo-map-fullscreen" type="button" aria-controls="geo-map-result" aria-pressed="false">전체 화면</button><a class="secondary button-link" href="#topology">경로 분석 실행</a></div>
         </div>
-        <p class="section-description">최근 경로 분석에서 위치가 식별된 공인 IP와 홉 간 방향을 제한된 Canvas 경로 개요로 표시합니다. 좌표는 equirectangular 방식으로 투영하며, 아래 목록은 화면에 포함된 위치를 함께 제공합니다.</p>
+        <p class="section-description">Natural Earth 해안선을 담은 제한된 오프라인 Canvas 지도에 공인 IP 좌표와 관측 홉 간 방향을 표시합니다. GeoIP는 추정 위치이며 실제 장비 소재지나 패킷 이동 경로를 보장하지 않습니다. 아래 목록에서 원본 좌표를 확인하세요.</p>
         <p class="canvas-map-notice">이 보기는 외부 타일 또는 지도 credential을 사용하지 않습니다.</p>
+        <div class="geo-map-controls" aria-label="지도 조작"><button id="geo-zoom-in" class="secondary" type="button" aria-label="지도 확대">+</button><button id="geo-zoom-out" class="secondary" type="button" aria-label="지도 축소">−</button><button id="geo-fit" class="secondary" type="button">경로에 맞춤</button><span>드래그 이동 · 휠/+− 확대 · 방향키 이동 · Home 맞춤</span></div>
+        <p id="geo-map-message" role="status" aria-live="polite"></p>
         <p id="geo-render-status" class="render-status" role="status" aria-live="polite" aria-atomic="true"></p>
         <div id="geo-map-result" class="geo-map-result"><p class="empty-topology">먼저 경로 토폴로지 메뉴에서 분석을 실행해 주세요.</p></div>
       </section>

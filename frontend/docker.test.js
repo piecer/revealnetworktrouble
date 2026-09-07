@@ -5,7 +5,7 @@ import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-const productionAssets = ['app.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-presentation.js', 'topology-renderer.js', 'topology-visualizer.js'];
+const productionAssets = ['app.js', 'geo-map.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-presentation.js', 'topology-renderer.js', 'topology-visualizer.js'];
 const canonicalSemverERE = String.raw`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`;
 const validSemvers = ['0.1.0-dev', '1.0.0-alpha.1', '1.0.0+build.5', '1.0.0-0'];
 const invalidSemvers = [

@@ -28,6 +28,8 @@ git diff --check
 
 Compose SemVer regression fix 뒤 현재 Stage 9 source inventory는 Web 298 tests(456 fixture-derived semantic mutations, 그중 generic cancelled-detail 13), Android debug/release 각각 direct-child XML 297 tests + variant-contract canary 2, offline archive validators API 28 + Web 25 = 53 tests, exact real release-gate fake cases 12다. Producer contracts는 API errors 16/structural mutations 85, findings 23/result shapes 31/expanded result matrix 136, 별도 presentation `6/10/21/23/33`이다. 이 값은 permanent verifier threshold가 아니라 다음 final pre-manifest gate에서 다시 관측할 current cardinality다. 최신 parent focused gates와 Task 1~15 task-level reviews는 blocker 0 / major 0이지만 documentation edit 뒤 `env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci`는 아직 pending이다. Prior current-byte CI/count evidence는 final evidence가 아니다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest/검증에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. New manifest/temp release/five-way review/commit/exact-SHA closure도 pending이며 이전 임시 manifest version/record count/hash는 current evidence가 아니다.
 
+Geo basemap slice current source inventory: **Web 308 tests** (initial Geo slice 304 and previous 298 are historical). Offline archive validators remain API 28 + Web 25 = 53; production Web closure is now **nine assets**, including self-contained `geo-map.js`. Independent review/release remains pending. See [Geo map evidence and reproduction](GEO-MAP.md) for the separate actual API, saved replay, no-Geo and pixel-seam browser gates.
+
 프런트엔드는 ESM과 Node 내장 test runner를 사용하고 `jsdom`은 `30.0.1`로 lockfile에 고정한다. state/model/renderer/DOM tests가 schema, planning, progressive ownership과 실제 DOM event를 실행한다.
 
 ## 테스트 계층

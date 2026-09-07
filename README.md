@@ -27,6 +27,8 @@ Stage 8의 구현 계약은 다음과 같다.
 
 Compose SemVer regression fix 뒤 현재 Stage 9 Web source inventory는 298 tests다. Producer findings 23, result shapes 31과 expanded result matrix 136, presentation `6/10/21/23/33`, API errors 16와 structural mutations 85, Android debug/release 각각 direct-child XML 297 tests + variant canaries 2, API/Web offline archive validator 28+25=53 tests, exact real release-gate fake cases 12는 유지된다. Production exact gate는 canonical inventory를 기준으로 umask 077/027/000 세 pass를 비교한다. Stage 9 final canonical gates와 독립 review, 새 external manifest, manifest-derived temporary release, commit과 exact-SHA closure는 아직 pending이다. 실제 브라우저와 screen reader 수동 검증도 pending이며 자동 test count로 완료를 주장하지 않는다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest와 검증 증거에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. 이를 final artifact-cleanup 또는 release 성공으로 해석하지 않는다.
 
+Geo basemap slice current source inventory: **Web 308 tests** (initial Geo slice 304 and previous 298 are historical). Offline archive validators remain API 28 + Web 25 = 53; production Web closure is now **nine assets**, including self-contained `geo-map.js`. Independent review/release remains pending.
+
 신규 리포트는 단순 PASS/FAIL과 함께 원인 후보, 그 판단을 지지하는 관측 증거, 안전한 다음 확인 단계와 분석 한계를 구조화된 `analysis`로 제공한다. 분석 confidence는 장애 확률이 아니며 현재 수집한 telemetry의 근거 수준을 뜻한다.
 
 백엔드는 Go로 작성된 독립 REST API이며, 진단 엔진은 다른 CLI·데스크톱·모바일 프론트엔드에서도 재사용할 수 있습니다. 기본 프론트엔드는 빌드 도구 없이 배포 가능한 웹 앱입니다.
@@ -52,7 +54,7 @@ curl -X POST http://localhost:8080/api/v1/reports \
 
 Android 앱도 `/checks` capability와 13종 검사, HTTPS-only public credential, request owner/cancel/recreation, 설명 가능한 analysis와 compact topology 요약을 사용한다. discovery와 report는 하나의 315초 절대 deadline을 공유하고 각 단계의 더 짧은 local deadline과 교차한다. 유효하지만 축소된 capability와 선택값의 불일치는 typed `UNSUPPORTED_CAPABILITY` 이유와 고정 UI 문구로 표시하며 malformed 응답은 계속 invalid response다. 기본 공유는 redacted human summary이고 원본 JSON은 경고 확인 후 private cache의 bounded content URI로만 공유한다. Interactive Android graph와 실기기 TalkBack 검증은 아직 별도 acceptance 항목이다. raw-share 15분 lease는 앱 프로세스가 `observe()`한 시점에 revoke/cleanup하는 process-observed TTL이며, 프로세스가 죽은 뒤 stock `FileProvider` grant, 이미 열린 descriptor 또는 수신 앱의 복사를 강제로 만료시키는 보장은 아니다.
 
-공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. `Geo 경로 지도`는 같은 bounded selection을 외부 tile/credential 없는 Canvas 경로 개요와 접근 가능한 위치 목록으로 표시한다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치다.
+공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. `Geo 경로 지도`는 같은 bounded selection을 외부 tile/credential 없는 Natural Earth 해안선 기반 오프라인 Canvas 지도(드래그/확대/경로 맞춤)와 접근 가능한 위치 목록으로 표시한다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치다.
 
 웹 UI는 정적 파일 서버로 별도 실행합니다.
 

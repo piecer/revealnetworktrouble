@@ -11,7 +11,7 @@ const crypto = require('node:crypto');
   if (log) reports.push(['captured', fs.readFileSync(log, 'utf8').split('\n').find(line => line.startsWith('REPORT ')).slice(7)]);
   fs.mkdirSync(output, { recursive: true });
   // Verify every served production module against this exact dirty worktree.
-  for (const name of ['app.js','state.js','topology-model.js','topology-presentation.js','topology-renderer.js','topology-visualizer.js','styles.css','index.html']) {
+  for (const name of ['app.js','state.js','topology-model.js','geo-map.js', 'topology-presentation.js','topology-renderer.js','topology-visualizer.js','styles.css','index.html']) {
     assert.equal(await (await fetch(`${base}/${name}`)).text(), fs.readFileSync(path.join(__dirname, name), 'utf8'), `exact source ${name}`);
   }
   const browser = await chromium.launch(); const results = [];

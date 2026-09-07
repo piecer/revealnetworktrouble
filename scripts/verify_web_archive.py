@@ -49,7 +49,7 @@ class Policy:
 HEX_BLOB = re.compile(r"blobs/sha256/([0-9a-f]{64})\Z")
 WEB_ROOT = "usr/share/nginx/html"
 CONFIG_PATH = "etc/nginx/nginx.conf"
-ASSETS = ("app.js", "index.html", "state.js", "styles.css", "topology-model.js", "topology-renderer.js", "topology-presentation.js", "topology-visualizer.js")
+ASSETS = ("app.js", "index.html", "state.js", "styles.css", "topology-model.js", "topology-renderer.js", "geo-map.js", "topology-presentation.js", "topology-visualizer.js")
 IDENTITY = ".checknetwork-assets.sha256"
 PINNED_NGINX_CONFIG_DIGEST = "sha256:6769dc3a703c719c1d2756bda113659be28ae16cf0da58dd5fd823d6b9a050ea"
 PINNED_NGINX_LAYER_DIGESTS = (

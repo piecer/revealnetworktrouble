@@ -118,8 +118,8 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			`id="topology-view-status"`,
 		},
 		"frontend/Dockerfile": {
-			"COPY index.html styles.css app.js state.js topology-model.js topology-renderer.js topology-presentation.js topology-visualizer.js /usr/share/nginx/html/",
-			"sha256sum app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-presentation.js topology-visualizer.js | sort -k2 > .checknetwork-assets.sha256",
+			"COPY index.html styles.css app.js state.js topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js /usr/share/nginx/html/",
+			"sha256sum app.js index.html state.js styles.css topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js | sort -k2 > .checknetwork-assets.sha256",
 		},
 		"frontend/state.test.js": {
 			"assert.equal(contract.result_shapes.length, 31)",
@@ -161,7 +161,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"trap 'handle_signal 129' HUP",
 			"trap 'handle_signal 130' INT",
 			"trap 'handle_signal 143' TERM",
-			"for asset in app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-presentation.js topology-visualizer.js; do",
+			"for asset in app.js index.html state.js styles.css topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js; do",
 		},
 		"scripts/verify_api_archive.py": {
 			"archive_bytes: int = 512 * 1024 * 1024",

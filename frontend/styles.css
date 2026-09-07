@@ -1,3 +1,7 @@
+.geo-map-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; }
+.geo-map-controls span { color:var(--muted); font-size:12px; }
+.topology-geo-canvas { touch-action:none; cursor:grab; }
+.topology-geo-canvas:active { cursor:grabbing; }
 :root { color-scheme: dark; --ink:#f4f1e8; --muted:#9b9b92; --line:#343630; --lime:#c9ff46; --red:#ff725e; --amber:#ffc857; --panel:#161815; }
 * { box-sizing:border-box; }
 .topology-connector { border-left:2px dashed #94a3b8; padding:8px; color:#94a3b8; overflow-wrap:anywhere; }

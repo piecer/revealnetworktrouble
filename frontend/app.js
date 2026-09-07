@@ -3,6 +3,7 @@ import {
   transitionRequest, ownsRequest, clientTimeoutMS, normalizeRequestError, parseResponse, SCHEMA_LIMITS
 } from './state.js';
 import { canonicalIP, topologyModelFromReport, filterTopologyModel } from './topology-model.js';
+import { mountGeoMap } from './geo-map.js';
 import { TopologyRenderCoordinator } from './topology-renderer.js';
 import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport } from './topology-visualizer.js';
 
@@ -953,38 +954,8 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   }
   function drawGeo({ canvas, geo, signal }) {
     if (!canvas) return undefined;
-    canvas.dataset.markers = String(geo.markers.length);
-    canvas.dataset.segments = String(geo.segments.length);
-    canvas.dataset.arrows = String(geo.arrows.length);
-    const markerByID = new Map(geo.markers.map(marker => [marker.node_id, marker]));
-    let pending = null;
-    const draw = () => {
-      pending = null;
-      if (signal.aborted || !canvas.isConnected) return;
-      let context;
-      try { context = canvas.getContext?.('2d'); } catch { return; }
-      if (!context) return;
-      const rect = canvas.getBoundingClientRect();
-      const cssWidth = Math.max(1, Math.round(rect.width || canvas.clientWidth || 960));
-      const cssHeight = Math.max(1, Math.round(rect.height || canvas.clientHeight || 540));
-      const ratio = Math.max(1, Math.min(3, Number(win.devicePixelRatio) || 1));
-      canvas.width = Math.round(cssWidth * ratio); canvas.height = Math.round(cssHeight * ratio);
-      context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.clearRect(0, 0, cssWidth, cssHeight);
-      const project = marker => ({ x: (marker.longitude + 180) / 360 * cssWidth, y: (90 - marker.latitude) / 180 * cssHeight });
-      context.lineWidth = 2; context.strokeStyle = '#67d5ff'; context.fillStyle = '#c9ff46';
-      for (const segment of geo.segments) {
-        const from = markerByID.get(segment.from); const to = markerByID.get(segment.to); if (!from || !to) continue;
-        const a = project(from); const b = project(to); context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
-        const angle = Math.atan2(b.y - a.y, b.x - a.x); const mx = (a.x + b.x) / 2; const my = (a.y + b.y) / 2;
-        context.beginPath(); context.moveTo(mx, my); context.lineTo(mx - 8 * Math.cos(angle - .45), my - 8 * Math.sin(angle - .45)); context.lineTo(mx - 8 * Math.cos(angle + .45), my - 8 * Math.sin(angle + .45)); context.closePath(); context.fill();
-      }
-      for (const marker of geo.markers) { const point = project(marker); context.beginPath(); context.arc(point.x, point.y, 4, 0, Math.PI * 2); context.fill(); }
-    };
-    const scheduleDraw = () => { if (pending === null) pending = selectedScheduler.schedule(draw); };
-    draw();
-    listen(win, 'resize', scheduleDraw);
-    return () => { win.removeEventListener('resize', scheduleDraw); if (pending !== null) selectedScheduler.cancel(pending); pending = null; };
+    return mountGeoMap({ canvas, geo, signal, win, scheduler: selectedScheduler,
+      controls: { message: doc.querySelector('#geo-map-message'), zoomIn: doc.querySelector('#geo-zoom-in'), zoomOut: doc.querySelector('#geo-zoom-out'), fit: doc.querySelector('#geo-fit') } });
   }
   function startActiveTopologyRender() {
     unmountDiagnosticsPresentation();
