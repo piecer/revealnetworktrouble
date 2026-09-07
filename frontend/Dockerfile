@@ -5,7 +5,7 @@ ARG SOURCE_DATE_EPOCH
 LABEL org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.revision="$REVISION"
 RUN test -n "$VERSION" && \
-    printf '%s\n' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?$' || \
+    printf '%s\n' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' || \
       { printf '%s\n' 'VERSION must be valid SemVer' >&2; exit 1; }
 RUN case "$REVISION" in *[!0-9a-f]*) false ;; esac && \
     test "${#REVISION}" -eq 40 || \

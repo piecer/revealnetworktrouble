@@ -1,10 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 const productionAssets = ['app.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-renderer.js', 'topology-visualizer.js'];
+const canonicalSemverERE = String.raw`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`;
+const validSemvers = ['0.1.0-dev', '1.0.0-alpha.1', '1.0.0+build.5', '1.0.0-0'];
+const invalidSemvers = [
+  'dev', 'v1.0.0', '01.0.0', '1.01.0', '1.0.01', '1.0.0-01',
+  '1..0', '1.0.0-alpha..1', '1.0.0-', '1.0.0-alpha.', '1.0.0+build..1',
+  '1.0.0-alpha_beta',
+];
+
+function grepAccepts(pattern, candidate) {
+  return spawnSync('grep', ['-Eq', pattern], { input: `${candidate}\n`, encoding: 'utf8' }).status === 0;
+}
+
+test('frontend and release SemVer EREs equal and execute the independent canonical corpus', async () => {
+  const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
+  const releaseVerifier = await readFile(new URL('../scripts/verify-release.sh', import.meta.url), 'utf8');
+  const dockerMatch = dockerfile.match(/grep -Eq '([^']+)'/);
+  const releaseMatch = releaseVerifier.match(/^semver='([^']+)'$/m);
+  assert.ok(dockerMatch, 'frontend/Dockerfile must contain one single-quoted grep ERE');
+  assert.ok(releaseMatch, 'release verifier must contain its single-quoted SemVer ERE');
+  for (const [owner, pattern] of [['frontend Dockerfile', dockerMatch[1]], ['release verifier', releaseMatch[1]]]) {
+    for (const candidate of validSemvers) assert.equal(grepAccepts(pattern, candidate), true, `${owner} must accept ${candidate}`);
+    for (const candidate of invalidSemvers) assert.equal(grepAccepts(pattern, candidate), false, `${owner} must reject ${candidate}`);
+    assert.equal(pattern, canonicalSemverERE, `${owner} ERE must equal the independently specified strict SemVer 2 ERE`);
+  }
+  assert.equal(dockerMatch[1], releaseMatch[1], 'duplicated frontend/release SemVer EREs must remain byte-for-byte equal');
+});
 
 test('frontend image root materializes only production assets and keeps nginx config separate', async () => {
   const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
@@ -64,12 +91,12 @@ test('frontend release image is pinned, provenance-labelled, validated, and time
   assert.match(dockerfile, /touch\s+-d\s+"@\$SOURCE_DATE_EPOCH"/, 'copied-file mtimes must be normalized');
 });
 
-test('compose passes the same release identity arguments to the frontend context', async () => {
+test('compose passes the exact development identity defaults to the frontend context', async () => {
   const compose = await readFile(new URL('../compose.yaml', import.meta.url), 'utf8');
   assert.match(compose, /web:\s*\n\s+build:\s*\n\s+context:\s*\.\/frontend/);
   for (const [name, value] of [
-    ['VERSION', '${CHECKNETWORK_VERSION:-dev}'],
-    ['REVISION', '${CHECKNETWORK_REVISION:-dev}'],
+    ['VERSION', '${CHECKNETWORK_VERSION:-0.1.0-dev}'],
+    ['REVISION', '${CHECKNETWORK_REVISION:-0000000000000000000000000000000000000000}'],
     ['SOURCE_DATE_EPOCH', '${SOURCE_DATE_EPOCH:-0}'],
   ]) {
     assert.ok(compose.includes(`${name}: ${value}`), `web build must pass ${name}`);

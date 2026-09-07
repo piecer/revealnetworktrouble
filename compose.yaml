@@ -3,8 +3,8 @@ services:
     build:
       context: .
       args:
-        VERSION: ${CHECKNETWORK_VERSION:-dev}
-        REVISION: ${CHECKNETWORK_REVISION:-dev}
+        VERSION: ${CHECKNETWORK_VERSION:-0.1.0-dev}
+        REVISION: ${CHECKNETWORK_REVISION:-0000000000000000000000000000000000000000}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
     environment:
       CHECKNETWORK_ALLOWED_ORIGINS: http://localhost:3000
@@ -29,8 +29,8 @@ services:
     build:
       context: ./frontend
       args:
-        VERSION: ${CHECKNETWORK_VERSION:-dev}
-        REVISION: ${CHECKNETWORK_REVISION:-dev}
+        VERSION: ${CHECKNETWORK_VERSION:-0.1.0-dev}
+        REVISION: ${CHECKNETWORK_REVISION:-0000000000000000000000000000000000000000}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
     ports:
       - "127.0.0.1:3000:80"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -212,8 +213,8 @@ func TestComposeRuntimeContract(t *testing.T) {
 		`CHECKNETWORK_MODE: ${CHECKNETWORK_MODE:-trusted-local}`,
 		`CHECKNETWORK_API_KEY: ${CHECKNETWORK_API_KEY:-}`,
 		`CHECKNETWORK_RATE_LIMIT_PER_MINUTE: ${CHECKNETWORK_RATE_LIMIT_PER_MINUTE:-}`,
-		`VERSION: ${CHECKNETWORK_VERSION:-dev}`,
-		`REVISION: ${CHECKNETWORK_REVISION:-dev}`,
+		`VERSION: ${CHECKNETWORK_VERSION:-0.1.0-dev}`,
+		`REVISION: ${CHECKNETWORK_REVISION:-0000000000000000000000000000000000000000}`,
 		`SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}`,
 		`http://127.0.0.1:8080/readyz`,
 		"cpus: 0.25",
@@ -238,6 +239,130 @@ func TestComposeRuntimeContract(t *testing.T) {
 	if strings.Contains(compose, "Authorization") || strings.Contains(compose, "Bearer ") {
 		t.Errorf("healthcheck must not carry credentials: %s", compose)
 	}
+}
+
+func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) {
+	type composeConfig struct {
+		Services map[string]struct {
+			Build struct {
+				Args map[string]string `json:"args"`
+			} `json:"build"`
+		} `json:"services"`
+	}
+
+	resolve := func(overrides ...string) composeConfig {
+		t.Helper()
+		command := exec.Command("docker", "compose", "config", "--format", "json")
+		command.Dir = filepath.Join("..", "..")
+		for _, entry := range os.Environ() {
+			if strings.HasPrefix(entry, "CHECKNETWORK_VERSION=") ||
+				strings.HasPrefix(entry, "CHECKNETWORK_REVISION=") ||
+				strings.HasPrefix(entry, "SOURCE_DATE_EPOCH=") {
+				continue
+			}
+			command.Env = append(command.Env, entry)
+		}
+		command.Env = append(command.Env, overrides...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker compose config: %v\n%s", err, output)
+		}
+		var config composeConfig
+		if err := json.Unmarshal(output, &config); err != nil {
+			t.Fatalf("decode docker compose config: %v\n%s", err, output)
+		}
+		return config
+	}
+
+	assertShared := func(config composeConfig, want map[string]string) {
+		t.Helper()
+		for _, service := range []string{"api", "web"} {
+			resolved, ok := config.Services[service]
+			if !ok {
+				t.Fatalf("resolved Compose config has no %s service", service)
+			}
+			for name, value := range want {
+				if got := resolved.Build.Args[name]; got != value {
+					t.Errorf("%s build arg %s=%q, want exact %q", service, name, got, value)
+				}
+			}
+		}
+	}
+
+	const canonicalSemverERE = `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`
+	validSemvers := []string{"0.1.0-dev", "1.0.0-alpha.1", "1.0.0+build.5", "1.0.0-0"}
+	invalidSemvers := []string{
+		"dev", "v1.0.0", "01.0.0", "1.01.0", "1.0.01", "1.0.0-01",
+		"1..0", "1.0.0-alpha..1", "1.0.0-", "1.0.0-alpha.", "1.0.0+build..1",
+		"1.0.0-alpha_beta",
+	}
+	acceptsERE := func(pattern, candidate string) bool {
+		t.Helper()
+		command := exec.Command("grep", "-Eq", pattern)
+		command.Stdin = strings.NewReader(candidate + "\n")
+		err := command.Run()
+		if err == nil {
+			return true
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false
+		}
+		t.Fatalf("execute canonical SemVer ERE for %q: %v", candidate, err)
+		return false
+	}
+	for _, candidate := range validSemvers {
+		if !acceptsERE(canonicalSemverERE, candidate) {
+			t.Fatalf("independent canonical SemVer ERE rejected valid corpus member %q", candidate)
+		}
+	}
+	for _, candidate := range invalidSemvers {
+		if acceptsERE(canonicalSemverERE, candidate) {
+			t.Fatalf("independent canonical SemVer ERE accepted invalid corpus member %q", candidate)
+		}
+	}
+
+	version := strings.TrimSpace(repositoryFile(t, "VERSION")) + "-dev"
+	const zeroRevision = "0000000000000000000000000000000000000000"
+	defaults := map[string]string{
+		"VERSION":           version,
+		"REVISION":          zeroRevision,
+		"SOURCE_DATE_EPOCH": "0",
+	}
+	resolvedDefaults := resolve()
+	assertShared(resolvedDefaults, defaults)
+
+	// The independently specified canonical ERE, rather than either production
+	// copy, decides whether resolved Compose defaults are valid.
+	hex40 := regexp.MustCompile(`^[0-9a-f]{40}$`)
+	for _, service := range []string{"api", "web"} {
+		args := resolvedDefaults.Services[service].Build.Args
+		if !acceptsERE(canonicalSemverERE, args["VERSION"]) {
+			t.Errorf("resolved %s default VERSION %q is not canonical SemVer", service, args["VERSION"])
+		}
+		if !hex40.MatchString(args["REVISION"]) {
+			t.Errorf("resolved %s default REVISION %q is not 40 lowercase hexadecimal characters", service, args["REVISION"])
+		}
+	}
+
+	frontendMatch := regexp.MustCompile(`grep -Eq '([^']+)'`).FindStringSubmatch(repositoryFile(t, "frontend/Dockerfile"))
+	releaseMatch := regexp.MustCompile(`(?m)^semver='([^']+)'$`).FindStringSubmatch(repositoryFile(t, "scripts/verify-release.sh"))
+	if len(frontendMatch) != 2 || len(releaseMatch) != 2 {
+		t.Fatal("frontend Dockerfile and release verifier must each expose one single-quoted SemVer ERE")
+	}
+	if frontendMatch[1] != canonicalSemverERE || releaseMatch[1] != canonicalSemverERE || frontendMatch[1] != releaseMatch[1] {
+		t.Fatalf("SemVer ERE duplication drift: frontend=%q release=%q canonical=%q", frontendMatch[1], releaseMatch[1], canonicalSemverERE)
+	}
+
+	overrides := map[string]string{
+		"VERSION":           "9.8.7-explicit.1+caller",
+		"REVISION":          "0123456789abcdef0123456789abcdef01234567",
+		"SOURCE_DATE_EPOCH": "1234567890",
+	}
+	assertShared(resolve(
+		"CHECKNETWORK_VERSION="+overrides["VERSION"],
+		"CHECKNETWORK_REVISION="+overrides["REVISION"],
+		"SOURCE_DATE_EPOCH="+overrides["SOURCE_DATE_EPOCH"],
+	), overrides)
 }
 
 func TestReleaseDockerfileIsImmutableAndCarriesExactIdentity(t *testing.T) {
