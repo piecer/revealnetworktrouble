@@ -34,6 +34,44 @@ const route = (node_ids, result_index = 0, attempt = 1, overrides = {}) => ({
 const model = (nodes = [], links = [], routes = []) => ({ nodes, links, routes });
 const viewport = { width: 800, height: 480, dpr: 2 };
 
+test('dense geometry adapts to nearest screen spacing deterministically without moving raw nodes', () => {
+  const input = model(Array.from({length:129}, (_,i)=>node(`dense-${i}`, i%16, {kind:'ip'})));
+  const before = JSON.stringify(input);
+  for (const mode of ['2d','3d']) for (const width of [287,1296]) {
+    const options = {mode,viewport:{width,height:width===287?240:729}};
+    const first = projectTopology(input,options);
+    assert.deepEqual(projectTopology(input,options),first);
+    assert.deepEqual(projectTopology(model([...input.nodes].reverse()),options),first);
+    assert.ok(first.nodes.every(n=>n.screen.radius>=3&&n.screen.radius<=11&&n.screen.halo>=0&&n.screen.halo<=2));
+    for (const n of first.nodes) {
+      const nearest = Math.min(...first.nodes.filter(o=>o!==n).map(o=>Math.hypot(o.screen.x-n.screen.x,o.screen.y-n.screen.y)));
+      if(nearest>=9) assert.ok(n.screen.radius*2+3<=nearest+1e-9);
+    }
+    assert.equal(JSON.stringify(input),before);
+  }
+  assert.equal(projectTopology(model([node('small')])).nodes[0].screen.radius,15);
+});
+
+test('route hues use original result identity and shared edges retain exact bounded memberships', () => {
+  const nodes = [node('root'), node('shared', 1), node('end', 2)];
+  const links = [link('root', 'shared'), link('shared', 'end')];
+  const routes = Array.from({ length: 20 }, (_, i) => route(['root', 'shared', 'end'], i));
+  routes.push(route(['root', 'shared', 'end'], 0, 2));
+  const input = model(nodes, links, routes), before = JSON.stringify(input);
+  const all = projectTopology(input);
+  assert.equal(all.links[0].route_memberships?.length, 20);
+  assert.equal(all.links[0].route_colors?.length, 4);
+  assert.equal(all.links[0].route_colors_omitted, 16);
+  const hues = routes.slice(0, 20).map(r => projectTopology(model(nodes, links, [r])).links[0].color);
+  assert.equal(new Set(hues).size, 20);
+  for (const mode of ['2d', '3d']) {
+    assert.deepEqual(projectTopology(model(nodes, links, [...routes].reverse()), { mode }).links[0].route_memberships, all.links[0].route_memberships);
+    assert.equal(projectTopology(model(nodes, links, [routes[7]]), { mode }).links[0].color, hues[7]);
+  }
+  assert.equal(projectTopology(model(nodes, links, [])).links[0].route_memberships.length, 0);
+  assert.equal(JSON.stringify(input), before);
+});
+
 function assertFiniteProjection(projection) {
   for (const item of projection.nodes) {
     for (const value of [item.world.x, item.world.y, item.world.z, item.screen.x, item.screen.y, item.screen.radius, item.depth]) {
@@ -48,6 +86,19 @@ function assertFiniteProjection(projection) {
     }
   }
 }
+
+test('circular node fill uses observed mean RTT thresholds including zero, never reported status', () => {
+  const values = [undefined, 0, 9.99, 10, 49.99, 50, 99.99, 100, 900];
+  const expected = ['#94a3b8', '#52e0b1', '#52e0b1', '#c9ff46', '#c9ff46', '#ffb84d', '#ffb84d', '#ff7185', '#ff7185'];
+  for (const status of Object.keys(STATUS_COLORS)) {
+    const nodes = values.map((latency, i) => node(`n${i}`, 1, { status, ...(latency === undefined ? {} : { latency_ms_avg: latency }) }));
+    const result = projectTopology(model(nodes));
+    assert.deepEqual(result.nodes.map(n => n.color), expected);
+    assert.ok(result.nodes.every(n => n.status === status && n.screen.radius === 15));
+  }
+  const unknown = projectTopology(model([node('u', 1, { kind: 'unknown', latency_ms_avg: 0 })]));
+  assert.equal(unknown.nodes[0].color, '#94a3b8');
+});
 
 test('exports closed visualizer ceilings and immutable status presentation values', () => {
   assert.deepEqual({ VISUAL_NODES, VISUAL_LINKS, VISUAL_ROUTES }, { VISUAL_NODES: 500, VISUAL_LINKS: 1000, VISUAL_ROUTES: 1000 });
@@ -69,7 +120,7 @@ test('empty and single-node topologies produce finite centered 2D projections', 
   assert.equal(single.nodes[0].screen.x, viewport.width / 2);
   assert.equal(single.nodes[0].screen.y, viewport.height / 2);
   assert.equal(single.nodes[0].label, 'local');
-  assert.equal(single.nodes[0].color, STATUS_COLORS.healthy);
+  assert.equal(single.nodes[0].color, STATUS_COLORS.unknown);
   assertFiniteProjection(single);
 });
 
@@ -89,7 +140,7 @@ test('initial fit uses projected node bounds in both modes at wide and narrow vi
     assert.ok(projected.nodes.every(n => n.visible && n.screen.x >= 31.99 && n.screen.x <= width - 31.99 && n.screen.y >= 31.99 && n.screen.y <= 448.01));
     assert.equal(projected.links.length, value.links.length);
     const single = projectTopology(model([node('only')]), { mode, viewport: { width, height: 480 } });
-    assert.deepEqual(single.nodes[0].screen, { x: width / 2, y: 240, radius: 8 });
+    assert.deepEqual(single.nodes[0].screen, { x: width / 2, y: 240, radius: 15 });
   }
 });
 
@@ -107,7 +158,7 @@ test('2D layout uses hop depth for x and stable shared-graph branch order for y'
   assert.ok(byID.get('a').world.x < byID.get('join').world.x);
   assert.equal(byID.get('join').world.y, 0);
   assert.deepEqual(projected.links.map(item => `${item.from}>${item.to}`), ['a>join', 'b>join', 'root>a', 'root>b']);
-  assert.equal(projected.links.find(item => item.from === 'a').color, STATUS_COLORS.degraded);
+  assert.equal(projected.links.find(item => item.from === 'a').color, '#c9ff46');
   assert.equal(projected.links.find(item => item.from === 'a').label, 'a.example → join.example');
 });
 
@@ -274,11 +325,11 @@ test('node/link status, labels, direction, and visibility are projected without 
       [route(['a', 'b'])]
     ), { viewport });
     assert.deepEqual(projected.nodes.map(item => [item.label, item.status, item.color, item.visible]), [
-      ['Start', 'failure', STATUS_COLORS.failure, true],
-      ['Unknown hop', 'unreachable', STATUS_COLORS.unreachable, true]
+      ['Start', 'failure', STATUS_COLORS.unknown, true],
+      ['Unknown hop', 'unreachable', STATUS_COLORS.unknown, true]
     ]);
     assert.deepEqual(projected.links.map(item => [item.directed, item.status, item.color, item.visible]), [
-      [true, 'unreachable', STATUS_COLORS.unreachable, true]
+      [true, 'unreachable', '#c9ff46', true]
     ]);
   } finally {
     if (previousDocument !== undefined) globalThis.document = previousDocument;

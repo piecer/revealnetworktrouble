@@ -38,6 +38,12 @@ function fakeContext() {
   const state = { textAlign: 'right', textBaseline: 'alphabetic' };
   const stack = [];
   const context = { calls, state };
+  // Test font with heterogeneous and asymmetric ink, independently observed by
+  // assertions below. Real Chromium metrics are exercised by the browser gate.
+  context.measureText = text => {
+    const width = [...text].reduce((sum, c) => sum + (/[^\x00-\x7f]/.test(c) ? 12 : c === 'i' || c === '.' ? 3 : 7), 0);
+    return { width, actualBoundingBoxLeft: width / 2 - 1, actualBoundingBoxRight: width / 2 + 1, actualBoundingBoxAscent: 9, actualBoundingBoxDescent: 3 };
+  };
   for (const name of ['setTransform', 'clearRect', 'fillRect', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'closePath', 'fill', 'arc']) {
     context[name] = (...args) => calls.push([name, ...args]);
   }
@@ -52,6 +58,99 @@ function fakeContext() {
   }
   return context;
 }
+
+function glyphBox(context, text, x, y, maxWidth) {
+  const m = context.measureText(text), scale = Math.min(1, maxWidth / m.width);
+  return {left: x-m.actualBoundingBoxLeft*scale, right:x+m.actualBoundingBoxRight*scale,
+    top:y-m.actualBoundingBoxAscent, bottom:y+m.actualBoundingBoxDescent};
+}
+
+test('overlapping circles do not paint colliding role glyphs', () => {
+  const model = topologyModel(2); model.nodes[0].kind = 'local'; model.nodes[1].kind = 'unknown';
+  const context = fakeContext();
+  drawTopologyCanvas(context, model, {viewport:{width:1,height:1}});
+  assert.equal(context.calls.filter(c=>c[0] === 'fillText').length, 0);
+});
+
+test('measured asymmetric glyph bounds enable deterministic side labels without fixed-width reservations', () => {
+  const model = topologyModel(12);
+  model.nodes.forEach((n,i)=>Object.assign(n,{hop_min:0,hop_max:0,address:i%2?'iii':'서울'}));
+  const before=JSON.stringify(model), context=fakeContext(), measure=context.measureText;
+  let measurements=0;context.measureText=text=>{measurements++;return measure(text);};
+  const projection=drawTopologyCanvas(context,model,{viewport:{width:287,height:480}});
+  const calls=context.calls.filter(c=>c[0]==='fillText');
+  assert.equal(measurements,12,'one measurement per ordinary label, independent of candidate count');
+  assert.equal(calls.length,12,'short labels retain identification next to crowded circles');
+  assert.ok(calls.some(c=>Math.abs(c[2]-projection.nodes[0].screen.x)>20),'side candidates are actually used');
+  for(const [,text,x,y,width] of calls) {
+    const box=glyphBox(context,text,x,y,width);
+    assert.ok(box.left>=4&&box.right<=283&&box.top>=4&&box.bottom<=476);
+  }
+  const repeat=fakeContext();drawTopologyCanvas(repeat,model,{viewport:{width:287,height:480}});
+  assert.deepEqual(repeat.calls.filter(c=>c[0]==='fillText'),calls);
+  assert.equal(JSON.stringify(model),before);
+});
+
+test('labels avoid every node ring including icons at mobile size', () => {
+  const wire = JSON.parse(readFileSync(new URL('../testdata/compact-route-visual-report.json', import.meta.url), 'utf8'));
+  const wireBefore = JSON.stringify(wire), normalized = normalizeReport(wire);
+  const model = topologyModelFromReport(normalized), before = JSON.stringify(model);
+  assert.equal(model.routes.length, 6);
+  assert.deepEqual([...new Set(model.routes.map(r=>r.result_index))], [0,1,2]);
+  for (const mode of ['2d', '3d']) {
+    const context = fakeContext(); const labels = [];
+    context.fillText = (text, x, y, width) => { if (width > 30) labels.push({text, x, y, width, baseline:context.textBaseline}); };
+    const projection = drawTopologyCanvas(context, model, {mode, viewport:{width:287,height:240}});
+    assert.ok(labels.length);
+    for (const label of labels) for (const node of projection.nodes) {
+      const box = glyphBox(context, label.text, label.x, label.y, label.width);
+      const s = node.screen, r = s.radius + (node.asn_context ? 7 : Math.max(3, s.halo ?? 6));
+      assert.ok(Math.hypot(s.x-Math.max(box.left,Math.min(box.right,s.x)),s.y-Math.max(box.top,Math.min(box.bottom,s.y))) >= r, `${mode}: ${label.text} crosses ${node.id}`);
+    }
+  }
+  assert.equal(JSON.stringify(model), before);
+  assert.equal(JSON.stringify(wire), wireBefore);
+});
+
+test('route and latency legends explain independent channels and circle roles preserve reported state', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const doc = new JSDOM(html).window.document;
+  const legend = doc.querySelector('#topology-color-legend');
+  assert.ok(legend);
+  assert.match(legend.textContent, /평균 RTT.*10.*50.*100.*미측정/s);
+  assert.match(legend.textContent, /링크 지연 아님/);
+  assert.match(legend.textContent, /동일 목적지.*시도.*같은 색/);
+  assert.match(legend.textContent, /공유.*4.*생략/);
+  const model = topologyModel(3);
+  Object.assign(model.nodes[0], { kind: 'local' });
+  Object.assign(model.nodes[1], { status: 'failure', latency_ms_avg: 0 });
+  model.links = [{ from: 'n0', to: 'n1', status: 'failure' }, { from: 'n1', to: 'n2', status: 'failure' }];
+  model.routes = [{ result_index: 0, attempt: 1, status: 'failure', reached: true, complete: true, node_ids: ['n0', 'n1', 'n2'] }];
+  const context = fakeContext(); const projection = drawTopologyCanvas(context, model);
+  assert.equal(projection.nodes[1].status, 'failure');
+  assert.equal(projection.nodes[1].color, '#52e0b1');
+  assert.ok(context.calls.some(c => c[0] === 'fillText' && c[1] === '!'));
+  assert.ok(context.calls.some(c => c[0] === 'fillText' && c[1] === '◉'));
+  assert.equal(projection.nodes.find(n => n.id === 'n2').destination, false, 'reported failure must not infer reached-destination success');
+});
+
+test('shared route lanes actually paint distinct curved colors with bounded stroke work and RTT circles', () => {
+  const model = topologyModel(500);
+  model.links = model.nodes.slice(1).map((n, i) => ({ from: model.nodes[i].id, to: n.id, status: 'failure' }));
+  model.routes = Array.from({ length: 20 }, (_, result_index) => ({ result_index, attempt: 1, status: 'failure', node_ids: model.nodes.map(n => n.id) }));
+  const context = fakeContext(); const curves = [];
+  context.quadraticCurveTo = (...points) => curves.push({ points, color: context.strokeStyle });
+  const projection = drawTopologyCanvas(context, model);
+  assert.equal(curves.length, model.links.length * 4);
+  assert.equal(new Set(curves.slice(0, 4).map(c => c.color)).size, 4);
+  assert.equal(new Set(curves.slice(0, 4).map(c => c.points.join(','))).size, 4);
+  assert.ok(projection.nodes.every(n => n.screen.radius === 3 && n.screen.halo === 0 && n.color === '#94a3b8'));
+  const small = drawTopologyCanvas(fakeContext(), topologyModel(3));
+  assert.ok(small.nodes.every(n => n.screen.radius === 15), 'sparse circles retain rich geometry');
+  const h = harness(); h.coordinator.start({ ownerId: 1, inputSignature: 'lanes', view: 'topology', model, root: h.root, status: h.status }); h.runAll();
+  assert.ok(h.document.querySelectorAll('*').length <= 1200);
+  assert.match(h.root.querySelector('.topology-link').title, /공유 경로 20.*R1.*R20.*16개 색 생략/);
+});
 
 test('producer private contexts draw exactly two lavender dashed halos and reset dash state in both modes', () => {
   const model = topologyModelFromReport(normalizeReport(JSON.parse(readFileSync(new URL('../testdata/compact-asn-context-report.json', import.meta.url), 'utf8'))));
@@ -117,10 +216,7 @@ test('narrow rich graph labels do not overlap each other', () => {
     const facts = JSON.stringify(model), options = { mode, viewport: { width, height: 240 } };
     const projection = drawTopologyCanvas(context, model, options);
     const labels = context.calls.filter(call => call[0] === 'fillText');
-    const boxes = labels.map(([, text, x, y, maxWidth, state]) => {
-      const width = Math.min(text.length * 7, maxWidth);
-      return { left: x - width / 2, right: x + width / 2, top: state.textBaseline === 'bottom' ? y - 14 : y, bottom: state.textBaseline === 'bottom' ? y : y + 14 };
-    });
+    const boxes = labels.map(([, text, x, y, maxWidth]) => glyphBox(context, text, x, y, maxWidth));
     if (count === 4) assert.equal(labels.length, projection.nodes.length, 'small graph retains every label');
     else {
       assert.ok(labels.length > 0 && labels.length < count, 'crowding omits only visual labels');
@@ -206,11 +302,11 @@ test('rich graph draws curved connections and halos using local aliases without 
   const projection = drawTopologyCanvas(context, topology);
   assert.equal(projection.nodes[0].label, 'Boundary router');
   assert.ok(context.calls.some(call => call[0] === 'quadraticCurveTo'));
-  assert.equal(context.calls.filter(call => call[0] === 'arc').length, 4, 'core and halo per node');
+  assert.equal(context.calls.filter(call => call[0] === 'arc').length, 6, 'core, halo and role ring per node');
   assert.equal(JSON.stringify(topology), before);
 });
 
-test('drawTopologyCanvas clears, paints background/grid, then directed links and arrowheads before status-colored nodes and bounded labels', () => {
+test('drawTopologyCanvas clears, paints background/grid, then route links and arrowheads before RTT nodes and bounded labels', () => {
   const context = fakeContext();
   const attack = '<svg onload="globalThis.canvasPwned=1">' + 'x'.repeat(200);
   const topology = {
@@ -237,10 +333,10 @@ test('drawTopologyCanvas clears, paints background/grid, then directed links and
   const firstArrow = context.calls.findIndex(call => call[0] === 'closePath');
   const firstNode = context.calls.findIndex(call => call[0] === 'arc');
   assert.ok(firstLink >= 0 && firstArrow > firstLink && firstNode > firstArrow, 'links and arrowheads draw before nodes');
-  for (const color of ['#22c55e', '#f59e0b', '#ef4444', '#94a3b8']) {
+  for (const color of ['#c9ff46', '#67d5ff', '#94a3b8']) {
     assert.ok(context.calls.some(call => call[0] === 'fillStyle' && call[1] === color));
   }
-  const labels = context.calls.filter(call => call[0] === 'fillText');
+  const labels = context.calls.filter(call => call[0] === 'fillText' && call[1] !== '!');
   assert.equal(labels.length, 4);
   assert.ok(labels.every(call => call[1].length <= 43 && Number.isFinite(call[2]) && Number.isFinite(call[3])));
   assert.equal(globalThis.canvasPwned, undefined);
@@ -289,16 +385,15 @@ test('drawTopologyCanvas supports bounded 2d/3d edge labels and rejects visual l
           assert.ok(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(maxWidth) && maxWidth > 0, `${mode}/${width}/${stateName} uses finite label geometry`);
           assert.ok(maxWidth <= Math.min(160, width - inset * 2), `${mode}/${width}/${stateName} bounds maxWidth`);
           assert.equal(textState.textAlign, 'center', `${mode}/${width}/${stateName} resets horizontal text state`);
-          assert.ok(textState.textBaseline === 'top' || textState.textBaseline === 'bottom', `${mode}/${width}/${stateName} resets vertical text state`);
-          assert.ok(x - maxWidth / 2 >= inset - 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside left inset`);
-          assert.ok(x + maxWidth / 2 <= width - inset + 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside right inset`);
-          const top = textState.textBaseline === 'bottom' ? y - labelHeight : y;
-          const bottom = textState.textBaseline === 'bottom' ? y : y + labelHeight;
-          assert.ok(top >= inset - 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside top inset`);
-          assert.ok(bottom <= viewport.height - inset + 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside bottom inset`);
+          assert.equal(textState.textBaseline, 'alphabetic', `${mode}/${width}/${stateName} resets vertical text state`);
+          const box = glyphBox(context, text, x, y, maxWidth);
+          assert.ok(box.left >= inset - 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside left inset`);
+          assert.ok(box.right <= width - inset + 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside right inset`);
+          assert.ok(box.top >= inset - 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside top inset`);
+          assert.ok(box.bottom <= viewport.height - inset + 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside bottom inset`);
         }
 
-        const arcs = context.calls.filter(call => call[0] === 'arc').filter((_, index) => index % 2 === 1); // core, excluding the new halo
+        const arcs = context.calls.filter(call => call[0] === 'arc').filter((_, index) => index % 3 === 1); // core, excluding halo and role ring
         assert.deepEqual(arcs.map(call => call.slice(1, 4)), projection.nodes.filter(node => node.visible).map(node => [node.screen.x, node.screen.y, node.screen.radius]), `${mode}/${width}/${stateName} does not alter node geometry`);
         assert.deepEqual({ textAlign: context.textAlign, textBaseline: context.textBaseline }, { textAlign: 'right', textBaseline: 'alphabetic' }, `${mode}/${width}/${stateName} does not leak text state`);
         if (stateName === 'initial') {

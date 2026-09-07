@@ -826,7 +826,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   const drainObserved = () => { while (queue.length) { queue.shift()(); observe(); } };
 
   await app.start('diagnostics'); observe();
-  assert.equal(document.querySelectorAll('*').length, 718, 'maximum valid report baseline including topology controls and fixed tooltip');
+  assert.equal(document.querySelectorAll('*').length, 729, 'maximum valid report baseline including topology controls, RTT legend and fixed tooltip');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -841,7 +841,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   document.querySelector('[data-view-link="diagnostics"]').click(); observe();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 0);
   assert.equal(document.querySelectorAll('.finding-toggle').length, 40, 'navigation reconstructs the owned report');
-  assert.ok(document.querySelectorAll('*').length <= 718, 'reconstructed report remains no larger than the original mount');
+  assert.ok(document.querySelectorAll('*').length <= 729, 'reconstructed report remains no larger than the original mount');
   document.querySelector('[data-view-link="ip-labels"]').click(); drainObserved();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100, 'navigation reconstructs the current label page');
   assert.ok(peak <= 1200, `document peak after repeated navigation ${peak}`);

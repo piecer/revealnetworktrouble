@@ -217,7 +217,7 @@ Label placement uses at most nine vertical candidates per visible node, conserva
 
 Historical record: - Stage 9 2D/3D Canvas 구현과 production asset closure는 source에 반영되었고 Compose SemVer regression fix 뒤 현재 Web inventory는 298 tests다. 그러나 final canonical gates와 독립 review, immutable candidate release 및 exact-SHA closure가 남아 있으므로 Stage 9은 완료가 아니라 **implementation pending final gates/review** 상태다.
 
-ASN-context slice current source inventory: **Web 320 tests**, plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators remain API 28 + Web 25 = 53; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](docs/ASN-CONTEXT.md). Independent review/release remains pending.
+Route-visual slice current source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators remain API 28 + Web 25 = 53; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](docs/ASN-CONTEXT.md). Independent review/release remains pending.
 - Physical Chrome/Firefox/Safari에서 interaction·DPR·320/375/400 px를 확인하고 실제 screen reader로 semantic inspector/fallback을 확인하는 수동 acceptance는 자동 Node/jsdom test가 대신하지 않는다.
 
 기존 Stage 8 release sequencing 기록은 아래 acceptance의 선행 이력으로 유지한다.

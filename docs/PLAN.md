@@ -41,7 +41,7 @@ Stage 8의 semantic renderer가 node/link/route마다 단일 텍스트 요소만
 - Historical Stage 9 plan/closure record: current source inventory was Web 283 tests; synthetic archive validator 25도 당시 closure에 반영했다.
 Historical record: - [x] Compose SemVer fix 뒤 current source-level Web inventory 298 반영
 
-ASN-context slice current source inventory: **Web 320 tests**, plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators remain API 28 + Web 25 = 53; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
+Route-visual slice current source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators remain API 28 + Web 25 = 53; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
 - Historical Stage 9 record: Compose SemVer 직후 Web inventory는 284 tests였다. Graph-first slice는 collapsed native inspector, projected-bounds fit과 overflow 회귀를 추가하며 isolated Chromium replay만 검증한다. 배포·physical browser·screen-reader 및 independent parent review는 별도 acceptance다.
 ### Rich topology restoration slice
 

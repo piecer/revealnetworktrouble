@@ -79,7 +79,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"export const MAX_DOCUMENT_ELEMENTS = 1200",
 			"export const MAX_TARGETS = 20",
 			"targetsEl.children.length >= MAX_TARGETS",
-			"import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport } from './topology-visualizer.js';",
+			"import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport, routeColor } from './topology-visualizer.js';",
 			"const topologyViewState = { mode: '2d', transform: resetViewTransform() };",
 			"function updateTopologyView({ mode = topologyViewState.mode, transform = topologyViewState.transform, viewport, message } = {})",
 			"const topologyViewControls = doc.querySelector('#topology-view-controls');",

@@ -2,45 +2,22 @@
 import { asnContextLabel, ASN_CONTEXT_DISCLAIMER } from './topology-presentation.js';
 
 import { planTopologyDOM, commitDOMChunk } from './topology-model.js';
-import { createViewTransform, normalizeViewport, projectTopology } from './topology-visualizer.js';
+import { createViewTransform, normalizeViewport, projectTopology, routeColor, edgeRouteMemberships } from './topology-visualizer.js';
 
 const ROOT_OWNERS = new WeakMap();
 const STATUS_OWNERS = new WeakMap();
 
-const CANVAS_BACKGROUND = '#07111f';
-const CANVAS_GRID = '#17243a';
+const CANVAS_BACKGROUND = '#0b100e';
+const CANVAS_GRID = '#18221d';
 const CANVAS_LABEL = '#e5edf8';
 const CANVAS_DEFAULT_WIDTH = 800;
 const CANVAS_DEFAULT_HEIGHT = 480;
 const CANVAS_LABEL_LIMIT = 40;
 const CANVAS_LABEL_MAX_WIDTH = 160;
-const CANVAS_LABEL_HEIGHT = 14;
-const CANVAS_LABEL_INSET = 4;
-const CANVAS_LABEL_GAP = 5;
 
 function canvasLabel(value) {
   const text = String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
   return text.length <= CANVAS_LABEL_LIMIT ? text : `${text.slice(0, CANVAS_LABEL_LIMIT)}…`;
-}
-
-function canvasLabelPlacement(screen, viewport) {
-  const insetX = Math.min(CANVAS_LABEL_INSET, viewport.width / 4);
-  const maxWidth = Math.min(CANVAS_LABEL_MAX_WIDTH, viewport.width - insetX * 2);
-  const minimumX = insetX + maxWidth / 2;
-  const maximumX = viewport.width - insetX - maxWidth / 2;
-  const x = Math.min(maximumX, Math.max(minimumX, screen.x));
-  const insetY = Math.min(CANVAS_LABEL_INSET, viewport.height / 4);
-  const below = screen.y + screen.radius + CANVAS_LABEL_GAP;
-  if (below + CANVAS_LABEL_HEIGHT <= viewport.height - insetY) {
-    return { x, y: Math.max(insetY, below), maxWidth, baseline: 'top' };
-  }
-  const above = screen.y - screen.radius - CANVAS_LABEL_GAP;
-  return {
-    x,
-    y: Math.min(viewport.height - insetY, Math.max(insetY + CANVAS_LABEL_HEIGHT, above)),
-    maxWidth,
-    baseline: 'bottom'
-  };
 }
 
 function requireCanvasContext(context) {
@@ -104,16 +81,21 @@ function drawTopologyCanvas(context, topology, options = {}) {
   for (const link of [...projection.links, ...projection.connectors]) {
     if (!link.visible) continue;
     const target = nodes.get(link.to);
-    context.strokeStyle = link.color;
-    context.fillStyle = link.color;
-    context.lineWidth = 2;
-    context.setLineDash?.(link.kind ? [7, 5] : []);
+    const colors = link.route_colors?.length ? link.route_colors : [link.color];
+    for (const [lane, color] of colors.entries()) {
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineWidth = link.kind ? 1.5 : 2.6;
+    context.lineCap = 'round';
+    context.shadowColor = color;
+    context.shadowBlur = projection.links.length < 150 && !link.kind ? 6 : 0;
+    context.setLineDash?.(link.kind === 'bypass' ? [2, 6] : link.kind ? [7, 5] : []);
     context.beginPath();
     context.moveTo(link.from_screen.x, link.from_screen.y);
     const dx = link.to_screen.x - link.from_screen.x;
     const dy = link.to_screen.y - link.from_screen.y;
     const length = Math.max(1, Math.hypot(dx, dy));
-    const bend = Math.min(42, length * 0.16);
+    const bend = Math.min(42, length * 0.16) + (lane - (colors.length - 1) / 2) * 9;
     const control = { x: (link.from_screen.x + link.to_screen.x) / 2 - dy / length * bend,
       y: (link.from_screen.y + link.to_screen.y) / 2 + dx / length * bend };
     if (link.kind && link.from === link.to) {
@@ -124,7 +106,9 @@ function drawTopologyCanvas(context, topology, options = {}) {
     else context.lineTo(link.to_screen.x, link.to_screen.y);
     context.stroke();
     if (link.directed) drawArrowhead(context, control, link.to_screen, target?.screen.radius ?? 8);
+    }
   }
+  context.shadowBlur = 0;
   context.setLineDash?.([]);
 
   const preservesState = typeof context.save === 'function' && typeof context.restore === 'function';
@@ -135,12 +119,27 @@ function drawTopologyCanvas(context, topology, options = {}) {
       if (!node.visible) continue;
       context.fillStyle = `${node.color}28`;
       context.beginPath();
-      context.arc(node.screen.x, node.screen.y, node.screen.radius + 6, 0, Math.PI * 2);
+      context.arc(node.screen.x, node.screen.y, node.screen.radius + (node.screen.halo ?? 6), 0, Math.PI * 2);
       context.fill();
       context.fillStyle = node.color;
       context.beginPath();
       context.arc(node.screen.x, node.screen.y, node.screen.radius, 0, Math.PI * 2);
       context.fill();
+      context.fillStyle = 'rgba(0,0,0,0)';
+      context.strokeStyle = '#e7eee5';
+      context.lineWidth = node.destination || node.kind === 'local' ? 2 : 1;
+      context.setLineDash?.(node.kind.startsWith('unknown') ? [2, 3] : []);
+      context.beginPath();
+      context.arc(node.screen.x, node.screen.y, node.screen.radius + 2, 0, Math.PI * 2);
+      context.stroke();
+      context.setLineDash?.([]);
+      const icon = node.kind === 'local' ? '◉' : node.kind === 'unknown-group' ? '…' : node.kind === 'unknown' ? '?' : ['failure', 'unreachable', 'degraded'].includes(node.status) ? '!' : node.destination ? '◆' : '';
+      if (icon && !projection.nodes.some(other => other !== node && other.visible && Math.hypot(other.screen.x - node.screen.x, other.screen.y - node.screen.y) < other.screen.radius + node.screen.radius + 2)) {
+        context.fillStyle = '#10180f';
+        context.textAlign = 'center'; context.textBaseline = 'middle';
+        context.fillText(icon, node.screen.x, node.screen.y, node.screen.radius * 1.4);
+      }
+      context.fillStyle = 'rgba(0,0,0,0)';
       if (node.asn_context) {
         context.strokeStyle = '#c4b5fd';
         context.lineWidth = 1.5;
@@ -151,27 +150,53 @@ function drawTopologyCanvas(context, topology, options = {}) {
         context.setLineDash?.([]);
       }
     }
-    // Fixed candidate count and conservative maxWidth boxes: no font-metric or
-    // frame-dependent relaxation, no moved graph nodes, and no synthetic links.
-    // Prefer saved aliases, then stable projection order. Crowded labels remain
-    // available in hover/focus details and the complete bounded inspector.
+    // Actual ink bounds, not 160px reservations for every short address. At
+    // most 64 candidates per node and 500 nodes: deterministic event-driven
+    // placement, with full circle/ring and accepted-label collision protection.
     const aliases = new Set(topology.nodes.filter(node => typeof node.display_label === 'string' && node.display_label.trim()).map(node => node.id));
-    const labelNodes = projection.nodes.filter(node => node.visible).sort((a, b) => Number(aliases.has(b.id)) - Number(aliases.has(a.id)));
+    const labelNodes = projection.nodes.filter(node => node.visible).sort((a, b) =>
+      Number(aliases.has(b.id)) - Number(aliases.has(a.id)) || Number(b.destination) - Number(a.destination));
     const occupied = [];
     context.fillStyle = CANVAS_LABEL;
     context.textAlign = 'center';
+    context.textBaseline = 'alphabetic';
     for (const node of labelNodes) {
-      const label = canvasLabelPlacement(node.screen, viewport);
-      const top = label.baseline === 'bottom' ? label.y - CANVAS_LABEL_HEIGHT : label.y;
-      for (const shift of [0, -18, 18, -36, 36, -54, 54, -72, 72]) {
-        const y = top + shift;
-        const box = { left: label.x - label.maxWidth / 2, right: label.x + label.maxWidth / 2,
-          top: y, bottom: y + CANVAS_LABEL_HEIGHT };
-        if (box.top < CANVAS_LABEL_INSET || box.bottom > viewport.height - CANVAS_LABEL_INSET) continue;
-        if (occupied.some(other => box.left < other.right + 2 && box.right + 2 > other.left && box.top < other.bottom + 2 && box.bottom + 2 > other.top)) continue;
+      const text = canvasLabel(node.label);
+      const metrics = context.measureText?.(text);
+      const maxWidth = Math.min(CANVAS_LABEL_MAX_WIDTH, viewport.width - 8);
+      const advance = metrics?.width || maxWidth;
+      const squeeze = Math.min(1, maxWidth / advance);
+      const left = (Number.isFinite(metrics?.actualBoundingBoxLeft) ? metrics.actualBoundingBoxLeft : advance / 2) * squeeze;
+      const right = (Number.isFinite(metrics?.actualBoundingBoxRight) ? metrics.actualBoundingBoxRight : advance / 2) * squeeze;
+      const ascent = Number.isFinite(metrics?.actualBoundingBoxAscent) ? metrics.actualBoundingBoxAscent : 10;
+      const descent = Number.isFinite(metrics?.actualBoundingBoxDescent) ? metrics.actualBoundingBoxDescent : 4;
+      const width = left + right, height = ascent + descent;
+      const ring = node.screen.radius + (node.asn_context ? 7 : Math.max(3, node.screen.halo ?? 6));
+      // Cardinal placements first, then diagonals; successive shells are fixed.
+      const directions = [[0,1],[0,-1],[1,0],[-1,0],[1,1],[-1,1],[1,-1],[-1,-1]];
+      for (let candidate = 0; candidate < 64; candidate++) {
+        const [dx,dy] = directions[candidate % 8], gap = 4 + Math.floor(candidate / 8) * 12;
+        const cx = node.screen.x + dx * (ring + width / 2 + gap);
+        const cy = node.screen.y + dy * (ring + height / 2 + gap);
+        const box = { left: cx - width / 2, right: cx + width / 2, top: cy - height / 2, bottom: cy + height / 2 };
+        if (box.left < 4 || box.right > viewport.width - 4 || box.top < 4 || box.bottom > viewport.height - 4) continue;
+        if (occupied.some(b => box.left < b.right + 2 && box.right + 2 > b.left && box.top < b.bottom + 2 && box.bottom + 2 > b.top)) continue;
+        if (labelNodes.some(other => {
+          const s = other.screen, radius = s.radius + (other.asn_context ? 7 : Math.max(3, s.halo ?? 6));
+          return Math.hypot(s.x - Math.max(box.left, Math.min(box.right, s.x)), s.y - Math.max(box.top, Math.min(box.bottom, s.y))) < radius + 1;
+        })) continue;
         occupied.push(box);
-        context.textBaseline = label.baseline;
-        context.fillText(canvasLabel(node.label), label.x, label.baseline === 'bottom' ? box.bottom : box.top, label.maxWidth);
+        // A thin neutral callout is decoration, never a route/observed link.
+        const endX = Math.max(box.left, Math.min(box.right, node.screen.x));
+        const endY = Math.max(box.top, Math.min(box.bottom, node.screen.y));
+        const distance = Math.hypot(endX - node.screen.x, endY - node.screen.y);
+        if (distance > ring + 6) {
+          context.strokeStyle = '#76847c'; context.lineWidth = 0.65;
+          context.beginPath();
+          context.moveTo(node.screen.x + (endX - node.screen.x) * ring / distance, node.screen.y + (endY - node.screen.y) * ring / distance);
+          context.lineTo(endX, endY); context.stroke();
+        }
+        context.fillText(text, box.left + left, box.top + ascent, maxWidth);
         break;
       }
     }
@@ -208,7 +233,8 @@ function nodeDetail(value) {
     value.asn_contexts_omitted ? `추가 경로 문맥 ${value.asn_contexts_omitted}개 생략` : ''] : [];
   const parts = [...contextParts, label && label !== address ? label : '', address, elementText(value.display_note), elementText(value.status, 'unknown'), hopDetail(value)];
   if (Number.isFinite(value.observations)) parts.push(`${value.observations} observations`);
-  if (Number.isFinite(value.latency_ms_avg)) parts.push(`${value.latency_ms_avg} ms`);
+  if (Number.isFinite(value.latency_ms_avg)) parts.push(`평균 RTT ${value.latency_ms_avg} ms (링크 지연 아님)`);
+  else parts.push('평균 RTT 미측정');
   if (value.public_ip === true) parts.push('public IP');
   if (value.public_ip === true && value.geolocation) {
     const location = [value.geolocation.city, value.geolocation.region, value.geolocation.country, value.geolocation.country_code]
@@ -222,13 +248,7 @@ function nodeDetail(value) {
   return parts.filter(Boolean).join(' · ');
 }
 
-function routeColor(resultIndex) {
-  const colors = ['#67d5ff', '#c9ff46', '#ffb84d', '#d59bff', '#ff7185', '#68e0b7', '#f3df63', '#83a7ff'];
-  const index = Number.isInteger(Number(resultIndex)) ? Math.abs(Number(resultIndex)) % colors.length : 0;
-  return colors[index];
-}
-
-function materializeTopologyItem(item, detachedDocument) {
+function materializeTopologyItem(item, detachedDocument, memberships) {
   const value = item.value || {};
   switch (item.kind) {
     case 'topology-canvas': {
@@ -287,7 +307,9 @@ function materializeTopologyItem(item, detachedDocument) {
       setData(element, 'to', value.to);
       setData(element, 'status', value.status);
       const observations = Number.isFinite(value.observations) ? value.observations : 0;
-      const detail = `${elementText(value.from)} → ${elementText(value.to)} · ${elementText(value.status, 'unknown')} · ${observations} observations`;
+      const members = memberships?.get(`${value.from}\0${value.to}`) ?? [];
+      const membership = members.length ? `${members.length > 1 ? '공유 경로' : '경로'} ${members.length}: ${members.slice(0, 20).map(i => `R${i + 1}`).join(', ')}${members.length > 20 ? ' …' : ''}${members.length > 4 ? ` · ${members.length - 4}개 색 생략` : ''}` : '경로 소속 미확인';
+      const detail = `${elementText(value.from)} → ${elementText(value.to)} · ${membership} · ${elementText(value.status, 'unknown')} · ${observations} observations`;
       setData(element, 'detail', detail);
       element.setAttribute('aria-label', detail);
       element.title = detail;
@@ -435,6 +457,7 @@ class TopologyRenderCoordinator {
       session.transform = createViewTransform(transform);
       const existingDOMElements = countElements(this.document);
       session.plan = planTopologyDOM(model, { view, existingDOMElements, maxDOMPerChunk: 100, labelRecords });
+      if (view === 'topology' && session.plan.topology) session.edgeMemberships = edgeRouteMemberships(session.plan.topology);
     } catch (error) {
       this.#fail(session, error);
       return generation;
@@ -542,7 +565,7 @@ class TopologyRenderCoordinator {
       const chunk = session.plan.chunks[index];
       try {
         if (!this.#active(session)) return;
-        const inserted = commitDOMChunk(this.document, session.root, chunk, materializeTopologyItem);
+        const inserted = commitDOMChunk(this.document, session.root, chunk, (item, doc) => materializeTopologyItem(item, doc, session.edgeMemberships));
         if (!this.#active(session)) return;
         this.#organizeCommittedDOM(session);
         session.committed += inserted;

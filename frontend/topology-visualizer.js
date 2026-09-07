@@ -5,6 +5,20 @@ export const VISUAL_NODES = 500;
 export const VISUAL_LINKS = 1000;
 export const VISUAL_ROUTES = 1000;
 
+// Original report result identity, never filtered list or attempt position.
+export const ROUTE_PALETTE = Object.freeze(['#c9ff46', '#67d5ff', '#ff72a5', '#ff9f68', '#52e0b1', '#b58cff', '#ffe178', '#7ba4ff', '#ef96d8', '#5ce6e6', '#a7db77', '#e9b080', '#90b8dc', '#e6a6b5', '#92d3b5', '#d0b5ed', '#ddd28c', '#b5d1ec', '#eca477', '#91dce4']);
+export const MAX_ROUTE_LANES = 4;
+export function routeColor(resultIndex) {
+  return ROUTE_PALETTE[Number.isInteger(resultIndex) && resultIndex >= 0 ? resultIndex % ROUTE_PALETTE.length : 0];
+}
+export function edgeRouteMemberships(topology) {
+  const pairs = new Map(topology.links.map(l => [`${l.from}\0${l.to}`, new Set()]));
+  for (const route of topology.routes) for (let i = 1; i < route.node_ids.length; i++) {
+    pairs.get(`${route.node_ids[i - 1]}\0${route.node_ids[i]}`)?.add(route.result_index);
+  }
+  return new Map([...pairs].map(([key, members]) => [key, [...members].sort((a, b) => a - b)]));
+}
+
 export const VIEWPORT_LIMITS = Object.freeze({
   minWidth: 1,
   maxWidth: 8192,
@@ -37,7 +51,7 @@ export const DEFAULT_TRANSFORM = Object.freeze({ panX: 0, panY: 0, zoom: 1, yaw:
 
 const MODE_2D = '2d';
 const MODE_3D = '3d';
-const NODE_RADIUS = 8;
+const NODE_RADIUS = 15;
 const PADDING = 32;
 const CAMERA_DISTANCE = 4;
 
@@ -110,6 +124,12 @@ function nodeLabel(node) {
   if (node.kind === 'unknown') return 'Unknown hop';
   if (node.kind === 'local') return 'Local';
   return node.id;
+}
+
+export function latencyColor(node) {
+  const ms = node.latency_ms_avg;
+  if (node.kind === 'local' || node.kind === 'unknown' || node.kind === 'unknown-group' || !Number.isFinite(ms) || ms < 0) return STATUS_COLORS.unknown;
+  return ms < 10 ? '#52e0b1' : ms < 50 ? '#c9ff46' : ms < 100 ? '#ffb84d' : '#ff7185';
 }
 
 function validateTopology(input) {
@@ -313,25 +333,31 @@ function layoutValidated(value) {
     const context = asnContextLabel(item).replace(' 사이 사설 구간 · 추정', ' 문맥·추정');
     return {
       id: item.id,
-      kind: item.kind ?? 'unknown',
+      kind: item.kind ?? (item.address ? 'ip' : 'unknown'),
       status: normalizedStatus(item.status),
+      destination: value.routes.some(route => route.reached === true && route.complete === true && ['healthy', 'degraded'].includes(route.status) && route.node_ids.at(-1) === item.id),
       // Keep the inference qualifier even when an alias reaches its input limit.
       label: context ? `${nodeLabel(item).slice(0, Math.max(0, 28 - context.length - 3))} · ${context}` : nodeLabel(item),
       asn_context: Boolean(context),
-      color: STATUS_COLORS[normalizedStatus(item.status)],
+      color: latencyColor(item),
       route_keys: member.map(entry => entry.key),
       world: { x: depths.get(item.id), y: laneByID.get(item.id), z: routeDepth }
     };
   });
   const byID = new Map(nodes.map(item => [item.id, item]));
+  const edgeMemberships = edgeRouteMemberships(value);
   const links = value.links.map(item => {
     const status = normalizedStatus(item.status);
+    const members = edgeMemberships.get(`${item.from}\0${item.to}`);
     return {
       from: item.from,
       to: item.to,
       directed: true,
       status,
-      color: STATUS_COLORS[status],
+      color: members.length ? routeColor(members[0]) : STATUS_COLORS.unknown,
+      route_memberships: members,
+      route_colors: members.slice(0, MAX_ROUTE_LANES).map(routeColor),
+      route_colors_omitted: Math.max(0, members.length - MAX_ROUTE_LANES),
       label: `${byID.get(item.from).label} → ${byID.get(item.to).label}`
     };
   });
@@ -445,6 +471,18 @@ export function projectTopology(input, inputOptions = {}) {
       visible: point.visible
     };
   });
+  // A single bounded nearest-neighbour pass adapts decoration to screen density.
+  // Small route fixtures keep the rich 15px circles. Dense projections never
+  // inflate beyond the former 8px geometry; close neighbours further reduce
+  // cores/halos instead of obscuring route lanes. No physics or raw mutation.
+  if (projectedNodes.length > 32) for (const node of projectedNodes) {
+    let nearest = Infinity;
+    for (const other of projectedNodes) if (other !== node && other.visible) {
+      nearest = Math.min(nearest, Math.hypot(node.screen.x - other.screen.x, node.screen.y - other.screen.y));
+    }
+    node.screen.radius = Math.max(3, Math.min(node.screen.radius * 8 / NODE_RADIUS, (nearest - 3) / 2));
+    node.screen.halo = Math.max(0, Math.min(2, nearest / 2 - node.screen.radius - 1));
+  }
   if (mode === MODE_3D) projectedNodes.sort((left, right) => (right.depth - left.depth) || compareText(left.id, right.id));
   const nodeByID = new Map(projectedNodes.map(item => [item.id, item]));
   const projectedLinks = layout.links.map(item => {

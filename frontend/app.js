@@ -5,7 +5,7 @@ import {
 import { canonicalIP, topologyModelFromReport, filterTopologyModel } from './topology-model.js';
 import { mountGeoMap } from './geo-map.js';
 import { TopologyRenderCoordinator } from './topology-renderer.js';
-import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport } from './topology-visualizer.js';
+import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport, routeColor } from './topology-visualizer.js';
 
 const IP_LABEL_STORAGE_KEY = 'checknetwork.ip-labels.v1';
 export const LABEL_FILE = 1024 * 1024;
@@ -948,7 +948,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     for (const [action, text] of [['all', '전체 선택'], ['none', '전체 해제']]) { const button = makeNode(doc, 'button', text); button.type = 'button'; button.dataset.filterAction = action; actions.append(button); }
     const unknown = makeNode(doc, 'label', undefined, 'unknown-node-toggle'); const unknownInput = makeNode(doc, 'input'); unknownInput.type = 'checkbox'; unknownInput.dataset.toggleUnresponsive = ''; unknownInput.checked = showUnresponsiveTopologyNodes; unknown.append(unknownInput, makeNode(doc, 'span', '응답없음 노드')); actions.append(unknown);
     const toggles = makeNode(doc, 'div', undefined, 'target-toggles');
-    results.forEach((result, index) => { const label = makeNode(doc, 'label'); const input = makeNode(doc, 'input'); input.type = 'checkbox'; input.dataset.targetIndex = String(index); input.checked = selectedTopologyTargets.has(index); label.append(input, makeNode(doc, 'i'), makeNode(doc, 'span', result.address)); toggles.append(label); });
+    results.forEach((result, index) => { const label = makeNode(doc, 'label'); label.style.setProperty('--route-color', routeColor(index)); const input = makeNode(doc, 'input'); input.type = 'checkbox'; input.dataset.targetIndex = String(index); input.checked = selectedTopologyTargets.has(index); label.append(input, makeNode(doc, 'i'), makeNode(doc, 'span', `R${index + 1} · ${result.address}`)); toggles.append(label); });
     filter.append(heading, actions, toggles);
     if (active?.selector) filter.querySelector(active.selector)?.focus();
   }

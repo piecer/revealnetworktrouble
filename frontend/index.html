@@ -104,6 +104,11 @@ google.com</textarea></label>
           <p id="topology-view-status" class="topology-view-mode-status" role="status" aria-live="polite" aria-atomic="true">2D 그래프</p>
         </div>
         <div id="topology-target-filter" class="topology-target-filter" aria-label="표시할 trace 목적지 선택"></div>
+        <section id="topology-color-legend" class="topology-color-legend" aria-label="경로 색과 노드 RTT 범례">
+          <p><strong>ROUTES / 선 색</strong> 동일 목적지의 반복 시도는 같은 색 · 공유 구간은 최대 4색 병렬선 (추가 색 생략, 링크 상세에 전체 경로 번호) · 색은 성공/실패가 아닙니다. · 가는 회색 선: 라벨 안내 (경로 아님)</p>
+          <p class="rtt-scale"><strong>NODES / 평균 RTT</strong><span style="--rtt:#52e0b1">0–&lt;10 ms</span><span style="--rtt:#c9ff46">10–&lt;50 ms</span><span style="--rtt:#ffb84d">50–&lt;100 ms</span><span style="--rtt:#ff7185">≥100 ms</span><span style="--rtt:#94a3b8">미측정 / 무응답</span></p>
+          <p>관측된 노드까지의 왕복 평균, 링크 지연 아님 · ◉ 로컬 · ◆ 도달 목적지 · ! 보고된 주의/실패 (상세 상태 우선) · ? 무응답 · … 접음 · 회색 점선: 접음, 짧은 점선: 생략 (직접 연결 아님) · 보라 점선 테두리: ASN 문맥 추정, 소속 확인 아님</p>
+        </section>
         <form id="topology-label-form" class="topology-label-form" aria-labelledby="topology-label-title">
 
           <div class="topology-label-intro"><strong id="topology-label-title">노드 라벨 바로 편집</strong><span>개별 IP 노드 클릭: 로컬 표시 이름과 설명만 저장합니다. 원본 IP · 홉 · 지연 관측은 변경하지 않습니다.</span></div>
