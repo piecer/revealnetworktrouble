@@ -103,6 +103,7 @@ function normalizedStatus(status) {
 }
 
 function nodeLabel(node) {
+  if (typeof node.display_label === 'string' && node.display_label.trim()) return node.display_label;
   const address = typeof node.address === 'string' ? node.address.trim() : '';
   if (address) return address;
   if (node.kind === 'unknown') return 'Unknown hop';

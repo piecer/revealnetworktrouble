@@ -26,13 +26,14 @@ const assert = require('node:assert/strict');
       const errors = [];
       await page.addInitScript(() => {
         const proto = CanvasRenderingContext2D.prototype;
-        for (const name of ['clearRect', 'beginPath', 'moveTo', 'lineTo', 'stroke']) {
+        for (const name of ['clearRect', 'beginPath', 'moveTo', 'lineTo', 'quadraticCurveTo', 'stroke']) {
           const original = proto[name];
           proto[name] = function (...args) {
             if (name === 'clearRect') this.canvas.graphStrokes = [];
             if (name === 'beginPath') this.graphPath = [];
             if (name === 'moveTo' || name === 'lineTo') this.graphPath?.push(args);
-            if (name === 'stroke' && this.graphPath?.length === 2 && this.strokeStyle !== '#17243a') {
+            if (name === 'quadraticCurveTo') this.graphPath?.push(args.slice(0, 2), args.slice(2));
+            if (name === 'stroke' && [2, 3].includes(this.graphPath?.length) && this.strokeStyle !== '#17243a') {
               this.canvas.graphStrokes?.push({ points: this.graphPath, color: this.strokeStyle });
             }
             return original.apply(this, args);
@@ -66,9 +67,11 @@ const assert = require('node:assert/strict');
                 (pixels[i] === 239 && pixels[i+1] === 68 && pixels[i+2] === 68)) colored++;
           }
           const dpr = Number(canvas.dataset.dpr);
-          const paintedLinks = (canvas.graphStrokes || []).filter(({ points: [from, to], color }) => {
+          const paintedLinks = (canvas.graphStrokes || []).filter(({ points, color }) => {
+            const from = points[0], to = points.at(-1);
             if (Math.hypot(to[0] - from[0], to[1] - from[1]) < 40) return false;
-            const x = Math.round((from[0] + to[0]) / 2 * dpr), y = Math.round((from[1] + to[1]) / 2 * dpr);
+            const midpoint = axis => points.length === 3 ? (from[axis] + 2 * points[1][axis] + to[axis]) / 4 : (from[axis] + to[axis]) / 2;
+            const x = Math.round(midpoint(0) * dpr), y = Math.round(midpoint(1) * dpr);
             const rgb = color.slice(1).match(/../g).map(v => parseInt(v, 16));
             for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
               const offset = ((y + dy) * canvas.width + x + dx) * 4;

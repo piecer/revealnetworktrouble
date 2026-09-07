@@ -34,13 +34,21 @@
 
 ## 6. 현재 단계: Stage 9 2D/3D topology visual restoration
 
-Stage 8의 semantic renderer가 node/link/route마다 단일 텍스트 요소만 만들고 visual layer를 만들지 않아 graph가 사라진 회귀를 복구한다. 같은 validated facts를 default 2D/optional 3D Canvas로 투영하고 report/analysis/diagnosis는 바꾸지 않는다. Pointer/wheel/keyboard/reset/fullscreen interaction, no continuous animation, bounded semantic inspector와 Canvas fallback을 유지한다. Limits는 nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,151), DPR 4다.
+Stage 8의 semantic renderer가 node/link/route마다 단일 텍스트 요소만 만들고 visual layer를 만들지 않아 graph가 사라진 회귀를 복구한다. 같은 validated facts를 default 2D/optional 3D Canvas로 투영하고 report/analysis/diagnosis는 바꾸지 않는다. Pointer/wheel/keyboard/reset/fullscreen interaction, no continuous animation, bounded semantic inspector와 Canvas fallback을 유지한다. Limits는 nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,152), DPR 4다.
 
 - [x] 2D/3D Canvas core, UI, lifecycle, semantic inspector/fallback 구현
 - [x] production seven-asset Docker/archive/served-byte closure 및 unexpected-file rejection
 - Historical Stage 9 plan/closure record: current source inventory was Web 283 tests; synthetic archive validator 25도 당시 closure에 반영했다.
-- [x] Compose SemVer fix 뒤 current source-level Web inventory 286 반영
+- [x] Compose SemVer fix 뒤 current source-level Web inventory 291 반영
 - Historical Stage 9 record: Compose SemVer 직후 Web inventory는 284 tests였다. Graph-first slice는 collapsed native inspector, projected-bounds fit과 overflow 회귀를 추가하며 isolated Chromium replay만 검증한다. 배포·physical browser·screen-reader 및 independent parent review는 별도 acceptance다.
+### Rich topology restoration slice
+
+- [x] Restore curved status-colored edges, halos, individual node drag with attached edges following, bounded inert hover/focus details, and direct alias/note editing through the existing local persistence path.
+- [x] Reproduce narrow label collision RED; reserve conservative label rectangles using nine deterministic candidates, prioritize saved aliases, and omit crowded visual labels only. Raw nodes/edges and complete inspector/tooltip facts remain unchanged.
+- [x] Replay fixture and captured report in isolated Chromium at 1440/375 px in both modes; verify actual glyph bounds, editing/reload, drag and stale cleanup. Screenshots show no label-label overlap; dense mobile nodes/edges still overlap and shifted labels can be ambiguous. Zoom/filter/hover/inspector remain necessary.
+- [ ] Final `make test`, `make build`, `make web-test-syntax`, `make vet` and independent parent review. This checklist intentionally remains open until independent review; local command evidence is reported separately.
+- [ ] Physical browser/device/screen-reader and release acceptance (not claimed by replay).
+
 - [ ] final canonical gates와 independent review
 - [ ] physical browser 및 screen-reader manual acceptance
 - [ ] immutable candidate release, explicit Stage 9 commit과 exact-SHA closure

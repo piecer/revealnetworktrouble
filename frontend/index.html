@@ -100,13 +100,13 @@ google.com</textarea></label>
             <label><input type="radio" name="topology-view-mode" value="3d"><span>3D 그래프</span></label>
           </fieldset>
           <button id="topology-view-reset" class="secondary" type="button">보기 초기화</button>
-          <p id="topology-view-help" class="topology-view-help">드래그: 이동/회전 · 휠 또는 +/−: 확대 · 방향키: 조정 · Home: 초기화</p>
+          <p id="topology-view-help" class="topology-view-help">노드 드래그: 개별 이동 · 배경 드래그: 이동/회전 · 노드 클릭: 라벨 편집 · [ / ]: 노드 선택 · Enter: 편집 · Esc: 상세 닫기 · 휠 또는 +/−: 확대 · 방향키: 조정 · Home: 초기화</p>
           <p id="topology-view-status" class="topology-view-mode-status" role="status" aria-live="polite" aria-atomic="true">2D 그래프</p>
         </div>
         <div id="topology-target-filter" class="topology-target-filter" aria-label="표시할 trace 목적지 선택"></div>
         <form id="topology-label-form" class="topology-label-form" aria-labelledby="topology-label-title">
 
-          <div class="topology-label-intro"><strong id="topology-label-title">노드 라벨 바로 편집</strong><span>경로의 개별 IP 노드를 누르면 대상을 자동으로 불러옵니다.</span></div>
+          <div class="topology-label-intro"><strong id="topology-label-title">노드 라벨 바로 편집</strong><span>개별 IP 노드 클릭: 로컬 표시 이름과 설명만 저장합니다. 원본 IP · 홉 · 지연 관측은 변경하지 않습니다.</span></div>
           <label><span id="topology-label-subject-label">IP 주소</span><input id="topology-label-address" placeholder="노드를 선택하거나 IP 입력" required></label>
           <label>표시 라벨<input id="topology-label-name" maxlength="256" placeholder="서울 IDC 경계 라우터" required></label>
           <label>설명<input id="topology-label-note" maxlength="1024" placeholder="선택 입력"></label>
@@ -115,6 +115,7 @@ google.com</textarea></label>
         </form>
         <p id="topology-render-status" class="render-status" role="status" aria-live="polite" aria-atomic="true"></p>
         <div id="topology-result" class="standalone-topology"></div>
+        <div id="topology-node-tooltip" class="topology-node-tooltip" role="tooltip" popover="manual" hidden></div>
       </section></section>
       <p id="topology-error" class="error" hidden></p>
     </div>

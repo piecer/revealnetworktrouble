@@ -46,7 +46,7 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 - Pointer drag/wheel, 키보드 화살표·`+`/`-`·`Home`, reset과 fullscreen을 지원한다. Continuous animation은 없고 interaction 또는 resize에서만 redraw한다.
 - Canvas와 동기화된 bounded semantic inspector는 키보드·screen-reader 탐색, 라벨 편집과 Canvas context 실패 fallback을 제공한다.
   Graph-first 화면은 Canvas를 먼저 표시하고 노드·링크·경로 카드는 기본 닫힌 native `details`/`summary` 안에 둔다. Inspector shell은 정확히 DOM 2개로 계획·chunk 비용에 포함하며 펼침은 DOM을 추가하지 않는다. 초기·mode 전환·reset은 실제 camera-plane node bounds에 32px padding을 적용해 fit하고 singleton은 정상 node radius를 유지한다. Graph 실패는 고정된 로컬 안내로 상세 보기 펼침을 권하며 exception prose를 반사하지 않는다.
-- 시각화 입력 상한은 nodes 500, links 1,000, routes 1,000이고 DPR은 최대 4다. Global document 상한은 DOM 1,200이며 현재 최대 fixture 측정값은 1,151이다.
+- 시각화 입력 상한은 nodes 500, links 1,000, routes 1,000이고 DPR은 최대 4다. Global document 상한은 DOM 1,200이며 현재 최대 fixture 측정값은 1,152이다.
 
 ## 6. IP 라벨 매핑
 
@@ -207,9 +207,15 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 - Production exact real gate는 caller umask 077/027/000 세 pass를 모두 실행하고 exact output/identity를 비교한다. private temp/captured stderr는 `0700`/`0600`이고 canonical extraction만 fixed `022`를 사용한다. Web build 전 `nginx.conf`와 seven assets mode `0644`를 확인한다. Exact real gate daemon snapshot은 canonical inspect projection(image ID/tags/digests, container immutable identity/config labels/network attachments, network identity/labels/membership endpoints)이며 uptime/status와 map formatting은 제외한다. Exact fake gate는 12 cases이고 caller replacement/membership/label mutation과 release-label residue는 실패하며 production child failure는 private stderr를 공개하지 않은 fixed diagnostic만 낸다.
 - 성공 output은 API `api_archive`, `api_config`, `api_manifest`, `api_rootfs`, `api_binary`, `api_traceroute` 여섯 field와 Web `archive`, `config`, `manifest`, `rootfs`, `asset_manifest` 다섯 field다. Docker CLI/daemon/buildx/base cache 부재는 release gate 실패다. registry push/signing/SBOM은 이 local verifier의 구현 claim이 아니다.
 
+### Rich graph interaction and label policy
+
+The Canvas restores status-colored curved directed edges and halos without adding synthetic topology. Dragging an individual node changes only session-local presentation offsets; attached edges follow while other node coordinates and raw diagnostic facts remain unchanged. Background drag retains pan/rotation. Hover/focus details are bounded inert text. Click/double-click or bracket selection plus Enter uses the existing canonical IP alias/note editor and local persistence, never writes report facts. Mode/view replacement owns and disposes interaction handlers.
+
+Label placement uses at most nine vertical candidates per visible node, conservative bounded rectangles, and saved-alias-first stable projection order. Crowded visual labels may be omitted; full bounded inspector and hover/focus details remain available. No graph nodes are relocated for label placement and no explanatory connectors are invented. A fixed document-counted tooltip is shared by the active topology owner.
+
 ## 18. Stage 9 상태와 남은 acceptance
 
-- Stage 9 2D/3D Canvas 구현과 production asset closure는 source에 반영되었고 Compose SemVer regression fix 뒤 현재 Web inventory는 286 tests다. 그러나 final canonical gates와 독립 review, immutable candidate release 및 exact-SHA closure가 남아 있으므로 Stage 9은 완료가 아니라 **implementation pending final gates/review** 상태다.
+- Stage 9 2D/3D Canvas 구현과 production asset closure는 source에 반영되었고 Compose SemVer regression fix 뒤 현재 Web inventory는 291 tests다. 그러나 final canonical gates와 독립 review, immutable candidate release 및 exact-SHA closure가 남아 있으므로 Stage 9은 완료가 아니라 **implementation pending final gates/review** 상태다.
 - Physical Chrome/Firefox/Safari에서 interaction·DPR·320/375/400 px를 확인하고 실제 screen reader로 semantic inspector/fallback을 확인하는 수동 acceptance는 자동 Node/jsdom test가 대신하지 않는다.
 
 기존 Stage 8 release sequencing 기록은 아래 acceptance의 선행 이력으로 유지한다.

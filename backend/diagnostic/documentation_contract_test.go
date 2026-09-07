@@ -326,10 +326,10 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 		}
 	}
 	currentDocClaims := []string{
-		"Stage 9", "Web 286", "Compose SemVer", "default 2D/optional 3D", "기본 2D", "선택 가능한 3D",
+		"Stage 9", "Web 291", "Compose SemVer", "default 2D/optional 3D", "기본 2D", "선택 가능한 3D",
 		"같은 validated", "같은 검증된", "report/analysis/diagnosis", "진단 결과를 변경하지 않는다",
 		"interaction event와 resize에서만 redraw", "continuous animation", "no-continuous-animation redraw",
-		"nodes 500", "links 1,000", "routes 1,000", "DOM 1,200", "DPR 4", "1,151",
+		"nodes 500", "links 1,000", "routes 1,000", "DOM 1,200", "DPR 4", "1,152",
 		"Chrome이 없는 환경에서는 실제 브라우저/화면 판독기 검증을 완료했다고 주장하지 않는다",
 		"physical Chrome/Firefox/Safari", "screen reader",
 	}
@@ -351,9 +351,9 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"daemon-success/CLI-response-loss", "HUP/INT/TERM",
 			"body 64 Ki UTF-16 code units", "depth 2", "properties 3", "tokens 10", "128 code units",
 			"`invalid_server_response`", "typed body와 retryability를 바꾸지 않고 timestamp만 생략",
-			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Compose SemVer regression fix 뒤 현재 Stage 9 Web source inventory는 286 tests", "result shapes 31", "expanded result matrix 136", "eight producer traceroute witness fixtures", "runner-owned `cancelled`", "publication 전에 report 전체를 거부", "exact real release-gate fake cases 12",
+			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Compose SemVer regression fix 뒤 현재 Stage 9 Web source inventory는 291 tests", "result shapes 31", "expanded result matrix 136", "eight producer traceroute witness fixtures", "runner-owned `cancelled`", "publication 전에 report 전체를 거부", "exact real release-gate fake cases 12",
 			"기본 2D와 선택 가능한 3D perspective", "같은 검증된 facts", "report, analysis 또는 diagnosis를 바꾸지 않는다", "interaction/resize 때만 다시 그려 continuous animation을 하지 않는다",
-			"nodes 500, links 1,000, routes 1,000", "document DOM 1,200", "DPR 최대 4", "측정된 최대 DOM은 1,151", "실제 브라우저와 screen reader 수동 검증도 pending",
+			"nodes 500, links 1,000, routes 1,000", "document DOM 1,200", "DPR 최대 4", "측정된 최대 DOM은 1,152", "실제 브라우저와 screen reader 수동 검증도 pending",
 			"ignored `checknetwork-api` binary", "비파괴 요청 때문에 제거하지 않고 retained",
 		},
 		"SPEC.md": {
@@ -363,9 +363,9 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"`api_archive`, `api_config`, `api_manifest`, `api_rootfs`, `api_binary`, `api_traceroute`", "HUP/INT/TERM은 각각 129/130/143",
 			"depth≤2", "properties≤3", "tokens≤10", "field name/value≤128 code units",
 			"`retryAt=now+seconds`", "`unauthorized`만 visible credential field에 focus",
-			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Compose SemVer regression fix 뒤 현재 Web inventory는 286 tests", "31 result shapes", "136-row", "exact eight producer traceroute witness fixtures", "full raw", "Geo aggregate", "optional representative", "runner-owned `cancelled`", "whole report를 atomic 거부", "fake cases 12",
+			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Compose SemVer regression fix 뒤 현재 Web inventory는 291 tests", "31 result shapes", "136-row", "exact eight producer traceroute witness fixtures", "full raw", "Geo aggregate", "optional representative", "runner-owned `cancelled`", "whole report를 atomic 거부", "fake cases 12",
 			"기본 `2D 그래프`와 선택 가능한 `3D 그래프`", "같은 검증된 topology facts", "report, analysis, diagnosis를 변경하지 않는다", "interaction 또는 resize에서만 redraw",
-			"nodes 500, links 1,000, routes 1,000", "DOM 1,200", "DPR은 최대 4", "현재 최대 fixture 측정값은 1,151", "Physical Chrome/Firefox/Safari", "실제 screen reader",
+			"nodes 500, links 1,000, routes 1,000", "DOM 1,200", "DPR은 최대 4", "현재 최대 fixture 측정값은 1,152", "Physical Chrome/Firefox/Safari", "실제 screen reader",
 			"ignored `checknetwork-api` binary", "비파괴 요청 때문에 제거하지 않고 retained",
 		},
 		"docs/ARCHITECTURE.md": {
@@ -376,8 +376,8 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"Header 실패는 typed body를 invalid로 바꾸지 않는다",
 			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "31 result shapes", "136-row", "presentation 10은 31 result shapes와 별개", "exact eight producer traceroute witness fixtures", "full raw attempts", "Geo aggregate", "optional representative topology", "runner-owned `cancelled`", "fake cases 12",
 			"Stage 9은 동일한 validated model을 기본 2D 또는 optional 3D perspective Canvas로 투영", "mode는 report/analysis/diagnosis를 바꾸지 않는다", "continuous animation 없이 pointer/keyboard/reset/resize interaction 때만 redraw",
-			"nodes 500/links 1,000/routes 1,000", "global `MAX_DOCUMENT_ELEMENTS=1200`", "DPR≤4", "maximum fixture는 1,151 DOM elements",
-			"umask 077/027/000 세 pass", "canonical Docker inventory equality", "Compose SemVer fix 뒤 현재 Web source inventory는 286 tests", "ignored `checknetwork-api` binary",
+			"nodes 500/links 1,000/routes 1,000", "global `MAX_DOCUMENT_ELEMENTS=1200`", "DPR≤4", "maximum fixture는 1,152 DOM elements",
+			"umask 077/027/000 세 pass", "canonical Docker inventory equality", "Compose SemVer fix 뒤 현재 Web source inventory는 291 tests", "ignored `checknetwork-api` binary",
 		},
 		"docs/API.md": {
 			"code `invalid_server_response`", "message `The server returned an invalid error response.`",
@@ -393,28 +393,28 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"`api_archive`, `api_config`, `api_manifest`, `api_rootfs`, `api_binary`, `api_traceroute`", "daemon-success/CLI-response-loss",
 			"system JDK 17", "portable JAVA_HOME", "SDK precedence", "첫 explicit override", "fail closed",
 			"umask 077/027/000 세 pass", "canonical Docker inspect JSON projection", "Exact fake gate는 12 cases",
-			"Stage 8 historical source inventory는 Web 260 tests", "Compose SemVer fix 뒤 current source inventory는 Web 286 tests", "direct-child XML 297 tests + variant canaries 2", "result shapes 31", "result matrix 136", "ignored `checknetwork-api` binary", "비파괴 요청 때문에 제거하지 않고 retained",
+			"Stage 8 historical source inventory는 Web 260 tests", "Compose SemVer fix 뒤 current source inventory는 Web 291 tests", "direct-child XML 297 tests + variant canaries 2", "result shapes 31", "result matrix 136", "ignored `checknetwork-api` binary", "비파괴 요청 때문에 제거하지 않고 retained",
 		},
 		"docs/TESTING.md": {
 			"direct-child `TEST-*.xml`", "exact `binary/` direct directory", "`output.bin`, `output.bin.idx`, `results.bin`",
 			"≤64 MiB", "≤128 MiB", "bounded **non-evidence companion**", "duplicate/ambiguous basename",
 			"각 variant direct-child XML 297 / variant-contract 2", "`297+2`", "pending clean-environment canonical gate",
-			"env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci", "Compose SemVer regression fix 뒤 현재 Stage 9 source inventory는 Web 286 tests", "456 fixture-derived semantic mutations", "generic cancelled-detail rejection 13", "eight witness fixtures", "ignored `checknetwork-api` binary",
+			"env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci", "Compose SemVer regression fix 뒤 현재 Stage 9 source inventory는 Web 291 tests", "456 fixture-derived semantic mutations", "generic cancelled-detail rejection 13", "eight witness fixtures", "ignored `checknetwork-api` binary",
 			"exact 512 MiB/4,096/256 MiB/512 MiB/64/256 MiB/512 MiB/128 MiB bounds",
 			"smoke container+API network 정확히 두 개", "load/daemon-tag/import/delete/execute되지 않음",
-			"api_archive/api_config/api_manifest/api_rootfs/api_binary/api_traceroute", "current source와 fixture cardinality `286`", "`23/31/136`", "archive validators 53",
+			"api_archive/api_config/api_manifest/api_rootfs/api_binary/api_traceroute", "current source와 fixture cardinality `291`", "`23/31/136`", "archive validators 53",
 			"`MAX_TARGETS=20`", "global `MAX_DOCUMENT_ELEMENTS=1200`", "exact real release-gate fake cases 12",
 			"default 2D/optional 3D Canvas projection", "같은 facts", "no-refetch/no-diagnosis-change", "no-continuous-animation redraw",
-			"Nodes 500/links 1,000/routes 1,000/DPR≤4", "global DOM≤1,200", "현재 최대 fixture 1,151", "physical Chrome/Firefox/Safari", "실제 screen-reader",
+			"Nodes 500/links 1,000/routes 1,000/DPR≤4", "global DOM≤1,200", "현재 최대 fixture 1,152", "physical Chrome/Firefox/Safari", "실제 screen-reader",
 		},
 		"docs/PLAN.md": {
 			"canonical API+Web release verifier", "**invalid**", "final pre-manifest clean-environment `make ci`", "Android debug/release each 297 + 2 variant canaries",
 			"blocker 0 / major 0", "ignored root `checknetwork-api` binary", "archive validators 53",
 			"double-build-equal tagless offline archives", "safe API extraction/publication", "six API/five Web output fields",
 			"five-way independent precommit review", "어떤 final claim도 하지 않는다",
-			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Historical Stage 9 plan/closure record: current source inventory was Web 283 tests", "Compose SemVer fix 뒤 current source-level Web inventory 286", "result shapes 31", "expanded matrix 136", "456 semantic mutations", "13 generic cancelled-detail rejections", "eight traceroute witness fixtures", "raw-only", "compact/Geo aggregate", "optional", "generic cancelled", "fake cases 12", "ignored root `checknetwork-api` binary",
+			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Historical Stage 9 plan/closure record: current source inventory was Web 283 tests", "Compose SemVer fix 뒤 current source-level Web inventory 291", "result shapes 31", "expanded matrix 136", "456 semantic mutations", "13 generic cancelled-detail rejections", "eight traceroute witness fixtures", "raw-only", "compact/Geo aggregate", "optional", "generic cancelled", "fake cases 12", "ignored root `checknetwork-api` binary",
 			"default 2D/optional 3D Canvas", "같은 validated facts", "report/analysis/diagnosis는 바꾸지 않는다", "no continuous animation",
-			"nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,151), DPR 4", "physical browser 및 screen-reader manual acceptance",
+			"nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,152), DPR 4", "physical browser 및 screen-reader manual acceptance",
 		},
 		stage8PlanPath: {
 			"exact local code `invalid_server_response`", "exact `binary/` companion", "297 direct-child XML tests + 2 variant-contract tests",
@@ -717,7 +717,7 @@ func TestStaleStage9WebCardinalityClaimDetection(t *testing.T) {
 		{name: "stale current Stage 9 count", line: "현재 Stage 9 source inventory는 Web 283 tests다.", stage9Context: true, stale: true},
 		{name: "graph-first supersedes prior count", line: "현재 Stage 9 source inventory는 Web 284 tests다.", stage9Context: true, stale: true},
 		{name: "historical pre graph-first count", line: "Historical Stage 9 record: current source inventory was Web 284 tests.", stage9Context: true, stale: false},
-		{name: "current Stage 9 count", line: "현재 Stage 9 source inventory는 Web 286 tests다.", stage9Context: true, stale: false},
+		{name: "current Stage 9 count", line: "현재 Stage 9 source inventory는 Web 291 tests다.", stage9Context: true, stale: false},
 		{name: "explicit historical Stage 9 record", line: "Historical Stage 9 record: current source inventory was Web 283 tests.", stage9Context: true, stale: false},
 		{name: "historical Stage 8 section", line: "Current stable source cardinality was Web 260.", stage9Context: false, stale: false},
 		{name: "explicit historical record", line: "Historical record: current source inventory was Web 260 tests.", stage9Context: true, stale: false},
@@ -744,7 +744,7 @@ var (
 	}
 	currentCardinalityContextPattern   = regexp.MustCompile(`(?i)(?:\bcurrent\b|현재).{0,80}(?:\bcardinality\b|\binventory\b)|\b(?:current|stable)\s+source\s+(?:cardinality|inventory)\b`)
 	historicalCardinalityPrefixPattern = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:(?:historical|previous|prior|formerly|obsolete|old)\b|(?:과거|이전|당시|역사적)(?:\s|:))`)
-	staleStage9WebPattern              = regexp.MustCompile(`(?i)\bweb\s*(?:260|283|284)\b`)
+	staleStage9WebPattern              = regexp.MustCompile(`(?i)\bweb\s*(?:260|283|284|286)\b`)
 	staleCurrentCardinalityPatterns    = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bresult\s+shapes?\s*32\b|\b32\s+result\s+shapes?\b`),
 		regexp.MustCompile(`(?i)\b(?:expanded\s+(?:semantic\s+)?(?:result\s+)?matrix|result\s+matrix)\s*137\b|\b137-row\b`),

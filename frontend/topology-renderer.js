@@ -73,6 +73,19 @@ function drawTopologyCanvas(context, topology, options = {}) {
   const mode = options.mode ?? '2d';
   const transform = createViewTransform(options.transform ?? {});
   const projection = projectTopology(topology, { mode, transform, viewport });
+  // Session-local presentation offsets never enter the report or identity model.
+  for (const node of projection.nodes) {
+    const offset = options.nodeOffsets?.get(node.id);
+    if (!offset || !Number.isFinite(offset.x) || !Number.isFinite(offset.y)) continue;
+    node.screen.x = Math.max(0, Math.min(viewport.width, node.screen.x + offset.x));
+    node.screen.y = Math.max(0, Math.min(viewport.height, node.screen.y + offset.y));
+  }
+  const moved = new Map(projection.nodes.map(node => [node.id, node]));
+  for (const link of projection.links) {
+    const from = moved.get(link.from).screen, to = moved.get(link.to).screen;
+    link.from_screen = { x: from.x, y: from.y };
+    link.to_screen = { x: to.x, y: to.y };
+  }
 
   context.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
   context.clearRect(0, 0, viewport.width, viewport.height);
@@ -95,9 +108,16 @@ function drawTopologyCanvas(context, topology, options = {}) {
     context.lineWidth = 2;
     context.beginPath();
     context.moveTo(link.from_screen.x, link.from_screen.y);
-    context.lineTo(link.to_screen.x, link.to_screen.y);
+    const dx = link.to_screen.x - link.from_screen.x;
+    const dy = link.to_screen.y - link.from_screen.y;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    const bend = Math.min(42, length * 0.16);
+    const control = { x: (link.from_screen.x + link.to_screen.x) / 2 - dy / length * bend,
+      y: (link.from_screen.y + link.to_screen.y) / 2 + dx / length * bend };
+    if (typeof context.quadraticCurveTo === 'function') context.quadraticCurveTo(control.x, control.y, link.to_screen.x, link.to_screen.y);
+    else context.lineTo(link.to_screen.x, link.to_screen.y);
     context.stroke();
-    drawArrowhead(context, link.from_screen, link.to_screen, target?.screen.radius ?? 8);
+    drawArrowhead(context, control, link.to_screen, target?.screen.radius ?? 8);
   }
 
   const preservesState = typeof context.save === 'function' && typeof context.restore === 'function';
@@ -106,15 +126,38 @@ function drawTopologyCanvas(context, topology, options = {}) {
     context.font = '12px system-ui, sans-serif';
     for (const node of projection.nodes) {
       if (!node.visible) continue;
+      context.fillStyle = `${node.color}28`;
+      context.beginPath();
+      context.arc(node.screen.x, node.screen.y, node.screen.radius + 6, 0, Math.PI * 2);
+      context.fill();
       context.fillStyle = node.color;
       context.beginPath();
       context.arc(node.screen.x, node.screen.y, node.screen.radius, 0, Math.PI * 2);
       context.fill();
-      context.fillStyle = CANVAS_LABEL;
+    }
+    // Fixed candidate count and conservative maxWidth boxes: no font-metric or
+    // frame-dependent relaxation, no moved graph nodes, and no synthetic links.
+    // Prefer saved aliases, then stable projection order. Crowded labels remain
+    // available in hover/focus details and the complete bounded inspector.
+    const aliases = new Set(topology.nodes.filter(node => typeof node.display_label === 'string' && node.display_label.trim()).map(node => node.id));
+    const labelNodes = projection.nodes.filter(node => node.visible).sort((a, b) => Number(aliases.has(b.id)) - Number(aliases.has(a.id)));
+    const occupied = [];
+    context.fillStyle = CANVAS_LABEL;
+    context.textAlign = 'center';
+    for (const node of labelNodes) {
       const label = canvasLabelPlacement(node.screen, viewport);
-      context.textAlign = 'center';
-      context.textBaseline = label.baseline;
-      context.fillText(canvasLabel(node.label), label.x, label.y, label.maxWidth);
+      const top = label.baseline === 'bottom' ? label.y - CANVAS_LABEL_HEIGHT : label.y;
+      for (const shift of [0, -18, 18, -36, 36, -54, 54, -72, 72]) {
+        const y = top + shift;
+        const box = { left: label.x - label.maxWidth / 2, right: label.x + label.maxWidth / 2,
+          top: y, bottom: y + CANVAS_LABEL_HEIGHT };
+        if (box.top < CANVAS_LABEL_INSET || box.bottom > viewport.height - CANVAS_LABEL_INSET) continue;
+        if (occupied.some(other => box.left < other.right + 2 && box.right + 2 > other.left && box.top < other.bottom + 2 && box.bottom + 2 > other.top)) continue;
+        occupied.push(box);
+        context.textBaseline = label.baseline;
+        context.fillText(canvasLabel(node.label), label.x, label.baseline === 'bottom' ? box.bottom : box.top, label.maxWidth);
+        break;
+      }
     }
   } finally {
     if (preservesState) context.restore();
@@ -341,6 +384,7 @@ class TopologyRenderCoordinator {
       focusTarget, abortController: new AbortController(), scheduled: null,
       cleanups: [], committed: 0, plan: null, finished: false, token: {}
     };
+    session.nodeOffsets = new Map();
     this.current = session;
     ROOT_OWNERS.set(root, session.token);
     STATUS_OWNERS.set(status, session.token);
@@ -510,10 +554,10 @@ class TopologyRenderCoordinator {
       const viewport = session.viewport ?? normalizeViewport({ width: canvas.width / dpr, height: canvas.height / dpr, dpr });
       if (canvas.width !== viewport.pixelWidth) canvas.width = viewport.pixelWidth;
       if (canvas.height !== viewport.pixelHeight) canvas.height = viewport.pixelHeight;
-      drawTopologyCanvas(context, session.plan.topology, {
+      session.projection = drawTopologyCanvas(context, session.plan.topology, {
         mode: session.mode,
         transform: session.transform,
-        viewport
+        viewport, nodeOffsets: session.nodeOffsets
       });
       if (!this.#active(session)) return false;
       canvas.dataset.mode = session.mode;
@@ -600,10 +644,113 @@ class TopologyRenderCoordinator {
   #finish(session) {
     if (!this.#active(session)) return;
     session.finished = true;
+    this.#installGraphInteraction(session);
     this.#installNativeReorder(session);
     if (ROOT_OWNERS.get(session.root) === session.token) session.root.setAttribute('aria-busy', 'false');
     if (STATUS_OWNERS.get(session.status) === session.token) session.status.textContent = truncationSummary(session.plan, session.localLimitation);
     this.onState({ phase: 'ready', generation: session.generation, ownerId: session.ownerId, inputSignature: session.inputSignature, view: session.view, completed: session.committed, total: session.plan.plannedElements, plan: session.plan, localLimitation: session.localLimitation });
+  }
+
+  #installGraphInteraction(session) {
+    if (session.view !== 'topology' || !session.projection) return;
+    const canvas = session.root.querySelector('canvas.topology-canvas');
+    const tooltip = session.workspace?.tooltip;
+    const facts = new Map(session.plan.topology.nodes.map(node => [node.id, node]));
+    let drag = null;
+    let selected = session.projection.nodes[0]?.id;
+    let suppressClick = false;
+    const point = event => {
+      const rect = canvas.getBoundingClientRect(), viewport = session.projection.viewport;
+      return { x: (event.clientX - rect.left) * viewport.width / (rect.width || viewport.width),
+        y: (event.clientY - rect.top) * viewport.height / (rect.height || viewport.height) };
+    };
+    const hit = p => {
+      let nearest, distance = Infinity;
+      // Closest center wins; equal-distance overlaps use frontmost draw order.
+      for (const node of session.projection.nodes) {
+        const candidate = Math.hypot(node.screen.x - p.x, node.screen.y - p.y);
+        if (node.visible && candidate <= node.screen.radius + 8 && candidate <= distance) {
+          nearest = node; distance = candidate;
+        }
+      }
+      return nearest;
+    };
+    const hide = () => { if (tooltip) { tooltip.hidePopover?.(); tooltip.hidden = true; } };
+    const show = node => {
+      if (!tooltip) return;
+      if (!node) { hide(); return; }
+      selected = node.id;
+      tooltip.textContent = nodeDetail(facts.get(node.id)).slice(0, 2048);
+      tooltip.hidden = false;
+      tooltip.showPopover?.();
+      const rect = canvas.getBoundingClientRect(), view = canvas.ownerDocument.defaultView;
+      const viewport = session.projection.viewport;
+      const x = rect.left + node.screen.x * (rect.width || viewport.width) / viewport.width;
+      const y = rect.top + node.screen.y * (rect.height || viewport.height) / viewport.height;
+      tooltip.style.left = `${Math.max(8, Math.min(view.innerWidth - Math.min(320, view.innerWidth - 16) - 8, x - 150))}px`;
+      tooltip.style.top = `${Math.max(8, Math.min(view.innerHeight - 168, y - 170))}px`;
+      canvas.setAttribute('aria-describedby', `${tooltip.id} topology-view-help topology-render-status`);
+    };
+    const on = (type, listener) => {
+      const guarded = event => { if (this.#active(session)) listener(event); };
+      canvas.addEventListener(type, guarded, true);
+      session.cleanups.push(() => canvas.removeEventListener(type, guarded, true));
+    };
+    const edit = node => {
+      if (!node) return;
+      const button = [...session.root.querySelectorAll('button.topology-node')].find(item => item.dataset.nodeId === node.id);
+      button?.click(); // One canonical storage/editor path for graph and inspector.
+    };
+    on('focus', () => show(session.projection.nodes.find(node => node.id === selected)));
+    on('blur', hide);
+    on('keydown', event => {
+      if (event.key === 'Escape') { hide(); event.preventDefault(); return; }
+      if (event.key === 'Enter') { edit(session.projection.nodes.find(node => node.id === selected)); event.preventDefault(); return; }
+      if (!['[', ']'].includes(event.key)) return;
+      const nodes = session.projection.nodes;
+      const index = nodes.findIndex(node => node.id === selected);
+      show(nodes[(index + (event.key === ']' ? 1 : -1) + nodes.length) % nodes.length]);
+      event.preventDefault(); event.stopPropagation();
+    });
+    on('click', event => { if (suppressClick) { suppressClick = false; return; } edit(hit(point(event))); });
+    on('dblclick', event => edit(hit(point(event))));
+    on('pointerdown', event => {
+      if (event.button !== 0) return;
+      const p = point(event), node = hit(p);
+      if (!node) return; // Empty background retains pan/rotate.
+      suppressClick = false;
+      drag = { id: node.id, pointerId: event.pointerId, point: p };
+      try { canvas.setPointerCapture?.(event.pointerId); } catch { /* optional capture */ }
+      show(node);
+      event.preventDefault(); event.stopPropagation();
+    });
+    on('pointermove', event => {
+      const p = point(event);
+      if (drag && event.pointerId === drag.pointerId) {
+        const offset = session.nodeOffsets.get(drag.id) || { x: 0, y: 0 };
+        const x = offset.x + p.x - drag.point.x, y = offset.y + p.y - drag.point.y;
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          if (Math.hypot(p.x - drag.point.x, p.y - drag.point.y) > 2) suppressClick = true;
+          session.nodeOffsets.set(drag.id, { x: Math.max(-8192, Math.min(8192, x)), y: Math.max(-8192, Math.min(8192, y)) });
+          drag.point = p;
+          this.#drawTopology(session);
+        }
+        event.preventDefault(); event.stopPropagation();
+      } else show(hit(p));
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) on(type, event => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      drag = null;
+      try { canvas.releasePointerCapture?.(event.pointerId); } catch { /* optional capture */ }
+      event.stopPropagation();
+    });
+    on('pointerleave', () => { if (!drag) hide(); });
+    session.cleanups.push(() => {
+      if (drag) { try { canvas.releasePointerCapture?.(drag.pointerId); } catch { /* detached canvas */ } }
+      drag = null;
+      // An old coordinator must not hide a successor's tooltip.
+      if (ROOT_OWNERS.get(session.root) === session.token) hide();
+    });
   }
 
   #installNativeReorder(session) {

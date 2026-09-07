@@ -50,6 +50,106 @@ function fakeContext() {
   return context;
 }
 
+test('narrow rich graph labels do not overlap each other', () => {
+  for (const count of [4, 500]) for (const mode of ['2d', '3d']) for (const width of [289, 1298]) {
+    const context = fakeContext(), model = topologyModel(count);
+    if (count === 500) model.nodes.at(-1).display_label = 'Priority alias';
+    const facts = JSON.stringify(model), options = { mode, viewport: { width, height: 240 } };
+    const projection = drawTopologyCanvas(context, model, options);
+    const labels = context.calls.filter(call => call[0] === 'fillText');
+    const boxes = labels.map(([, text, x, y, maxWidth, state]) => {
+      const width = Math.min(text.length * 7, maxWidth);
+      return { left: x - width / 2, right: x + width / 2, top: state.textBaseline === 'bottom' ? y - 14 : y, bottom: state.textBaseline === 'bottom' ? y : y + 14 };
+    });
+    if (count === 4) assert.equal(labels.length, projection.nodes.length, 'small graph retains every label');
+    else {
+      assert.ok(labels.length > 0 && labels.length < count, 'crowding omits only visual labels');
+      assert.equal(labels[0][1], 'Priority alias', 'saved alias receives first placement');
+    }
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      assert.ok(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, 'label rectangles are disjoint');
+    }
+    const repeat = fakeContext();
+    assert.deepEqual(drawTopologyCanvas(repeat, model, options), projection);
+    assert.deepEqual(repeat.calls, context.calls, 'bounded placement is deterministic');
+    assert.equal(JSON.stringify(model), facts, 'raw graph facts remain unchanged');
+  }
+});
+
+test('dense graph hit testing chooses the nearest node rather than a later overlapping halo', () => {
+  const h = harness({ html: '<div id="tip" hidden></div>' });
+  const tooltip = h.document.querySelector('#tip');
+  h.coordinator.start({ ownerId: 1, inputSignature: 'dense', view: 'topology', model: topologyModel(60), root: h.root, status: h.status, workspace: { tooltip } }); h.runAll();
+  h.root.querySelector('canvas').dispatchEvent(new h.dom.window.MouseEvent('pointermove', { clientX: 32, clientY: 240 }));
+  assert.ok(tooltip.textContent.startsWith('192.0.2.0 ·'), tooltip.textContent);
+});
+
+test('graph focus and bracket navigation expose inert details; click and Enter activate the existing annotation editor', () => {
+  const h = harness({ html: '<div id="tip" role="tooltip" hidden></div>' });
+  const model = topologyModel(2);
+  model.nodes[0].display_note = '<img src=x onerror=alert(1)>';
+  const tooltip = h.document.querySelector('#tip');
+  h.coordinator.start({ ownerId: 1, inputSignature: 'edit', view: 'topology', model, root: h.root, status: h.status, workspace: { tooltip } }); h.runAll();
+  const edited = [];
+  h.root.addEventListener('click', event => { if (event.target.matches('button.topology-node')) edited.push(event.target.dataset.labelAddress); });
+  const canvas = h.root.querySelector('canvas');
+  canvas.focus();
+  assert.equal(tooltip.hidden, false);
+  assert.ok(tooltip.textContent.includes(model.nodes[0].display_note));
+  assert.equal(tooltip.childElementCount, 0);
+  canvas.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  canvas.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: ']', bubbles: true }));
+  canvas.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  canvas.dispatchEvent(new h.dom.window.MouseEvent('click', { clientX: 32, clientY: 240, bubbles: true }));
+  assert.deepEqual(edited, ['192.0.2.0', '192.0.2.1', '192.0.2.0']);
+  canvas.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(tooltip.hidden, true);
+});
+
+test('node drag changes only the hit node and attached edge, keeps offsets on redraw, and disposes stale handlers', () => {
+  const h = harness({ html: '<div id="tip" role="tooltip" hidden></div>' });
+  const model = topologyModel(3);
+  model.links = [{ from: 'n0', to: 'n1', status: 'healthy' }];
+  const tooltip = h.document.querySelector('#tip');
+  const args = { ownerId: 1, inputSignature: 'rich', view: 'topology', model, root: h.root, status: h.status, workspace: { tooltip } };
+  h.coordinator.start(args); h.runAll();
+  const canvas = h.root.querySelector('canvas');
+  const send = (type, x, y) => canvas.dispatchEvent(new h.dom.window.MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }));
+  send('pointermove', 32, 240);
+  assert.equal(tooltip.hidden, false, 'hit testing opens tooltip');
+  assert.match(tooltip.textContent, /192.0.2.0.*healthy.*HOP 0.*1 observations/);
+  const before = drawTopologyCanvas(fakeContext(), model);
+  send('pointerdown', 32, 240); send('pointermove', 82, 280); send('pointerup', 82, 280);
+  const after = h.coordinator.current.projection;
+  assert.equal(after.nodes[0].screen.x, before.nodes[0].screen.x + 50);
+  assert.equal(after.nodes[0].screen.y, before.nodes[0].screen.y + 40);
+  assert.deepEqual(after.nodes.slice(1), before.nodes.slice(1));
+  assert.deepEqual(after.links[0].from_screen, { x: 82, y: 280 });
+  h.coordinator.updateTopologyView({ ownerId: 1, inputSignature: 'rich', generation: h.coordinator.generation, mode: '3d' });
+  assert.equal(h.coordinator.current.projection.nodes.find(n => n.id === 'n0').screen.x, 82);
+  h.coordinator.cancel();
+  tooltip.textContent = 'successor';
+  send('pointermove', 82, 280);
+  assert.equal(tooltip.textContent, 'successor');
+  assert.equal(tooltip.hidden, true);
+});
+
+test('rich graph draws curved connections and halos using local aliases without changing facts', () => {
+  const context = fakeContext();
+  context.quadraticCurveTo = (...args) => context.calls.push(['quadraticCurveTo', ...args]);
+  const topology = topologyModel(2);
+  topology.nodes[0].display_label = 'Boundary router';
+  topology.nodes[0].display_note = 'Local note';
+  topology.links = [{ from: 'n0', to: 'n1', status: 'healthy' }];
+  const before = JSON.stringify(topology);
+  const projection = drawTopologyCanvas(context, topology);
+  assert.equal(projection.nodes[0].label, 'Boundary router');
+  assert.ok(context.calls.some(call => call[0] === 'quadraticCurveTo'));
+  assert.equal(context.calls.filter(call => call[0] === 'arc').length, 4, 'core and halo per node');
+  assert.equal(JSON.stringify(topology), before);
+});
+
 test('drawTopologyCanvas clears, paints background/grid, then directed links and arrowheads before status-colored nodes and bounded labels', () => {
   const context = fakeContext();
   const attack = '<svg onload="globalThis.canvasPwned=1">' + 'x'.repeat(200);
@@ -138,7 +238,7 @@ test('drawTopologyCanvas supports bounded 2d/3d edge labels and rejects visual l
           assert.ok(bottom <= viewport.height - inset + 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside bottom inset`);
         }
 
-        const arcs = context.calls.filter(call => call[0] === 'arc');
+        const arcs = context.calls.filter(call => call[0] === 'arc').filter((_, index) => index % 2 === 1); // core, excluding the new halo
         assert.deepEqual(arcs.map(call => call.slice(1, 4)), projection.nodes.filter(node => node.visible).map(node => [node.screen.x, node.screen.y, node.screen.radius]), `${mode}/${width}/${stateName} does not alter node geometry`);
         assert.deepEqual({ textAlign: context.textAlign, textBaseline: context.textBaseline }, { textAlign: 'right', textBaseline: 'alphabetic' }, `${mode}/${width}/${stateName} does not leak text state`);
         if (stateName === 'initial') {

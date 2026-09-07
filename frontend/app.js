@@ -1007,6 +1007,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       view: geo ? 'geo' : 'topology', model: filteredTopologyModel(), root, status,
       mode: topologyViewState.mode, transform: topologyViewState.transform,
       workspace: {
+        tooltip: doc.querySelector('#topology-node-tooltip'),
         disposeHiddenViews() { doc.querySelector(geo ? '#topology-result' : '#geo-map-result').replaceChildren(); },
         drawGeo
       }
