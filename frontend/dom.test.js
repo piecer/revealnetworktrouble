@@ -1843,9 +1843,15 @@ test('topology native view controls default to a visible accessible 2d graph and
   assert.equal(canvas.getAttribute('aria-describedby'), 'topology-view-help topology-render-status');
   const canvasBefore = canvas; const nodesBefore = [...document.querySelectorAll('#topology-result .topology-node')]; const countBefore = document.querySelectorAll('*').length;
 
+  canvas.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
   const threeD = document.querySelector('[name="topology-view-mode"][value="3d"]');
+  context.calls.length = 0;
   threeD.checked = true;
   threeD.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  const modeArcs = context.calls.filter(call => call[0] === 'arc');
+  context.calls.length = 0;
+  document.querySelector('#topology-view-reset').click();
+  assert.deepEqual(modeArcs, context.calls.filter(call => call[0] === 'arc'), 'mode switch restores fit instead of inheriting pan');
   assert.equal(fetches, 1);
   assert.strictEqual(document.querySelector('#topology-result canvas'), canvasBefore);
   assert.deepEqual([...document.querySelectorAll('#topology-result .topology-node')], nodesBefore);

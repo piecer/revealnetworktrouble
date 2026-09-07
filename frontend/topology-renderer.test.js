@@ -203,6 +203,30 @@ test('topology commits exactly one finite accessible canvas before drawing and o
   assert.equal(h.coordinator.updateTopologyView({ ownerId: 'A', inputSignature: 'a', generation, mode: '3d' }), false);
 });
 
+test('graph comes first with a collapsed native semantic inspector costed in every chunk', () => {
+  const h = harness();
+  h.coordinator.start({ ownerId: 'A', inputSignature: 'a', view: 'topology', model: topologyModel(500), root: h.root, status: h.status });
+  let previous = h.document.querySelectorAll('*').length;
+  while (h.runNext()) {
+    const count = h.document.querySelectorAll('*').length;
+    assert.ok(count - previous <= 100);
+    assert.ok(count <= 1200);
+    previous = count;
+  }
+  const inspector = h.root.querySelector('details.topology-inspector');
+  assert.ok(inspector, 'native details inspector exists');
+  assert.equal(inspector.open, false);
+  assert.equal(inspector.firstElementChild.tagName, 'SUMMARY');
+  assert.match(inspector.firstElementChild.textContent, /노드.*링크.*경로/);
+  assert.equal(h.root.firstElementChild.tagName, 'CANVAS');
+  assert.equal(inspector.querySelectorAll('.topology-node').length, 500);
+  assert.equal(h.root.querySelectorAll(':scope > .topology-node').length, 0);
+  const plan = h.states.at(-1).plan;
+  assert.equal(plan.plannedElements, h.root.querySelectorAll('*').length);
+  inspector.open = true;
+  assert.equal(h.root.querySelectorAll('*').length, plan.plannedElements);
+});
+
 test('Canvas context failure keeps the bounded semantic inspector and reports only a local visual limitation', () => {
   const h = harness({ html: '<section id="report">report stays</section><pre id="raw">raw stays</pre>' });
   h.dom.window.HTMLCanvasElement.prototype.getContext = () => { throw new Error('context denied'); };
@@ -214,7 +238,8 @@ test('Canvas context failure keeps the bounded semantic inspector and reports on
   assert.equal(h.root.querySelector('canvas').dataset.drawState, 'unavailable');
   assert.equal(h.document.querySelector('#report').textContent, 'report stays');
   assert.equal(h.document.querySelector('#raw').textContent, 'raw stays');
-  assert.equal(h.status.textContent, '표시 완료 · 로컬 Canvas 제한');
+  assert.equal(h.status.textContent, '표시 완료 · 그래프를 표시할 수 없습니다. 노드 · 링크 · 경로 상세 보기를 펼쳐 확인하세요.');
+  assert.doesNotMatch(h.status.textContent, /context denied/);
   assert.equal(h.states.at(-1).phase, 'ready');
   assert.equal(h.states.at(-1).localLimitation, 'canvas_context_unavailable');
   assert.equal(h.states.some(state => state.phase === 'error'), false);
@@ -254,23 +279,23 @@ test('topology renders one bounded chunk per callback with deterministic progres
   const h = harness({ html: '<aside><i></i><i></i></aside>' });
   h.coordinator.start({ ownerId: 'A', inputSignature: 'sig-A', view: 'topology', model: topologyModel(), root: h.root, status: h.status });
 
-  assert.equal(h.status.textContent, '표시 0/221');
+  assert.equal(h.status.textContent, '표시 0/223');
   assert.equal(h.root.getAttribute('aria-busy'), 'true');
   assert.equal(h.root.hasAttribute('aria-live'), false);
   assert.equal(h.status.getAttribute('role'), 'status');
   assert.equal(h.status.getAttribute('aria-live'), 'polite');
 
   h.runNext();
-  assert.equal(h.root.childElementCount, 100);
-  assert.equal(h.status.textContent, '표시 100/221');
+  assert.equal(h.root.querySelectorAll("*").length, 100);
+  assert.equal(h.status.textContent, '표시 100/223');
   h.runNext();
-  assert.equal(h.root.childElementCount, 100, 'canvas draw has its own bounded callback');
+  assert.equal(h.root.querySelectorAll("*").length, 100, 'canvas draw has its own bounded callback');
   assert.ok(h.context.calls.length > 0);
   h.runNext();
-  assert.equal(h.root.childElementCount, 200);
-  assert.equal(h.status.textContent, '표시 200/221');
+  assert.equal(h.root.querySelectorAll("*").length, 200);
+  assert.equal(h.status.textContent, '표시 200/223');
   h.runNext();
-  assert.equal(h.root.childElementCount, 221);
+  assert.equal(h.root.querySelectorAll("*").length, 223);
   assert.match(h.status.textContent, /표시 완료/);
   assert.equal(h.root.getAttribute('aria-busy'), 'false');
   assert.ok(h.document.getElementsByTagName('*').length <= 1200);
@@ -282,7 +307,7 @@ test('replacement removes A and stale callbacks cannot append, announce, or clea
   const h = harness();
   h.coordinator.start({ ownerId: 'A', inputSignature: 'a', view: 'topology', model: topologyModel(150), root: h.root, status: h.status, focusTarget: reason => focused.push(reason) });
   h.runNext();
-  assert.equal(h.root.childElementCount, 100);
+  assert.equal(h.root.querySelectorAll("*").length, 100);
   assert.equal(h.context.calls.length, 0);
   const staleSecondChunk = h.queue[0].callback;
 
@@ -293,7 +318,7 @@ test('replacement removes A and stale callbacks cannot append, announce, or clea
   assert.equal(h.context.calls.length, 0, 'stale scheduled canvas draw is owner-gated');
   assert.equal(h.root.childElementCount, 0);
   assert.equal(h.root.getAttribute('aria-busy'), 'true');
-  assert.equal(h.status.textContent, '표시 0/2');
+  assert.equal(h.status.textContent, '표시 0/4');
   h.runAll();
   assert.equal(h.root.childElementCount, 2);
   assert.equal(h.root.getAttribute('aria-busy'), 'false');
@@ -323,7 +348,7 @@ test('hidden views are disposed before the existing document count is planned', 
     workspace: { disposeHiddenViews() { disposed++; hidden.remove(); } }
   });
   assert.equal(disposed, 1);
-  assert.equal(h.status.textContent, '표시 0/2');
+  assert.equal(h.status.textContent, '표시 0/4');
   h.runAll();
   assert.equal(h.root.childElementCount, 2);
 });
@@ -335,7 +360,7 @@ test('owner changes prevent materialization and commit', () => {
   owner = false;
   h.runAll();
   assert.equal(h.root.childElementCount, 0);
-  assert.equal(h.status.textContent, '표시 0/3');
+  assert.equal(h.status.textContent, '표시 0/5');
   assert.equal(h.states.some(state => state.phase === 'ready'), false);
 });
 
@@ -365,9 +390,9 @@ test('a stale coordinator cannot clear a successor root or busy state', () => {
   h.coordinator.cancel('user');
   assert.equal(h.states.at(-1).phase, 'rendering', 'stale coordinator does not announce cancellation');
   assert.equal(h.root.getAttribute('aria-busy'), 'true');
-  assert.equal(h.status.textContent, '표시 0/3');
+  assert.equal(h.status.textContent, '표시 0/5');
   h.runAll();
-  assert.equal(h.root.childElementCount, 3);
+  assert.equal(h.root.querySelectorAll("*").length, 5);
   assert.equal(h.root.getAttribute('aria-busy'), 'false');
   assert.equal(successorStates.at(-1).phase, 'ready');
 });

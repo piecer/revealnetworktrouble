@@ -39,7 +39,8 @@ Stage 8의 semantic renderer가 node/link/route마다 단일 텍스트 요소만
 - [x] 2D/3D Canvas core, UI, lifecycle, semantic inspector/fallback 구현
 - [x] production seven-asset Docker/archive/served-byte closure 및 unexpected-file rejection
 - Historical Stage 9 plan/closure record: current source inventory was Web 283 tests; synthetic archive validator 25도 당시 closure에 반영했다.
-- [x] Compose SemVer fix 뒤 current source-level Web inventory 284 반영
+- [x] Compose SemVer fix 뒤 current source-level Web inventory 286 반영
+- Historical Stage 9 record: Compose SemVer 직후 Web inventory는 284 tests였다. Graph-first slice는 collapsed native inspector, projected-bounds fit과 overflow 회귀를 추가하며 isolated Chromium replay만 검증한다. 배포·physical browser·screen-reader 및 independent parent review는 별도 acceptance다.
 - [ ] final canonical gates와 independent review
 - [ ] physical browser 및 screen-reader manual acceptance
 - [ ] immutable candidate release, explicit Stage 9 commit과 exact-SHA closure

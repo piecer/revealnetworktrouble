@@ -15,7 +15,7 @@ const NOTE = 1024;
 const DOM_COSTS = Object.freeze({
   documentLimit: DOCUMENT,
   maxChunkInsertion: CHUNK,
-  topology: Object.freeze({ chromeReserve: 180, canvas: 1, node: 1, link: 1, route: 1 }),
+  topology: Object.freeze({ chromeReserve: 180, canvas: 1, inspector: 2, node: 1, link: 1, route: 1 }),
   geo: Object.freeze({
     fixedReserve: 300,
     canvas: 1,
@@ -542,7 +542,7 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
   const arrows = [];
   let topologyCost = 0;
   const topologyBudget = view === 'topology'
-    ? Math.max(0, dynamicBudget - DOM_COSTS.topology.canvas)
+    ? Math.max(0, dynamicBudget - DOM_COSTS.topology.canvas - DOM_COSTS.topology.inspector)
     : Number.POSITIVE_INFINITY;
   const canAdd = cost => topologyCost + cost <= topologyBudget;
   const addNode = id => {
@@ -667,6 +667,7 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
   };
   if (view === 'topology') {
     mount('topology-canvas', null, DOM_COSTS.topology.canvas);
+    mount('topology-inspector', null, DOM_COSTS.topology.inspector);
     for (const value of selectedNodes) mount('topology-node', value, DOM_COSTS.topology.node);
     for (const value of selectedLinks) mount('topology-link', value, DOM_COSTS.topology.link);
     for (const value of selectedRoutes) mount('topology-route', value, DOM_COSTS.topology.route);

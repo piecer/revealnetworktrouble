@@ -1382,7 +1382,8 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     if (mode !== '2d' && mode !== '3d') return;
     topologyViewState.mode = mode;
     doc.querySelector('#topology-view-status').textContent = `${mode === '3d' ? '3D' : '2D'} 그래프`;
-    updateTopologyView({ mode });
+    topologyViewState.transform = resetViewTransform();
+    updateTopologyView({ mode, transform: topologyViewState.transform });
   });
   listen(doc.querySelector('#topology-view-reset'), 'click', () => {
     topologyViewState.transform = resetViewTransform();

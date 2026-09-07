@@ -422,7 +422,7 @@ test('planTopologyDOM is deterministic, fair, referentially closed, chunked, and
 test('future renderer plans charge only the active view and runtime commits stay under 1200 DOM elements', () => {
   assert.equal(DOM_COSTS.documentLimit, DOCUMENT);
   assert.equal(DOM_COSTS.maxChunkInsertion, CHUNK);
-  assert.deepEqual(DOM_COSTS.topology, { chromeReserve: 180, canvas: 1, node: 1, link: 1, route: 1 });
+  assert.deepEqual(DOM_COSTS.topology, { chromeReserve: 180, canvas: 1, inspector: 2, node: 1, link: 1, route: 1 });
   assert.equal(DOM_COSTS.geo.canvas, 1);
   assert.equal(DOM_COSTS.geo.segment, 0);
   assert.equal(DOM_COSTS.geo.arrow, 0);
@@ -448,6 +448,11 @@ test('future renderer plans charge only the active view and runtime commits stay
       const row = document.createElement('tr');
       row.append(document.createElement('td'), document.createElement('td'), document.createElement('td'), document.createElement('button'));
       return row;
+    }
+    if (item.kind === 'topology-inspector') {
+      const details = document.createElement('details');
+      details.append(document.createElement('summary'));
+      return details;
     }
     return document.createElement(item.kind === 'geo-canvas' || item.kind === 'topology-canvas' ? 'canvas' : item.kind === 'geo-accessible-list' ? 'ul' : item.kind === 'geo-accessible-item' ? 'li' : 'div');
   };
@@ -493,7 +498,7 @@ test('topology canvas costs exactly one element while the global 1200 element bu
   assert.equal(plan.mountItems[0].domCost, 1);
   assert.equal(plan.plannedElements, DOCUMENT - existingDOMElements - DOM_COSTS.topology.chromeReserve);
   assert.equal(plan.estimatedDOMElements, DOCUMENT);
-  assert.equal(plan.semanticCounts.topology.nodes + plan.semanticCounts.topology.links + plan.semanticCounts.topology.routes + 1, plan.plannedElements);
+  assert.equal(plan.semanticCounts.topology.nodes + plan.semanticCounts.topology.links + plan.semanticCounts.topology.routes + 3, plan.plannedElements);
 
   const plusOne = planTopologyDOM(model, { view: 'topology', existingDOMElements: existingDOMElements + 1 });
   assert.equal(plusOne.estimatedDOMElements, DOCUMENT);

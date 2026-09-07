@@ -73,6 +73,26 @@ test('empty and single-node topologies produce finite centered 2D projections', 
   assertFiniteProjection(single);
 });
 
+test('initial fit uses projected node bounds in both modes at wide and narrow viewports', () => {
+  const value = model(
+    [node('root'), node('a', 1), node('b', 1), node('end', 8)],
+    [link('root', 'a'), link('root', 'b'), link('a', 'end'), link('b', 'end')],
+    [route(['root', 'a', 'end']), route(['root', 'b', 'end'], 1)]
+  );
+  for (const width of [1440, 375]) for (const mode of ['2d', '3d']) {
+    const projected = projectTopology(value, { mode, viewport: { width, height: 480 }, transform: { yaw: 0.4, pitch: 0.2 } });
+    const xs = projected.nodes.map(n => n.screen.x), ys = projected.nodes.map(n => n.screen.y);
+    const xSpan = Math.max(...xs) - Math.min(...xs), ySpan = Math.max(...ys) - Math.min(...ys);
+    assert.ok(xSpan >= (width - 64) * 0.99 || ySpan >= (480 - 64) * 0.99, `${mode}/${width} fills a padded viewport dimension`);
+    assert.ok(Math.abs((Math.min(...xs) + Math.max(...xs)) / 2 - width / 2) < 1e-8);
+    assert.ok(Math.abs((Math.min(...ys) + Math.max(...ys)) / 2 - 240) < 1e-8);
+    assert.ok(projected.nodes.every(n => n.visible && n.screen.x >= 31.99 && n.screen.x <= width - 31.99 && n.screen.y >= 31.99 && n.screen.y <= 448.01));
+    assert.equal(projected.links.length, value.links.length);
+    const single = projectTopology(model([node('only')]), { mode, viewport: { width, height: 480 } });
+    assert.deepEqual(single.nodes[0].screen, { x: width / 2, y: 240, radius: 8 });
+  }
+});
+
 test('2D layout uses hop depth for x and stable shared-graph branch order for y', () => {
   const value = model(
     [node('root'), node('b', 1), node('a', 1), node('join', 2)],

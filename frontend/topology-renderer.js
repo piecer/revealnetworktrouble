@@ -178,6 +178,14 @@ function materializeTopologyItem(item, detachedDocument) {
       canvas.height = CANVAS_DEFAULT_HEIGHT;
       return canvas;
     }
+    case 'topology-inspector': {
+      const details = detachedDocument.createElement('details');
+      details.className = 'topology-inspector';
+      const summary = detachedDocument.createElement('summary');
+      summary.textContent = '노드 · 링크 · 경로 상세 보기';
+      details.append(summary);
+      return details;
+    }
     case 'topology-node': {
       const editable = typeof value.address === 'string' && value.address.length > 0 && value.kind !== 'local' && value.editable !== false;
       const element = detachedDocument.createElement(editable ? 'button' : 'div');
@@ -302,7 +310,7 @@ function truncationSummary(plan, localLimitation = null) {
   if (plan.serverTruncation?.truncated) parts.push('서버 제한');
   if (plan.adapterTruncation?.truncated) parts.push('변환 제한');
   if (plan.viewTruncation?.truncated || plan.labelTruncation?.truncated) parts.push('보기 제한');
-  if (localLimitation === 'canvas_context_unavailable') parts.push('로컬 Canvas 제한');
+  if (localLimitation === 'canvas_context_unavailable') parts.push('그래프를 표시할 수 없습니다. 노드 · 링크 · 경로 상세 보기를 펼쳐 확인하세요.');
   return parts.join(' · ');
 }
 
@@ -554,6 +562,10 @@ class TopologyRenderCoordinator {
       const body = session.root.querySelector('table.topology-labels tbody');
       if (body) for (const item of [...session.root.children]) if (item.tagName === 'TR') body.append(item);
     } else {
+      const inspector = session.root.querySelector('details.topology-inspector');
+      if (inspector) for (const item of [...session.root.children]) {
+        if (item.matches('.topology-node, .topology-link, .topology-route')) inspector.append(item);
+      }
       const buttons = [...session.root.querySelectorAll('button.topology-node')];
       if (buttons.length && !buttons.some(button => button.tabIndex === 0)) buttons[0].tabIndex = 0;
     }

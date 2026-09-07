@@ -359,13 +359,13 @@ function project2D(item, extents, viewport, transform, scale) {
   return {
     x: clamp(rawX, 0, viewport.width),
     y: clamp(rawY, 0, viewport.height),
-    radius: clamp(NODE_RADIUS * Math.sqrt(transform.zoom), 3, 18),
+    radius: clamp(NODE_RADIUS * (item.perspective ?? 1) * Math.sqrt(transform.zoom), 3, 18),
     visible: rawX >= 0 && rawX <= viewport.width && rawY >= 0 && rawY <= viewport.height,
-    depth: 0
+    depth: item.depth ?? 0
   };
 }
 
-function project3D(item, extents, viewport, transform, scale) {
+function project3D(item, extents, transform) {
   const baseScale = Math.max(extents.x.span, extents.y.span, extents.z.span, 1);
   const x = (item.world.x - extents.x.center) / baseScale * 2;
   const y = (item.world.y - extents.y.center) / baseScale * 2;
@@ -379,13 +379,9 @@ function project3D(item, extents, viewport, transform, scale) {
   const pitchY = y * cosPitch - yawZ * sinPitch;
   const depth = y * sinPitch + yawZ * cosPitch;
   const perspective = CAMERA_DISTANCE / Math.max(0.5, CAMERA_DISTANCE + depth);
-  const rawX = viewport.width / 2 + yawX * scale * perspective * transform.zoom + transform.panX;
-  const rawY = viewport.height / 2 + pitchY * scale * perspective * transform.zoom + transform.panY;
   return {
-    x: clamp(rawX, 0, viewport.width),
-    y: clamp(rawY, 0, viewport.height),
-    radius: clamp(NODE_RADIUS * perspective * Math.sqrt(transform.zoom), 3, 18),
-    visible: depth > -CAMERA_DISTANCE && rawX >= 0 && rawX <= viewport.width && rawY >= 0 && rawY <= viewport.height,
+    world: { x: yawX * perspective, y: pitchY * perspective },
+    perspective,
     depth
   };
 }
@@ -403,13 +399,13 @@ export function projectTopology(input, inputOptions = {}) {
     y: extent(layout.nodes, 'y'),
     z: extent(layout.nodes, 'z')
   };
-  const scale = mode === MODE_2D
-    ? fitScale(viewport, extents.x, extents.y)
-    : Math.min(Math.max(1, viewport.width - PADDING * 2), Math.max(1, viewport.height - PADDING * 2)) / 4;
-  const projectedNodes = layout.nodes.map(item => {
-    const point = mode === MODE_2D
-      ? project2D(item, extents, viewport, transform, scale)
-      : project3D(item, extents, viewport, transform, scale);
+  // Fit the actual camera-plane bounds, not an assumed world cube. Zoom is
+  // relative to this fit; singleton bounds remain centered with normal radius.
+  const cameraNodes = layout.nodes.map(item => mode === MODE_2D ? item : project3D(item, extents, transform));
+  const cameraExtents = { x: extent(cameraNodes, 'x'), y: extent(cameraNodes, 'y') };
+  const scale = fitScale(viewport, cameraExtents.x, cameraExtents.y);
+  const projectedNodes = layout.nodes.map((item, index) => {
+    const point = project2D(cameraNodes[index], cameraExtents, viewport, transform, scale);
     return {
       ...item,
       screen: { x: point.x, y: point.y, radius: point.radius },
