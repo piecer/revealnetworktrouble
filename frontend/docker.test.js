@@ -4,7 +4,7 @@ import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-const productionAssets = ['app.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-renderer.js'];
+const productionAssets = ['app.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-renderer.js', 'topology-visualizer.js'];
 
 test('frontend image root materializes only production assets and keeps nginx config separate', async () => {
   const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
@@ -13,7 +13,7 @@ test('frontend image root materializes only production assets and keeps nginx co
   const assetCopies = copies.filter(line => /\/usr\/share\/nginx\/html\/?$/.test(line));
   const assetSources = assetCopies.flatMap(line => line.trim().split(/\s+/).slice(1, -1));
   assert.deepEqual([...assetSources].sort(), productionAssets);
-  assert.equal(assetCopies.length, 1, 'the six-file HTML root must use one explicit COPY');
+  assert.equal(assetCopies.length, 1, 'the seven-file HTML root must use one explicit COPY');
 
   const configCopies = copies.filter(line => /\/etc\/nginx\/nginx\.conf$/.test(line));
   assert.deepEqual(configCopies, ['COPY nginx.conf /etc/nginx/nginx.conf']);
@@ -23,6 +23,18 @@ test('frontend image root materializes only production assets and keeps nginx co
   try {
     for (const source of assetSources) await cp(new URL(`./${source}`, import.meta.url), join(root, basename(source)), { recursive: true });
     assert.deepEqual((await readdir(root)).sort(), productionAssets);
+    assert.deepEqual(
+      await readFile(join(root, 'topology-visualizer.js')),
+      await readFile(new URL('./topology-visualizer.js', import.meta.url)),
+      'the production root must contain the canonical visualizer bytes'
+    );
+    for (const asset of productionAssets.filter(name => name.endsWith('.js'))) {
+      const source = await readFile(join(root, asset), 'utf8');
+      for (const match of source.matchAll(/\bfrom\s+['"]\.\/([^'"]+)['"]/g)) {
+        assert.ok(productionAssets.includes(match[1]), `${asset} import ${match[1]} must resolve inside the production root`);
+        assert.deepEqual(await readFile(join(root, match[1])), await readFile(new URL(`./${match[1]}`, import.meta.url)));
+      }
+    }
     assert.equal((await readdir(root)).some(name => name === 'node_modules' || name.includes('.test.') || name === 'package.json' || name === 'package-lock.json'), false);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -86,4 +98,8 @@ test('release verifier exports two tagless Web archives and validates them offli
   assert.doesNotMatch(ownership, /docker (?:network|container) create[^\n]*\|\|\s*:/);
   assert.match(ownership, /web_error_is_conflict/);
   assert.match(ownership, /web_error_is_response_loss/);
+  assert.match(ownership, /src=\$source_dir\/frontend\/topology-visualizer\.js,dst=\/usr\/share\/nginx\/html\/topology-visualizer\.js,readonly/);
+  for (const asset of productionAssets) {
+    assert.ok(script.includes(asset), `release verifier must require and byte-check ${asset}`);
+  }
 });

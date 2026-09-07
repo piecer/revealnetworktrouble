@@ -13,9 +13,10 @@ import (
 const (
 	stage8BaseParent = "36dc1dca9838337a5b5d1cf6ebc76bb35f5a4243"
 	stage8PlanPath   = ".hermes/plans/2026-09-03_100000-stage8-truthful-diagnostics-and-client-reliability.md"
+	stage9PlanPath   = ".hermes/plans/2026-09-07_090438-topology-2d-3d-restoration.md"
 )
 
-func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
+func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 	root := documentationRepositoryRoot(t)
 	read := func(path string) string {
 		t.Helper()
@@ -26,13 +27,20 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 		return string(data)
 	}
 
-	docPaths := []string{"README.md", "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", stage8PlanPath}
+	currentDocPaths := []string{"README.md", "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", stage9PlanPath}
+	docPaths := append(append([]string(nil), currentDocPaths...), stage8PlanPath)
 	var joined strings.Builder
 	for _, path := range docPaths {
 		joined.WriteString("\n--- " + path + " ---\n")
 		joined.WriteString(read(path))
 	}
 	docs := joined.String()
+	var currentJoined strings.Builder
+	for _, path := range currentDocPaths {
+		currentJoined.WriteString("\n--- " + path + " ---\n")
+		currentJoined.WriteString(read(path))
+	}
+	currentDocs := currentJoined.String()
 
 	sourceClaims := map[string][]string{
 		"backend/diagnostic/service.go": {
@@ -71,8 +79,47 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 			"export const MAX_DOCUMENT_ELEMENTS = 1200",
 			"export const MAX_TARGETS = 20",
 			"targetsEl.children.length >= MAX_TARGETS",
+			"import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport } from './topology-visualizer.js';",
+			"const topologyViewState = { mode: '2d', transform: resetViewTransform() };",
+			"function updateTopologyView({ mode = topologyViewState.mode, transform = topologyViewState.transform, viewport, message } = {})",
+			"const topologyViewControls = doc.querySelector('#topology-view-controls');",
+			"const delta = topologyViewState.mode === '3d' ? { yaw: dx * 0.01, pitch: dy * 0.01 } : { panX: dx, panY: dy };",
 			"'cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action'",
 			"Expected server-first greeting observed; command, authentication, STARTTLS, mailbox, and end-to-end service behavior were not tested.",
+		},
+		"frontend/topology-visualizer.js": {
+			"export const VISUAL_NODES = 500;",
+			"export const VISUAL_LINKS = 1000;",
+			"export const VISUAL_ROUTES = 1000;",
+			"maxDPR: 4,",
+			"export function normalizeViewport(input = {})",
+			"export function createViewTransform(input = {})",
+			"export function updateViewTransform(input, delta = {})",
+			"export function resetViewTransform()",
+			"export function projectTopology(input, inputOptions = {})",
+			"const mode = options.mode ?? MODE_2D;",
+		},
+		"frontend/topology-renderer.js": {
+			"case 'topology-canvas':",
+			"canvas.className = 'topology-canvas';",
+			"canvas.setAttribute('role', 'img');",
+			"canvas.setAttribute('aria-label', '경로 토폴로지 그래프');",
+			"canvas.setAttribute('aria-describedby', 'topology-view-help topology-render-status');",
+			"updateTopologyView({ ownerId, inputSignature, generation, mode, transform, viewport } = {})",
+			"session.root.querySelector('canvas.topology-canvas')",
+			"canvas.setAttribute('aria-label', `${session.mode === '3d' ? '3D' : '2D'} 경로 토폴로지 그래프`);",
+			"session.localLimitation = 'canvas_context_unavailable';",
+		},
+		"frontend/index.html": {
+			`<fieldset id="topology-view-controls" class="topology-view-controls">`,
+			`<input type="radio" name="topology-view-mode" value="2d" checked>`,
+			`<input type="radio" name="topology-view-mode" value="3d">`,
+			`id="topology-view-reset"`,
+			`id="topology-view-status"`,
+		},
+		"frontend/Dockerfile": {
+			"COPY index.html styles.css app.js state.js topology-model.js topology-renderer.js topology-visualizer.js /usr/share/nginx/html/",
+			"sha256sum app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-visualizer.js | sort -k2 > .checknetwork-assets.sha256",
 		},
 		"frontend/state.test.js": {
 			"assert.equal(contract.result_shapes.length, 31)",
@@ -114,6 +161,7 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 			"trap 'handle_signal 129' HUP",
 			"trap 'handle_signal 130' INT",
 			"trap 'handle_signal 143' TERM",
+			"for asset in app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-visualizer.js; do",
 		},
 		"scripts/verify_api_archive.py": {
 			"archive_bytes: int = 512 * 1024 * 1024",
@@ -263,7 +311,7 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 		"512 MiB", "4,096", "256 MiB", "128 MiB", "/checknetwork-api", "/traceroute", "caller-owned empty", "fsync",
 		"derived API", "derived Web", "daemon-tag", "compatibility", "정확히 두 개", "297+2", "pending",
 		"pinned nginx config/layer/rootfs/history prefix", "post-base symlink/hardlink/device/FIFO/socket",
-		"env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci", "Web 260", "ignored repository-root `checknetwork-api` binary",
+		"env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci", "Web 283", "ignored repository-root `checknetwork-api` binary",
 		"result shapes 31", "result matrix 136", "structural mutations 85", "456", "cancelled-detail", "eight", "archive validators 53", "exact real release-gate fake cases 12", "blocker 0 / major 0",
 		"full raw", "compact", "Geo aggregate", "optional representative", "runner-owned `cancelled`", "details",
 		"umask 077/027/000", "canonical Docker inventory", "final clean-environment `make ci`", "manifest-derived temporary release",
@@ -274,7 +322,20 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 	}
 	for _, claim := range docClaims {
 		if !strings.Contains(docs, claim) {
-			t.Errorf("Stage 8 documentation lacks exact claim token %q", claim)
+			t.Errorf("documentation lacks exact claim token %q", claim)
+		}
+	}
+	currentDocClaims := []string{
+		"Stage 9", "Web 283", "default 2D/optional 3D", "기본 2D", "선택 가능한 3D",
+		"같은 validated", "같은 검증된", "report/analysis/diagnosis", "진단 결과를 변경하지 않는다",
+		"interaction event와 resize에서만 redraw", "continuous animation", "no-continuous-animation redraw",
+		"nodes 500", "links 1,000", "routes 1,000", "DOM 1,200", "DPR 4", "1,151",
+		"Chrome이 없는 환경에서는 실제 브라우저/화면 판독기 검증을 완료했다고 주장하지 않는다",
+		"physical Chrome/Firefox/Safari", "screen reader",
+	}
+	for _, claim := range currentDocClaims {
+		if !strings.Contains(currentDocs, claim) {
+			t.Errorf("current Stage 9 documentation lacks exact claim token %q", claim)
 		}
 	}
 	producerFinding := ProducerFindingContract()
@@ -290,7 +351,9 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 			"daemon-success/CLI-response-loss", "HUP/INT/TERM",
 			"body 64 Ki UTF-16 code units", "depth 2", "properties 3", "tokens 10", "128 code units",
 			"`invalid_server_response`", "typed body와 retryability를 바꾸지 않고 timestamp만 생략",
-			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Web 260 tests", "result shapes 31", "expanded result matrix 136", "eight producer traceroute witness fixtures", "runner-owned `cancelled`", "publication 전에 report 전체를 거부", "exact real release-gate fake cases 12",
+			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Stage 9 Web source inventory는 283 tests", "result shapes 31", "expanded result matrix 136", "eight producer traceroute witness fixtures", "runner-owned `cancelled`", "publication 전에 report 전체를 거부", "exact real release-gate fake cases 12",
+			"기본 2D와 선택 가능한 3D perspective", "같은 검증된 facts", "report, analysis 또는 diagnosis를 바꾸지 않는다", "interaction/resize 때만 다시 그려 continuous animation을 하지 않는다",
+			"nodes 500, links 1,000, routes 1,000", "document DOM 1,200", "DPR 최대 4", "측정된 최대 DOM은 1,151", "실제 브라우저와 screen reader 수동 검증도 pending",
 			"ignored `checknetwork-api` binary", "비파괴 요청 때문에 제거하지 않고 retained",
 		},
 		"SPEC.md": {
@@ -300,7 +363,9 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 			"`api_archive`, `api_config`, `api_manifest`, `api_rootfs`, `api_binary`, `api_traceroute`", "HUP/INT/TERM은 각각 129/130/143",
 			"depth≤2", "properties≤3", "tokens≤10", "field name/value≤128 code units",
 			"`retryAt=now+seconds`", "`unauthorized`만 visible credential field에 focus",
-			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Web 260", "31 result shapes", "136-row", "exact eight producer traceroute witness fixtures", "full raw", "Geo aggregate", "optional representative", "runner-owned `cancelled`", "whole report를 atomic 거부", "fake cases 12",
+			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "현재 Web inventory는 283 tests", "31 result shapes", "136-row", "exact eight producer traceroute witness fixtures", "full raw", "Geo aggregate", "optional representative", "runner-owned `cancelled`", "whole report를 atomic 거부", "fake cases 12",
+			"기본 `2D 그래프`와 선택 가능한 `3D 그래프`", "같은 검증된 topology facts", "report, analysis, diagnosis를 변경하지 않는다", "interaction 또는 resize에서만 redraw",
+			"nodes 500, links 1,000, routes 1,000", "DOM 1,200", "DPR은 최대 4", "현재 최대 fixture 측정값은 1,151", "Physical Chrome/Firefox/Safari", "실제 screen reader",
 			"ignored `checknetwork-api` binary", "비파괴 요청 때문에 제거하지 않고 retained",
 		},
 		"docs/ARCHITECTURE.md": {
@@ -309,7 +374,9 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 			"API가 소유하는 daemon role은 isolated API network와 smoke container 정확히 두 개", "fixed signal exit status는 129/130/143",
 			"body≤64 Ki UTF-16 code units", "depth≤2", "properties≤3", "tokens≤10", "wire name/value≤128 code units",
 			"Header 실패는 typed body를 invalid로 바꾸지 않는다",
-			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Web 260", "31 result shapes", "136-row", "presentation 10은 31 result shapes와 별개", "exact eight producer traceroute witness fixtures", "full raw attempts", "Geo aggregate", "optional representative topology", "runner-owned `cancelled`", "fake cases 12",
+			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "31 result shapes", "136-row", "presentation 10은 31 result shapes와 별개", "exact eight producer traceroute witness fixtures", "full raw attempts", "Geo aggregate", "optional representative topology", "runner-owned `cancelled`", "fake cases 12",
+			"Stage 9은 동일한 validated model을 기본 2D 또는 optional 3D perspective Canvas로 투영", "mode는 report/analysis/diagnosis를 바꾸지 않는다", "continuous animation 없이 pointer/keyboard/reset/resize interaction 때만 redraw",
+			"nodes 500/links 1,000/routes 1,000", "global `MAX_DOCUMENT_ELEMENTS=1200`", "DPR≤4", "maximum fixture는 1,151 DOM elements",
 			"umask 077/027/000 세 pass", "canonical Docker inventory equality", "ignored `checknetwork-api` binary",
 		},
 		"docs/API.md": {
@@ -332,18 +399,22 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 			"direct-child `TEST-*.xml`", "exact `binary/` direct directory", "`output.bin`, `output.bin.idx`, `results.bin`",
 			"≤64 MiB", "≤128 MiB", "bounded **non-evidence companion**", "duplicate/ambiguous basename",
 			"각 variant direct-child XML 297 / variant-contract 2", "`297+2`", "pending clean-environment canonical gate",
-			"env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci", "Web 260 tests", "456 fixture-derived semantic mutations", "generic cancelled-detail rejection 13", "eight witness fixtures", "ignored `checknetwork-api` binary",
+			"env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci", "Stage 9 source inventory는 Web 283 tests", "456 fixture-derived semantic mutations", "generic cancelled-detail rejection 13", "eight witness fixtures", "ignored `checknetwork-api` binary",
 			"exact 512 MiB/4,096/256 MiB/512 MiB/64/256 MiB/512 MiB/128 MiB bounds",
 			"smoke container+API network 정확히 두 개", "load/daemon-tag/import/delete/execute되지 않음",
-			"api_archive/api_config/api_manifest/api_rootfs/api_binary/api_traceroute", "current source와 fixture cardinality `260`", "`23/31/136`", "archive validators 53",
+			"api_archive/api_config/api_manifest/api_rootfs/api_binary/api_traceroute", "current source와 fixture cardinality `283`", "`23/31/136`", "archive validators 53",
 			"`MAX_TARGETS=20`", "global `MAX_DOCUMENT_ELEMENTS=1200`", "exact real release-gate fake cases 12",
+			"default 2D/optional 3D Canvas projection", "같은 facts", "no-refetch/no-diagnosis-change", "no-continuous-animation redraw",
+			"Nodes 500/links 1,000/routes 1,000/DPR≤4", "global DOM≤1,200", "현재 최대 fixture 1,151", "physical Chrome/Firefox/Safari", "실제 screen-reader",
 		},
 		"docs/PLAN.md": {
 			"canonical API+Web release verifier", "**invalid**", "final pre-manifest clean-environment `make ci`", "Android debug/release each 297 + 2 variant canaries",
 			"blocker 0 / major 0", "ignored root `checknetwork-api` binary", "archive validators 53",
 			"double-build-equal tagless offline archives", "safe API extraction/publication", "six API/five Web output fields",
 			"five-way independent precommit review", "어떤 final claim도 하지 않는다",
-			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "Web 260", "result shapes 31", "expanded matrix 136", "456 semantic mutations", "13 generic cancelled-detail rejections", "eight traceroute witness fixtures", "raw-only", "compact/Geo aggregate", "optional", "generic cancelled", "fake cases 12", "ignored root `checknetwork-api` binary",
+			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "source-level Web inventory 283", "result shapes 31", "expanded matrix 136", "456 semantic mutations", "13 generic cancelled-detail rejections", "eight traceroute witness fixtures", "raw-only", "compact/Geo aggregate", "optional", "generic cancelled", "fake cases 12", "ignored root `checknetwork-api` binary",
+			"default 2D/optional 3D Canvas", "같은 validated facts", "report/analysis/diagnosis는 바꾸지 않는다", "no continuous animation",
+			"nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,151), DPR 4", "physical browser 및 screen-reader manual acceptance",
 		},
 		stage8PlanPath: {
 			"exact local code `invalid_server_response`", "exact `binary/` companion", "297 direct-child XML tests + 2 variant-contract tests",
@@ -353,6 +424,12 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 			"Final post-doc `env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci` remains pending",
 			"No final manifest, commit, release, five-way review, exact-SHA, or main-integration claim is made here.",
 			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "fake cases 12", "three umasks 077/027/000", "canonical Docker inventory",
+		},
+		stage9PlanPath: {
+			"Stage 9 implementation is pending final gates/review, not complete", "기본 선택은 `2D 그래프`", "`3D 그래프`를 선택하면 동일한 node/link set",
+			"데이터나 분석 결과를 바꾸지 않는 순수 view projection", "진단 결과를 변경하지 않는다", "interaction event와 resize에서만 redraw",
+			"Canvas 하나와 고정 control 수만 추가", "document-wide 1,200 element 한도", "nodes 500/links 1,000/routes bounded", "DPR을 bounded finite 값으로 clamp",
+			"exact Web production asset set", "Chrome이 없는 환경에서는 실제 브라우저/화면 판독기 검증을 완료했다고 주장하지 않는다",
 		},
 	}
 	for path, claims := range requiredByDoc {
@@ -428,7 +505,7 @@ func TestDocumentationContractMatchesStage8SourceAndFixtures(t *testing.T) {
 
 func TestDocumentationContractHasNoStaleStageOrBrokenRelativeLinks(t *testing.T) {
 	root := documentationRepositoryRoot(t)
-	paths := []string{"README.md", "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", stage8PlanPath}
+	paths := []string{"README.md", "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", stage8PlanPath, stage9PlanPath}
 	stale := []string{
 		"현재 단계: Stage 7",
 		"현재 uncommitted Stage 7",
@@ -520,13 +597,29 @@ func TestDocumentationContractHasNoStaleStageOrBrokenRelativeLinks(t *testing.T)
 				t.Errorf("%s contains stale phrase %q", relative, phrase)
 			}
 		}
+		stage9Section := false
 		for _, line := range strings.Split(text, "\n") {
 			lower := strings.ToLower(line)
+			trimmed := strings.TrimSpace(lower)
+			if strings.HasPrefix(trimmed, "#") {
+				if strings.Contains(trimmed, "stage 9") {
+					stage9Section = true
+				} else if strings.Contains(trimmed, "stage 8") {
+					stage9Section = false
+				}
+			}
+			if strings.Contains(lower, "stage 8") &&
+				(strings.Contains(lower, "historical") || strings.Contains(lower, "record") || strings.Contains(line, "기록") || strings.Contains(line, "기존")) {
+				stage9Section = false
+			}
 			if staleArchiveValidatorClaim(line) {
 				t.Errorf("%s contains a stale archive-validator cardinality claim: %q", relative, line)
 			}
 			if staleCurrentCardinalityClaim(line) {
 				t.Errorf("%s contains a stale current-cardinality claim: %q", relative, line)
+			}
+			if staleStage9WebCardinalityClaim(line, stage9Section || strings.Contains(lower, "stage 9")) {
+				t.Errorf("%s contains stale Stage 9 Web cardinality: %q", relative, line)
 			}
 			if oldNameOwnershipPattern.MatchString(line) && !strings.Contains(lower, "reject") && !strings.Contains(line, "거부") {
 				t.Errorf("%s contains an old predictable/PID-derived Docker ownership claim: %q", relative, line)
@@ -610,6 +703,30 @@ func TestStaleCurrentCardinalityClaimDetection(t *testing.T) {
 	}
 }
 
+func TestStaleStage9WebCardinalityClaimDetection(t *testing.T) {
+	tests := []struct {
+		name          string
+		line          string
+		stage9Context bool
+		stale         bool
+	}{
+		{name: "explicit current Stage 9", line: "현재 Stage 9 source inventory는 Web 260 tests다.", stage9Context: true, stale: true},
+		{name: "current line inside Stage 9 section", line: "Current stable source inventory is Web260.", stage9Context: true, stale: true},
+		{name: "current Stage 9 count", line: "현재 Stage 9 source inventory는 Web 283 tests다.", stage9Context: true, stale: false},
+		{name: "historical Stage 8 section", line: "Current stable source cardinality was Web 260.", stage9Context: false, stale: false},
+		{name: "explicit historical record", line: "Historical record: current source inventory was Web 260 tests.", stage9Context: true, stale: false},
+		{name: "Stage 8 plan keeps its required count", line: "Documentation changes invalidate prior current-byte CI/count evidence; Web 260 tests.", stage9Context: false, stale: false},
+		{name: "stale rejection documentation", line: "Stage 9 current documentation rejects stale Web 260 claims.", stage9Context: true, stale: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := staleStage9WebCardinalityClaim(test.line, test.stage9Context); got != test.stale {
+				t.Fatalf("staleStage9WebCardinalityClaim(%q, %t)=%t, want %t", test.line, test.stage9Context, got, test.stale)
+			}
+		})
+	}
+}
+
 var (
 	archiveValidatorContextPattern = regexp.MustCompile(`(?i)\barchive[- ]validators?(?:\s+suite)?\b`)
 	staleArchiveValidatorPatterns  = []*regexp.Regexp{
@@ -621,6 +738,7 @@ var (
 	}
 	currentCardinalityContextPattern   = regexp.MustCompile(`(?i)(?:\bcurrent\b|현재).{0,80}(?:\bcardinality\b|\binventory\b)|\b(?:current|stable)\s+source\s+(?:cardinality|inventory)\b`)
 	historicalCardinalityPrefixPattern = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:(?:historical|previous|prior|formerly|obsolete|old)\b|(?:과거|이전|당시|역사적)(?:\s|:))`)
+	stage9Web260Pattern                = regexp.MustCompile(`(?i)\bweb\s*260\b`)
 	staleCurrentCardinalityPatterns    = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bresult\s+shapes?\s*32\b|\b32\s+result\s+shapes?\b`),
 		regexp.MustCompile(`(?i)\b(?:expanded\s+(?:semantic\s+)?(?:result\s+)?matrix|result\s+matrix)\s*137\b|\b137-row\b`),
@@ -656,6 +774,17 @@ func staleCurrentCardinalityClaim(line string) bool {
 		}
 	}
 	return false
+}
+
+func staleStage9WebCardinalityClaim(line string, stage9Context bool) bool {
+	if !stage9Context || !currentCardinalityContextPattern.MatchString(line) || historicalCardinalityPrefixPattern.MatchString(line) {
+		return false
+	}
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "stale") && (strings.Contains(lower, "reject") || strings.Contains(line, "거부")) {
+		return false
+	}
+	return stage9Web260Pattern.MatchString(line)
 }
 
 func documentationRepositoryRoot(t *testing.T) string {

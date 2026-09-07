@@ -35,7 +35,7 @@ func TestCIIsFreshSelfContainedAndNonRecursive(t *testing.T) {
 			t.Errorf("Makefile contract missing %q", required)
 		}
 	}
-	for _, script := range []string{"scripts/ci-inner.sh", "scripts/ci-clean-archive.sh"} {
+	for _, script := range []string{"scripts/ci-inner.sh", "scripts/ci-clean-archive.sh", "scripts/ci-clean-archive-test.sh"} {
 		body := repositoryFile(t, script)
 		if !strings.HasPrefix(body, "#!/bin/sh\nset -eu\n") {
 			t.Errorf("%s must be strict POSIX sh", script)
@@ -93,6 +93,25 @@ func TestCIIsFreshSelfContainedAndNonRecursive(t *testing.T) {
 	}
 	if strings.Count(archive, "make ci-inner") != 1 {
 		t.Errorf("clean archive must invoke ci-inner exactly once")
+	}
+}
+
+func TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS(t *testing.T) {
+	command := exec.Command("sh", filepath.Join("..", "..", "scripts", "ci-clean-archive-test.sh"))
+	tempRoot := filepath.Join(t.TempDir(), "test tmp with spaces")
+	if err := os.Mkdir(tempRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command.Env = append(os.Environ(), "TMPDIR="+tempRoot)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("clean archive adversarial regression: %v\n%s", err, output)
+	}
+	if got := strings.Count(string(output), "clean archive verified at "); got != 3 {
+		t.Fatalf("clean archive case count=%d, want 3\n%s", got, output)
+	}
+	if !strings.Contains(string(output), "ci-clean-archive adversarial cases: 3 passed") {
+		t.Fatalf("clean archive regression did not report its exact case count:\n%s", output)
 	}
 }
 

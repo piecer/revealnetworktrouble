@@ -6,11 +6,12 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node app.test.js && node --test --test-concurrency=1 state.test.js topology-model.test.js topology-renderer.test.js dom.test.js docker.test.js",
+    "test": "node app.test.js && node --test --test-concurrency=1 state.test.js topology-model.test.js topology-visualizer.test.js topology-renderer.test.js dom.test.js docker.test.js",
     "test:state": "node --test --test-concurrency=1 state.test.js topology-model.test.js",
+    "test:visualizer": "node --test --test-concurrency=1 topology-visualizer.test.js",
     "test:renderer": "node --test --test-concurrency=1 topology-renderer.test.js",
     "test:dom": "node --test --test-concurrency=1 dom.test.js",
-    "test:syntax": "node --check app.js && node --check state.js && node --check topology-model.js && node --check topology-renderer.js && node --check app.test.js && node --check state.test.js && node --check topology-model.test.js && node --check topology-renderer.test.js && node --check dom.test.js && node --check docker.test.js"
+    "test:syntax": "node --check app.js && node --check state.js && node --check topology-model.js && node --check topology-visualizer.js && node --check topology-renderer.js && node --check app.test.js && node --check state.test.js && node --check topology-model.test.js && node --check topology-visualizer.test.js && node --check topology-renderer.test.js && node --check dom.test.js && node --check docker.test.js"
   },
   "devDependencies": {
     "jsdom": "30.0.1"

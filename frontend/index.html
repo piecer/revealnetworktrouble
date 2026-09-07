@@ -93,6 +93,16 @@ google.com</textarea></label>
           <div class="report-actions"><button class="secondary" id="topology-fullscreen" type="button" aria-controls="topology-result" aria-pressed="false">전체 화면</button><button class="secondary" id="download-topology" type="button" disabled>원본 JSON</button></div>
         </div>
         <div id="topology-result-summary" class="summary"></div>
+        <div class="topology-view-toolbar">
+          <fieldset id="topology-view-controls" class="topology-view-controls">
+            <legend>그래프 보기</legend>
+            <label><input type="radio" name="topology-view-mode" value="2d" checked><span>2D 그래프</span></label>
+            <label><input type="radio" name="topology-view-mode" value="3d"><span>3D 그래프</span></label>
+          </fieldset>
+          <button id="topology-view-reset" class="secondary" type="button">보기 초기화</button>
+          <p id="topology-view-help" class="topology-view-help">드래그: 이동/회전 · 휠 또는 +/−: 확대 · 방향키: 조정 · Home: 초기화</p>
+          <p id="topology-view-status" class="topology-view-mode-status" role="status" aria-live="polite" aria-atomic="true">2D 그래프</p>
+        </div>
         <div id="topology-target-filter" class="topology-target-filter" aria-label="표시할 trace 목적지 선택"></div>
         <form id="topology-label-form" class="topology-label-form" aria-labelledby="topology-label-title">
 

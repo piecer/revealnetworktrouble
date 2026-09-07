@@ -422,7 +422,7 @@ test('planTopologyDOM is deterministic, fair, referentially closed, chunked, and
 test('future renderer plans charge only the active view and runtime commits stay under 1200 DOM elements', () => {
   assert.equal(DOM_COSTS.documentLimit, DOCUMENT);
   assert.equal(DOM_COSTS.maxChunkInsertion, CHUNK);
-  assert.deepEqual(DOM_COSTS.topology, { chromeReserve: 180, node: 1, link: 1, route: 1 });
+  assert.deepEqual(DOM_COSTS.topology, { chromeReserve: 180, canvas: 1, node: 1, link: 1, route: 1 });
   assert.equal(DOM_COSTS.geo.canvas, 1);
   assert.equal(DOM_COSTS.geo.segment, 0);
   assert.equal(DOM_COSTS.geo.arrow, 0);
@@ -449,7 +449,7 @@ test('future renderer plans charge only the active view and runtime commits stay
       row.append(document.createElement('td'), document.createElement('td'), document.createElement('td'), document.createElement('button'));
       return row;
     }
-    return document.createElement(item.kind === 'geo-canvas' ? 'canvas' : item.kind === 'geo-accessible-list' ? 'ul' : item.kind === 'geo-accessible-item' ? 'li' : 'div');
+    return document.createElement(item.kind === 'geo-canvas' || item.kind === 'topology-canvas' ? 'canvas' : item.kind === 'geo-accessible-list' ? 'ul' : item.kind === 'geo-accessible-item' ? 'li' : 'div');
   };
 
   for (const [view, extra] of [['topology', {}], ['geo', {}], ['labels', { labelRecords: labels }]]) {
@@ -467,8 +467,37 @@ test('future renderer plans charge only the active view and runtime commits stay
       assert.equal(plan.semanticCounts.geo.segments, links.length);
       assert.equal(plan.mountItems.some(item => item.kind === 'geo-segment' || item.kind === 'geo-arrow'), false);
     }
-    if (view !== 'topology') assert.equal(plan.mountItems.some(item => item.kind.startsWith('topology-')), false);
+    if (view === 'topology') {
+      assert.equal(plan.mountItems[0]?.kind, 'topology-canvas');
+      assert.equal(plan.mountItems.filter(item => item.kind === 'topology-canvas').length, 1);
+    } else assert.equal(plan.mountItems.some(item => item.kind.startsWith('topology-')), false);
   }
+});
+
+test('topology canvas costs exactly one element while the global 1200 element budget remains exact', () => {
+  const nodes = Array.from({ length: DATA_NODES }, (_, index) => ({ id: `n${index}`, status: 'healthy' }));
+  const links = [];
+  for (let offset = 1; links.length < DATA_LINKS; offset++) {
+    for (let from = 0; from < nodes.length && links.length < DATA_LINKS; from++) {
+      const to = (from + offset) % nodes.length;
+      if (from !== to) links.push({ from: `n${from}`, to: `n${to}`, status: 'healthy' });
+    }
+  }
+  const model = { nodes, links, routes: [] };
+  const dom = new JSDOM('<!doctype html><html><body><main id="root"></main></body></html>');
+  const document = dom.window.document;
+  const existingDOMElements = document.getElementsByTagName('*').length;
+  const plan = planTopologyDOM(model, { view: 'topology', existingDOMElements });
+
+  assert.equal(plan.mountItems[0].kind, 'topology-canvas');
+  assert.equal(plan.mountItems[0].domCost, 1);
+  assert.equal(plan.plannedElements, DOCUMENT - existingDOMElements - DOM_COSTS.topology.chromeReserve);
+  assert.equal(plan.estimatedDOMElements, DOCUMENT);
+  assert.equal(plan.semanticCounts.topology.nodes + plan.semanticCounts.topology.links + plan.semanticCounts.topology.routes + 1, plan.plannedElements);
+
+  const plusOne = planTopologyDOM(model, { view: 'topology', existingDOMElements: existingDOMElements + 1 });
+  assert.equal(plusOne.estimatedDOMElements, DOCUMENT);
+  assert.equal(plusOne.plannedElements, plan.plannedElements - 1);
 });
 
 test('runtime DOM guard rejects an over-budget chunk before commit', () => {

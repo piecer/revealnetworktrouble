@@ -226,6 +226,7 @@ create_owned_web_container() {
         --mount "type=bind,src=$source_dir/frontend/styles.css,dst=/usr/share/nginx/html/styles.css,readonly" \
         --mount "type=bind,src=$source_dir/frontend/topology-model.js,dst=/usr/share/nginx/html/topology-model.js,readonly" \
         --mount "type=bind,src=$source_dir/frontend/topology-renderer.js,dst=/usr/share/nginx/html/topology-renderer.js,readonly" \
+        --mount "type=bind,src=$source_dir/frontend/topology-visualizer.js,dst=/usr/share/nginx/html/topology-visualizer.js,readonly" \
         "$web_base" 2>"$web_container_create_file"); then
         web_container_create_status=0
     else

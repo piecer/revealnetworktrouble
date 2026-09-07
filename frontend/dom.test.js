@@ -536,6 +536,23 @@ test('zero selected targets renders a bounded explicit empty state without sched
   assert.ok(document.querySelectorAll('*').length <= 1200);
 });
 
+test('destroy then recreate resets topology view controls and leaves stale mode owners inert', () => {
+  const dom = new JSDOM(markup, { url: 'https://hmr-view.example/#topology' });
+  const document = dom.window.document;
+  const first = createApp({ document, window: dom.window, fetchImpl: async () => response('{}') });
+  const threeD = document.querySelector('[name="topology-view-mode"][value="3d"]');
+  threeD.checked = true;
+  threeD.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(document.querySelector('#topology-view-status').textContent, '3D 그래프');
+  first.destroy();
+
+  const second = createApp({ document, window: dom.window, fetchImpl: async () => response('{}') });
+  assert.equal(document.querySelector('[name="topology-view-mode"][value="2d"]').checked, true);
+  assert.equal(document.querySelector('[name="topology-view-mode"][value="3d"]').checked, false);
+  assert.equal(document.querySelector('#topology-view-status').textContent, '2D 그래프');
+  second.destroy();
+});
+
 test('destroy then recreate on the same document behaves like HMR without duplicate owners', async () => {
   const dom = new JSDOM(markup, { url: 'https://hmr.example/#diagnostics' });
   let oldFetches = 0; let newFetches = 0;
@@ -809,7 +826,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   const drainObserved = () => { while (queue.length) { queue.shift()(); observe(); } };
 
   await app.start('diagnostics'); observe();
-  assert.equal(document.querySelectorAll('*').length, 699, 'maximum valid report baseline');
+  assert.equal(document.querySelectorAll('*').length, 711, 'maximum valid report baseline including topology view controls');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -824,7 +841,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   document.querySelector('[data-view-link="diagnostics"]').click(); observe();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 0);
   assert.equal(document.querySelectorAll('.finding-toggle').length, 40, 'navigation reconstructs the owned report');
-  assert.ok(document.querySelectorAll('*').length <= 699, 'reconstructed report remains no larger than the original mount');
+  assert.ok(document.querySelectorAll('*').length <= 711, 'reconstructed report remains no larger than the original mount');
   document.querySelector('[data-view-link="ip-labels"]').click(); drainObserved();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100, 'navigation reconstructs the current label page');
   assert.ok(peak <= 1200, `document peak after repeated navigation ${peak}`);
@@ -1790,6 +1807,140 @@ test('valid compact response progressively publishes through the model renderer 
   dom.window.close();
 });
 
+test('topology native view controls default to a visible accessible 2d graph and switch to 3d without fetching or rebuilding', async () => {
+  const jobs = []; const cancelled = new Set(); let handle = 0; let fetches = 0;
+  const context = { calls: [] };
+  for (const name of ['setTransform', 'clearRect', 'fillRect', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'closePath', 'fill', 'arc', 'fillText']) context[name] = (...args) => context.calls.push([name, ...args]);
+  const value = report('interactive-topology', { results: [compactTraceResult('one.example')], compact_topology: compactTopology() });
+  const { dom, app, document } = setup(async () => { fetches++; return response(JSON.stringify(value)); }, {
+    url: 'https://views.example/#topology',
+    scheduler: { schedule(callback) { const id = ++handle; jobs.push({ id, callback }); return id; }, cancel(id) { cancelled.add(id); } },
+    configureWindow(win) {
+      Object.defineProperty(win, 'devicePixelRatio', { configurable: true, value: 2 });
+      win.CanvasRenderingContext2D = function CanvasRenderingContext2D() {};
+      win.HTMLCanvasElement.prototype.getContext = () => context;
+    }
+  });
+  const drainDraws = () => { while (jobs.length) { const job = jobs.shift(); if (!cancelled.has(job.id)) job.callback(); } };
+
+  const controls = document.querySelector('#topology-view-controls');
+  assert.equal(controls.tagName, 'FIELDSET');
+  assert.equal(document.querySelector('[name="topology-view-mode"][value="2d"]').checked, true);
+  assert.equal(document.querySelector('[name="topology-view-mode"][value="3d"]').checked, false);
+  assert.equal(document.querySelector('#topology-view-reset').tagName, 'BUTTON');
+  assert.ok(document.querySelector('#topology-view-help').textContent.length <= 140);
+
+  await app.start('topology'); drainDraws();
+  const canvas = document.querySelector('#topology-result canvas.topology-canvas');
+  assert.ok(canvas, 'default result contains a visual graph');
+  assert.equal(canvas.dataset.mode, '2d');
+  assert.equal(canvas.dataset.drawState, 'rendered');
+  assert.ok(context.calls.some(call => call[0] === 'arc'), 'nodes are visibly drawn');
+  assert.ok(context.calls.some(call => call[0] === 'lineTo'), 'directed links are visibly drawn');
+  assert.equal(canvas.tabIndex, 0);
+  assert.equal(canvas.getAttribute('role'), 'img');
+  assert.equal(canvas.hasAttribute('aria-hidden'), false);
+  assert.equal(canvas.getAttribute('aria-describedby'), 'topology-view-help topology-render-status');
+  const canvasBefore = canvas; const nodesBefore = [...document.querySelectorAll('#topology-result .topology-node')]; const countBefore = document.querySelectorAll('*').length;
+
+  const threeD = document.querySelector('[name="topology-view-mode"][value="3d"]');
+  threeD.checked = true;
+  threeD.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(fetches, 1);
+  assert.strictEqual(document.querySelector('#topology-result canvas'), canvasBefore);
+  assert.deepEqual([...document.querySelectorAll('#topology-result .topology-node')], nodesBefore);
+  assert.equal(document.querySelectorAll('*').length, countBefore);
+  assert.equal(canvas.dataset.mode, '3d');
+  assert.match(document.querySelector('#topology-view-status').textContent, /3D/);
+
+  let filter = document.querySelector('[data-target-index="0"]');
+  filter.checked = false;
+  filter.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  drainDraws();
+  assert.equal(fetches, 1);
+  filter = document.querySelector('[data-target-index="0"]');
+  filter.checked = true;
+  filter.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  drainDraws();
+  assert.equal(document.querySelector('#topology-result canvas').dataset.mode, '3d', 'filter redraw preserves mode');
+  document.querySelector('#topology-label-address').value = '192.0.2.1';
+  document.querySelector('#topology-label-name').value = 'Edge';
+  document.querySelector('#topology-label-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  drainDraws();
+  assert.equal(document.querySelector('#topology-result canvas').dataset.mode, '3d', 'label redraw preserves mode');
+  assert.equal(fetches, 1);
+  assert.ok(document.querySelectorAll('*').length <= 1200);
+  app.destroy();
+});
+
+test('topology canvas pointer wheel keyboard reset resize and fullscreen redraw are bounded and stale owners become inert', async () => {
+  const jobs = []; const cancelled = new Set(); let handle = 0; let resizeCallback; let disconnects = 0;
+  const context = { calls: [] };
+  for (const name of ['setTransform', 'clearRect', 'fillRect', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'closePath', 'fill', 'arc', 'fillText']) context[name] = (...args) => context.calls.push([name, ...args]);
+  const scheduler = { schedule(callback) { const id = ++handle; jobs.push({ id, callback }); return id; }, cancel(id) { cancelled.add(id); } };
+  const value = report('interactions', { results: [compactTraceResult('one.example')], compact_topology: compactTopology() });
+  const { dom, app, document } = setup(async () => response(JSON.stringify(value)), {
+    url: 'https://interactions.example/#topology', scheduler,
+    configureWindow(win) {
+      Object.defineProperty(win, 'devicePixelRatio', { configurable: true, value: 2 });
+      win.CanvasRenderingContext2D = function CanvasRenderingContext2D() {};
+      win.HTMLCanvasElement.prototype.getContext = () => context;
+      win.ResizeObserver = class { constructor(callback) { resizeCallback = callback; } observe() {} disconnect() { disconnects++; } };
+    }
+  });
+  const runAll = () => { while (jobs.length) { const job = jobs.shift(); if (!cancelled.has(job.id)) job.callback(); } };
+  const root = document.querySelector('#topology-result');
+  root.getBoundingClientRect = () => ({ width: 375, height: 250, top: 0, left: 0, right: 375, bottom: 250 });
+  await app.start('topology'); runAll();
+  const canvas = root.querySelector('canvas');
+  canvas.getBoundingClientRect = () => ({ width: 375, height: 240, top: 0, left: 0, right: 375, bottom: 240 });
+  canvas.setPointerCapture = () => {};
+  resizeCallback?.([{ target: root }]); runAll();
+  assert.equal(canvas.width, 750); assert.equal(canvas.height, 480); assert.equal(canvas.dataset.dpr, '2');
+
+  const calls = () => context.calls.length;
+  let before = calls();
+  canvas.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+  const move = new dom.window.MouseEvent('pointermove', { bubbles: true, clientX: 35, clientY: 20, cancelable: true }); canvas.dispatchEvent(move);
+  canvas.dispatchEvent(new dom.window.MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 35, clientY: 20 }));
+  assert.equal(move.defaultPrevented, true); assert.ok(calls() > before); assert.equal(canvas.dataset.mode, '2d');
+
+  before = calls();
+  const wheel = new dom.window.WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100 }); canvas.dispatchEvent(wheel);
+  assert.equal(wheel.defaultPrevented, true); assert.ok(calls() > before);
+  for (const key of ['ArrowRight', '+', 'Home']) {
+    before = calls(); const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }); canvas.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true, key); assert.ok(calls() > before, key);
+  }
+  const unhandled = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }); canvas.dispatchEvent(unhandled);
+  assert.equal(unhandled.defaultPrevented, false);
+
+  document.querySelector('[name="topology-view-mode"][value="3d"]').checked = true;
+  document.querySelector('[name="topology-view-mode"][value="3d"]').dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  before = calls();
+  canvas.dispatchEvent(new dom.window.MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }));
+  canvas.dispatchEvent(new dom.window.MouseEvent('pointermove', { bubbles: true, clientX: 30, clientY: 30, cancelable: true }));
+  assert.ok(calls() > before); assert.equal(canvas.dataset.mode, '3d');
+  document.querySelector('#topology-view-reset').click();
+  assert.match(document.querySelector('#topology-view-status').textContent, /초기화|3D/);
+
+  before = calls();
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: root });
+  document.dispatchEvent(new dom.window.Event('fullscreenchange')); runAll();
+  assert.ok(calls() > before, 'fullscreen schedules a measured redraw');
+  const staleResize = resizeCallback;
+  document.querySelector('[data-view-link="diagnostics"]').click();
+  runAll();
+  const afterNavigation = calls();
+  staleResize?.([{ target: root }]); dom.window.dispatchEvent(new dom.window.Event('resize')); runAll();
+  assert.equal(calls(), afterNavigation);
+  assert.equal(disconnects, 1, 'navigation disconnects the topology ResizeObserver');
+  app.destroy();
+  const afterDestroy = calls(); staleResize?.([{ target: root }]); dom.window.dispatchEvent(new dom.window.Event('resize')); runAll();
+  assert.equal(calls(), afterDestroy);
+  assert.equal(disconnects, 1, 'destroy does not duplicate completed observer cleanup');
+});
+
 test('report without compact topology uses the bounded legacy adapter', async () => {
   const queue = [];
   const legacy = report('legacy-topology', { results: [result({
@@ -2311,10 +2462,14 @@ test('IP-label form remains wired with progressive pagination', async () => {
 test('responsive and accessibility contracts cover 320/375/400, focus, reduced motion, and wide component scroll', async () => {
   const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
   assert.match(css, /@media \(max-width:400px\)/);
+  assert.match(css, /@media \(max-width:375px\)/);
   assert.match(css, /@media \(max-width:320px\)/);
   assert.match(css, /@media \(max-width:760px\)/);
   assert.match(css, /focus-visible/);
   assert.match(css, /prefers-reduced-motion:reduce/);
+  assert.match(css, /prefers-reduced-motion:reduce[^}]*\{[^}]*transition:none/s);
+  assert.match(css, /\.topology-view-toolbar\s*\{[^}]*flex-wrap:wrap/s);
+  assert.match(css, /\.topology-canvas\s*\{[^}]*width:100%[^}]*min-height:[^;}]+[^}]*aspect-ratio:/s);
   assert.match(css, /evidence-scroll[^}]*overflow-x:auto|overflow-x:auto[^}]*evidence-scroll/s);
   assert.match(css, /\.standalone-topology\s*\{[^}]*display:grid/s);
   assert.match(css, /\.standalone-topology\s+\.topology-node\s*\{/s);

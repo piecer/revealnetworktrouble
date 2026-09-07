@@ -50,7 +50,9 @@ preexisting=$(find "$archive_dir" -type d \( -name .git -o -name node_modules -o
 
 (
     cd "$archive_dir"
-    make ci-inner CI_EVIDENCE_DIR="$evidence_dir"
+    archive_goflags=${GOFLAGS-}
+    GOFLAGS="${archive_goflags}${archive_goflags:+ }-buildvcs=false" \
+        make ci-inner CI_EVIDENCE_DIR="$evidence_dir"
 )
 ./scripts/verify-release.sh "$requested_sha" "$tmp/source.tar"
 

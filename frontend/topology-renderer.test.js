@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
-import { TopologyRenderCoordinator } from './topology-renderer.js';
+import { drawTopologyCanvas, TopologyRenderCoordinator } from './topology-renderer.js';
 
-function harness({ owns = () => true, html = '' } = {}) {
+function harness({ owns = () => true, html = '', context = fakeContext() } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>${html}<main id="root"></main><p id="status"></p></body></html>`, { pretendToBeVisual: true });
+  dom.window.CanvasRenderingContext2D = function CanvasRenderingContext2D() {};
+  dom.window.HTMLCanvasElement.prototype.getContext = () => context;
   const queue = [];
   const cancelled = new Set();
   let nextID = 1;
@@ -20,13 +22,203 @@ function harness({ owns = () => true, html = '' } = {}) {
   const runAll = () => { while (runNext()); };
   const states = [];
   const coordinator = new TopologyRenderCoordinator({ document: dom.window.document, schedule, cancelScheduled, ownsRequest: owns, onState: state => states.push(state) });
-  return { dom, document: dom.window.document, root: dom.window.document.querySelector('#root'), status: dom.window.document.querySelector('#status'), queue, schedule, cancelScheduled, runNext, runAll, states, coordinator };
+  return { dom, document: dom.window.document, root: dom.window.document.querySelector('#root'), status: dom.window.document.querySelector('#status'), context, queue, schedule, cancelScheduled, runNext, runAll, states, coordinator };
 }
 
 function topologyModel(size = 220) {
   const nodes = Array.from({ length: size }, (_, index) => ({ id: `n${index}`, kind: 'ip', address: `192.0.2.${index}`, status: 'healthy', hop_min: index, hop_max: index, observations: 1 }));
   return { nodes, links: [], routes: [], serverTruncation: { truncated: false, reasons: [] }, adapterTruncation: { truncated: false, reasons: [] } };
 }
+
+function fakeContext() {
+  const calls = [];
+  const state = { textAlign: 'right', textBaseline: 'alphabetic' };
+  const stack = [];
+  const context = { calls, state };
+  for (const name of ['setTransform', 'clearRect', 'fillRect', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'closePath', 'fill', 'arc']) {
+    context[name] = (...args) => calls.push([name, ...args]);
+  }
+  context.save = () => { stack.push({ ...state }); calls.push(['save']); };
+  context.restore = () => { Object.assign(state, stack.pop()); calls.push(['restore']); };
+  context.fillText = (...args) => calls.push(['fillText', ...args, { textAlign: state.textAlign, textBaseline: state.textBaseline }]);
+  for (const name of ['fillStyle', 'strokeStyle', 'lineWidth', 'font', 'textAlign', 'textBaseline']) {
+    Object.defineProperty(context, name, {
+      set(value) { state[name] = value; calls.push([name, value]); },
+      get() { return state[name]; }
+    });
+  }
+  return context;
+}
+
+test('drawTopologyCanvas clears, paints background/grid, then directed links and arrowheads before status-colored nodes and bounded labels', () => {
+  const context = fakeContext();
+  const attack = '<svg onload="globalThis.canvasPwned=1">' + 'x'.repeat(200);
+  const topology = {
+    nodes: [
+      { id: 'a', address: attack, status: 'healthy', hop_min: 0 },
+      { id: 'b', address: 'branch', status: 'degraded', hop_min: 1 },
+      { id: 'c', address: 'other', status: 'failure', hop_min: 1 },
+      { id: 'd', address: 'rejoin', status: 'unknown', hop_min: 2 }
+    ],
+    links: [
+      { from: 'a', to: 'b', status: 'healthy' }, { from: 'a', to: 'c', status: 'degraded' },
+      { from: 'b', to: 'd', status: 'failure' }, { from: 'c', to: 'd', status: 'unknown' }
+    ],
+    routes: [
+      { result_index: 0, attempt: 1, status: 'healthy', node_ids: ['a', 'b', 'd'] },
+      { result_index: 1, attempt: 1, status: 'degraded', node_ids: ['a', 'c', 'd'] }
+    ]
+  };
+  const projection = drawTopologyCanvas(context, topology, { viewport: { width: 640, height: 360, dpr: 2 } });
+
+  assert.equal(projection.links.length, 4, 'branch/rejoin keeps every directed link');
+  assert.deepEqual(context.calls.slice(0, 3).map(call => call[0]), ['setTransform', 'clearRect', 'fillStyle']);
+  const firstLink = context.calls.findIndex(call => call[0] === 'moveTo');
+  const firstArrow = context.calls.findIndex(call => call[0] === 'closePath');
+  const firstNode = context.calls.findIndex(call => call[0] === 'arc');
+  assert.ok(firstLink >= 0 && firstArrow > firstLink && firstNode > firstArrow, 'links and arrowheads draw before nodes');
+  for (const color of ['#22c55e', '#f59e0b', '#ef4444', '#94a3b8']) {
+    assert.ok(context.calls.some(call => call[0] === 'fillStyle' && call[1] === color));
+  }
+  const labels = context.calls.filter(call => call[0] === 'fillText');
+  assert.equal(labels.length, 4);
+  assert.ok(labels.every(call => call[1].length <= 43 && Number.isFinite(call[2]) && Number.isFinite(call[3])));
+  assert.equal(globalThis.canvasPwned, undefined);
+});
+
+test('drawTopologyCanvas supports bounded 2d/3d edge labels and rejects visual limits plus one', () => {
+  const limitContext = fakeContext();
+  const limitTopology = {
+    nodes: [{ id: 'a', status: 'healthy' }, { id: 'b', status: 'healthy' }],
+    links: [{ from: 'a', to: 'b', status: 'healthy' }],
+    routes: [{ result_index: 0, attempt: 1, status: 'healthy', node_ids: ['a', 'b'] }]
+  };
+  const limitProjection = drawTopologyCanvas(limitContext, limitTopology, { mode: '3d', transform: { yaw: 0.4, pitch: 0.2 } });
+  assert.equal(limitProjection.mode, '3d');
+  assert.ok(limitProjection.nodes.every(node => Number.isFinite(node.depth)));
+  assert.throws(() => drawTopologyCanvas(limitContext, { nodes: Array.from({ length: 501 }, (_, id) => ({ id: String(id), status: 'healthy' })), links: [], routes: [] }), /at most 500/i);
+
+  const labels = ['192.0.2.255', '2001:db8:85a3::8a2e:370:7334', 'x'.repeat(40), '서울망경계'.repeat(10)];
+  const topology = {
+    nodes: labels.map((address, index) => ({ id: `n${index}`, address, status: 'healthy', hop_min: 0 })),
+    links: [], routes: []
+  };
+  const inset = 4;
+  const labelHeight = 14;
+
+  for (const width of [800, 400, 375, 320, 100]) {
+    const states = [
+      ['initial', {}],
+      ['pan-right', { panX: width / 2 }],
+      ['pan-zoom-left', { panX: -width / 2, zoom: 1.1 }],
+      ['reset', {}]
+    ];
+    for (const mode of ['2d', '3d']) {
+      for (const [stateName, transform] of states) {
+        const context = fakeContext();
+        const viewport = { width, height: 480, dpr: 2 };
+        const projection = drawTopologyCanvas(context, topology, { mode, transform, viewport });
+        const drawn = context.calls.filter(call => call[0] === 'fillText');
+        assert.ok(drawn.length > 0, `${mode}/${width}/${stateName} draws visible labels`);
+        assert.ok(projection.nodes.every(node => Number.isFinite(node.screen.x) && Number.isFinite(node.screen.y)));
+        if (stateName === 'pan-right') assert.ok(projection.nodes.some(node => node.screen.x === width && node.visible), `${mode}/${width} reaches exact right edge`);
+        if (stateName === 'pan-zoom-left') assert.ok(projection.nodes.some(node => node.screen.x === 0 && node.visible), `${mode}/${width} reaches exact left edge`);
+
+        for (const call of drawn) {
+          const [, text, x, y, maxWidth, textState] = call;
+          assert.ok(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(maxWidth) && maxWidth > 0, `${mode}/${width}/${stateName} uses finite label geometry`);
+          assert.ok(maxWidth <= Math.min(160, width - inset * 2), `${mode}/${width}/${stateName} bounds maxWidth`);
+          assert.equal(textState.textAlign, 'center', `${mode}/${width}/${stateName} resets horizontal text state`);
+          assert.ok(textState.textBaseline === 'top' || textState.textBaseline === 'bottom', `${mode}/${width}/${stateName} resets vertical text state`);
+          assert.ok(x - maxWidth / 2 >= inset - 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside left inset`);
+          assert.ok(x + maxWidth / 2 <= width - inset + 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside right inset`);
+          const top = textState.textBaseline === 'bottom' ? y - labelHeight : y;
+          const bottom = textState.textBaseline === 'bottom' ? y : y + labelHeight;
+          assert.ok(top >= inset - 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside top inset`);
+          assert.ok(bottom <= viewport.height - inset + 1e-9, `${mode}/${width}/${stateName} keeps ${text} inside bottom inset`);
+        }
+
+        const arcs = context.calls.filter(call => call[0] === 'arc');
+        assert.deepEqual(arcs.map(call => call.slice(1, 4)), projection.nodes.filter(node => node.visible).map(node => [node.screen.x, node.screen.y, node.screen.radius]), `${mode}/${width}/${stateName} does not alter node geometry`);
+        assert.deepEqual({ textAlign: context.textAlign, textBaseline: context.textBaseline }, { textAlign: 'right', textBaseline: 'alphabetic' }, `${mode}/${width}/${stateName} does not leak text state`);
+        if (stateName === 'initial') {
+          assert.ok(drawn.some(call => call[1] === labels[0]), 'IPv4 label remains exact');
+          assert.ok(drawn.some(call => call[1] === labels[1]), 'IPv6 label remains exact');
+          assert.ok(drawn.some(call => call[1] === labels[2]), 'exact 40-character label does not gain ellipsis');
+          assert.ok(drawn.some(call => call[1] === `${labels[3].slice(0, 40)}…`), 'long Korean label is bounded with ellipsis');
+        }
+      }
+    }
+  }
+});
+
+test('topology commits exactly one finite accessible canvas before drawing and owner-safe updates redraw without DOM or plan work', () => {
+  const h = harness();
+  const generation = h.coordinator.start({
+    ownerId: 'A', inputSignature: 'a', view: 'topology', mode: '3d', transform: { yaw: 0.3 },
+    model: topologyModel(2), root: h.root, status: h.status
+  });
+  assert.equal(h.context.calls.length, 0);
+  h.runNext();
+  const canvas = h.root.querySelector('canvas.topology-canvas');
+  assert.ok(canvas);
+  assert.equal(h.root.firstElementChild, canvas);
+  assert.equal(h.root.querySelectorAll('canvas').length, 1);
+  assert.equal(h.root.querySelectorAll('svg').length, 0);
+  assert.equal(canvas.dataset.mode, '2d', 'detached materialization has a safe 2d default');
+  assert.equal(canvas.getAttribute('aria-hidden'), null);
+  assert.equal(canvas.tabIndex, 0);
+  assert.equal(canvas.getAttribute('role'), 'img');
+  assert.match(canvas.getAttribute('aria-label'), /토폴로지.*그래프/);
+  assert.equal(canvas.getAttribute('aria-describedby'), 'topology-view-help topology-render-status');
+  assert.ok(Number.isFinite(canvas.width) && canvas.width > 0 && Number.isFinite(canvas.height) && canvas.height > 0);
+  assert.ok(Number.isFinite(Number(canvas.dataset.dpr)) && Number(canvas.dataset.dpr) > 0);
+  assert.equal(h.context.calls.length, 0, 'draw is deferred until after the canvas commit');
+  h.runNext();
+  assert.equal(canvas.dataset.mode, '3d');
+  assert.ok(h.context.calls.length > 0);
+  h.runAll();
+
+  const node = h.root.querySelector('.topology-node');
+  const elementCount = h.document.getElementsByTagName('*').length;
+  const callCount = h.context.calls.length;
+  assert.equal(h.coordinator.updateTopologyView({ ownerId: 'A', inputSignature: 'a', generation, mode: '2d', transform: { panX: 12, zoom: 1.5 } }), true);
+  assert.equal(canvas.dataset.mode, '2d');
+  assert.ok(h.context.calls.length > callCount);
+  assert.strictEqual(h.root.querySelector('canvas.topology-canvas'), canvas);
+  assert.strictEqual(h.root.querySelector('.topology-node'), node);
+  assert.equal(h.document.getElementsByTagName('*').length, elementCount);
+
+  assert.equal(h.coordinator.updateTopologyView({ ownerId: 'A', inputSignature: 'a', generation, viewport: { width: 375, height: 240, dpr: 2 } }), true);
+  assert.equal(canvas.width, 750);
+  assert.equal(canvas.height, 480);
+  assert.equal(canvas.dataset.dpr, '2');
+
+  const afterUpdate = h.context.calls.length;
+  assert.equal(h.coordinator.updateTopologyView({ ownerId: 'stale', inputSignature: 'a', generation, mode: '3d' }), false);
+  assert.equal(h.coordinator.updateTopologyView({ ownerId: 'A', inputSignature: 'old', generation, mode: '3d' }), false);
+  assert.equal(h.coordinator.updateTopologyView({ ownerId: 'A', inputSignature: 'a', generation: generation - 1, mode: '3d' }), false);
+  assert.equal(h.context.calls.length, afterUpdate);
+  h.coordinator.dispose();
+  assert.equal(h.coordinator.updateTopologyView({ ownerId: 'A', inputSignature: 'a', generation, mode: '3d' }), false);
+});
+
+test('Canvas context failure keeps the bounded semantic inspector and reports only a local visual limitation', () => {
+  const h = harness({ html: '<section id="report">report stays</section><pre id="raw">raw stays</pre>' });
+  h.dom.window.HTMLCanvasElement.prototype.getContext = () => { throw new Error('context denied'); };
+  h.coordinator.start({ ownerId: 'A', inputSignature: 'a', view: 'topology', model: topologyModel(3), root: h.root, status: h.status });
+  h.runAll();
+
+  assert.equal(h.root.querySelectorAll('canvas.topology-canvas').length, 1);
+  assert.equal(h.root.querySelectorAll('.topology-node').length, 3);
+  assert.equal(h.root.querySelector('canvas').dataset.drawState, 'unavailable');
+  assert.equal(h.document.querySelector('#report').textContent, 'report stays');
+  assert.equal(h.document.querySelector('#raw').textContent, 'raw stays');
+  assert.equal(h.status.textContent, '표시 완료 · 로컬 Canvas 제한');
+  assert.equal(h.states.at(-1).phase, 'ready');
+  assert.equal(h.states.at(-1).localLimitation, 'canvas_context_unavailable');
+  assert.equal(h.states.some(state => state.phase === 'error'), false);
+});
 
 test('scheduler schedule and cancel failures leave no busy state or keyboard listener', () => {
   const scheduleDOM = new JSDOM('<main id="root"></main><p id="status"></p>');
@@ -62,7 +254,7 @@ test('topology renders one bounded chunk per callback with deterministic progres
   const h = harness({ html: '<aside><i></i><i></i></aside>' });
   h.coordinator.start({ ownerId: 'A', inputSignature: 'sig-A', view: 'topology', model: topologyModel(), root: h.root, status: h.status });
 
-  assert.equal(h.status.textContent, '표시 0/220');
+  assert.equal(h.status.textContent, '표시 0/221');
   assert.equal(h.root.getAttribute('aria-busy'), 'true');
   assert.equal(h.root.hasAttribute('aria-live'), false);
   assert.equal(h.status.getAttribute('role'), 'status');
@@ -70,12 +262,15 @@ test('topology renders one bounded chunk per callback with deterministic progres
 
   h.runNext();
   assert.equal(h.root.childElementCount, 100);
-  assert.equal(h.status.textContent, '표시 100/220');
+  assert.equal(h.status.textContent, '표시 100/221');
+  h.runNext();
+  assert.equal(h.root.childElementCount, 100, 'canvas draw has its own bounded callback');
+  assert.ok(h.context.calls.length > 0);
   h.runNext();
   assert.equal(h.root.childElementCount, 200);
-  assert.equal(h.status.textContent, '표시 200/220');
+  assert.equal(h.status.textContent, '표시 200/221');
   h.runNext();
-  assert.equal(h.root.childElementCount, 220);
+  assert.equal(h.root.childElementCount, 221);
   assert.match(h.status.textContent, /표시 완료/);
   assert.equal(h.root.getAttribute('aria-busy'), 'false');
   assert.ok(h.document.getElementsByTagName('*').length <= 1200);
@@ -88,17 +283,19 @@ test('replacement removes A and stale callbacks cannot append, announce, or clea
   h.coordinator.start({ ownerId: 'A', inputSignature: 'a', view: 'topology', model: topologyModel(150), root: h.root, status: h.status, focusTarget: reason => focused.push(reason) });
   h.runNext();
   assert.equal(h.root.childElementCount, 100);
+  assert.equal(h.context.calls.length, 0);
   const staleSecondChunk = h.queue[0].callback;
 
   h.coordinator.start({ ownerId: 'B', inputSignature: 'b', view: 'topology', model: topologyModel(1), root: h.root, status: h.status });
   assert.equal(h.root.childElementCount, 0, 'replacement clears A-owned nodes');
   assert.deepEqual(focused, ['replaced']);
   staleSecondChunk();
+  assert.equal(h.context.calls.length, 0, 'stale scheduled canvas draw is owner-gated');
   assert.equal(h.root.childElementCount, 0);
   assert.equal(h.root.getAttribute('aria-busy'), 'true');
-  assert.equal(h.status.textContent, '표시 0/1');
+  assert.equal(h.status.textContent, '표시 0/2');
   h.runAll();
-  assert.equal(h.root.childElementCount, 1);
+  assert.equal(h.root.childElementCount, 2);
   assert.equal(h.root.getAttribute('aria-busy'), 'false');
   assert.match(h.status.textContent, /표시 완료/);
 });
@@ -126,9 +323,9 @@ test('hidden views are disposed before the existing document count is planned', 
     workspace: { disposeHiddenViews() { disposed++; hidden.remove(); } }
   });
   assert.equal(disposed, 1);
-  assert.equal(h.status.textContent, '표시 0/1');
+  assert.equal(h.status.textContent, '표시 0/2');
   h.runAll();
-  assert.equal(h.root.childElementCount, 1);
+  assert.equal(h.root.childElementCount, 2);
 });
 
 test('owner changes prevent materialization and commit', () => {
@@ -138,7 +335,7 @@ test('owner changes prevent materialization and commit', () => {
   owner = false;
   h.runAll();
   assert.equal(h.root.childElementCount, 0);
-  assert.equal(h.status.textContent, '표시 0/2');
+  assert.equal(h.status.textContent, '표시 0/3');
   assert.equal(h.states.some(state => state.phase === 'ready'), false);
 });
 
@@ -168,9 +365,9 @@ test('a stale coordinator cannot clear a successor root or busy state', () => {
   h.coordinator.cancel('user');
   assert.equal(h.states.at(-1).phase, 'rendering', 'stale coordinator does not announce cancellation');
   assert.equal(h.root.getAttribute('aria-busy'), 'true');
-  assert.equal(h.status.textContent, '표시 0/2');
+  assert.equal(h.status.textContent, '표시 0/3');
   h.runAll();
-  assert.equal(h.root.childElementCount, 2);
+  assert.equal(h.root.childElementCount, 3);
   assert.equal(h.root.getAttribute('aria-busy'), 'false');
   assert.equal(successorStates.at(-1).phase, 'ready');
 });

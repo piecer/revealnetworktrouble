@@ -95,5 +95,13 @@ assert.match(markup, /id="geo-map-fullscreen"/);
 assert.match(markup, /id="geo-render-status"[^>]*aria-live="polite"/);
 assert.match(markup, /id="topology-label-form"/);
 assert.match(markup, /option value="traceroute"/);
+assert.match(markup, /<fieldset[^>]*id="topology-view-controls"/);
+assert.match(markup, /<input[^>]*type="radio"[^>]*name="topology-view-mode"[^>]*value="2d"[^>]*checked/);
+assert.match(markup, /2D 그래프/);
+assert.match(markup, /<input[^>]*type="radio"[^>]*name="topology-view-mode"[^>]*value="3d"/);
+assert.match(markup, /3D 그래프/);
+assert.match(markup, /<button[^>]*id="topology-view-reset"[^>]*type="button"/);
+assert.match(markup, /id="topology-view-help"/);
+assert.match(markup, /id="topology-view-status"[^>]*role="status"/);
 
 console.log('application contract tests passed');

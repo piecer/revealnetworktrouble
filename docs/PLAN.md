@@ -32,7 +32,20 @@
 - 공개 배포 시 SSRF 방지 정책을 어떤 네트워크 대역 기준으로 적용할 것인가
 - 리포트 영구 보관과 공유 기능을 다음 릴리스에 포함할 것인가
 
-## 6. 현재 단계: Stage 8 truthful diagnostics와 client/release reliability
+## 6. 현재 단계: Stage 9 2D/3D topology visual restoration
+
+Stage 8의 semantic renderer가 node/link/route마다 단일 텍스트 요소만 만들고 visual layer를 만들지 않아 graph가 사라진 회귀를 복구한다. 같은 validated facts를 default 2D/optional 3D Canvas로 투영하고 report/analysis/diagnosis는 바꾸지 않는다. Pointer/wheel/keyboard/reset/fullscreen interaction, no continuous animation, bounded semantic inspector와 Canvas fallback을 유지한다. Limits는 nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,151), DPR 4다.
+
+- [x] 2D/3D Canvas core, UI, lifecycle, semantic inspector/fallback 구현
+- [x] production seven-asset Docker/archive/served-byte closure 및 unexpected-file rejection
+- [x] source-level Web inventory 283와 synthetic archive validator 25 반영
+- [ ] final canonical gates와 independent review
+- [ ] physical browser 및 screen-reader manual acceptance
+- [ ] immutable candidate release, explicit Stage 9 commit과 exact-SHA closure
+
+따라서 Stage 9은 **implementation pending final gates/review**이며 완료가 아니다.
+
+## 7. Stage 8 truthful diagnostics와 client/release reliability 기록
 
 초기 단계 목록은 당시 범위와 의사결정 기록으로 유지한다. Stage 8 base parent는 `36dc1dca9838337a5b5d1cf6ebc76bb35f5a4243`이다. Task 1~15 구현과 현재 documentation source/link/stale/secret/diff focused gates 및 모든 task-level review는 blocker 0 / major 0이다. Current stable source cardinality는 exact API errors 16/structural mutations 85, findings 23/result shapes 31/expanded result matrix 136, presentation `6/10/21/23/33`, Web 260(456 semantic mutations including 13 generic cancelled-detail rejections), Android debug/release 각각 direct-child XML 297 + variant-contract canaries 2, archive validators API 28 + Web 25 = 53, exact real release-gate fake cases 12다. Production exact gate는 umask 077/027/000 세 pass와 canonical Docker inventory equality를 요구한다. 이 documentation edit 뒤 final pre-manifest clean-environment `make ci`는 아직 pending이므로 prior current-byte CI/count evidence는 final candidate evidence가 아니며 **invalid**다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest/검증에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. New external canonical manifest, manifest-derived isolated temporary direct-child commit/release, five-way precommit review, explicit staging, Stage 8 commit, exact-SHA postcommit gates와 main integration은 모두 pending이며 어떤 final claim도 하지 않는다. 이전 임시 manifest version/record count/hash는 current evidence가 아니다.
 

@@ -411,11 +411,11 @@ if [ -f "$source_dir/frontend/Dockerfile" ]; then
     [ -f "$source_dir/scripts/release-resource-ownership.sh" ] || fail 'Web release resource ownership helper is missing from canonical source'
     # shellcheck source=release-resource-ownership.sh
     . "$source_dir/scripts/release-resource-ownership.sh"
-    for asset in nginx.conf app.js index.html state.js styles.css topology-model.js topology-renderer.js; do
+    for asset in nginx.conf app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-visualizer.js; do
         [ -f "$source_dir/frontend/$asset" ] && [ ! -L "$source_dir/frontend/$asset" ] || fail "canonical Web input is missing or not regular: $asset"
     done
     [ "$(stat -c %a "$source_dir/frontend/nginx.conf")" = 644 ] || fail 'canonical Web nginx.conf mode is not 0644'
-    for asset in app.js index.html state.js styles.css topology-model.js topology-renderer.js; do
+    for asset in app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-visualizer.js; do
         [ "$(stat -c %a "$source_dir/frontend/$asset")" = 644 ] || fail "canonical Web asset mode is not 0644: $asset"
     done
     web_nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -497,9 +497,9 @@ if [ -f "$source_dir/frontend/Dockerfile" ]; then
     done
     [ "$web_healthy" = true ] || fail 'borrowed-base Web health smoke failed'
     release_hook web_health
-    docker exec "$web_container_id" sh -c 'for f in app.js index.html state.js styles.css topology-model.js topology-renderer.js; do test -f "/usr/share/nginx/html/$f" || exit 1; done'
+    docker exec "$web_container_id" sh -c 'for f in app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-visualizer.js; do test -f "/usr/share/nginx/html/$f" || exit 1; done'
     release_hook web_enumerate
-    for asset in app.js index.html state.js styles.css topology-model.js topology-renderer.js; do
+    for asset in app.js index.html state.js styles.css topology-model.js topology-renderer.js topology-visualizer.js; do
         docker exec "$web_container_id" wget -qO- "http://127.0.0.1/$asset" > "$tmp/fetched-$asset"
         cmp -s "$tmp/fetched-$asset" "$source_dir/frontend/$asset" || fail "borrowed-base Web byte smoke mismatch: $asset"
         release_hook "web_fetch_$asset"

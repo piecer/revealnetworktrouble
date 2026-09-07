@@ -4,6 +4,7 @@ import {
 } from './state.js';
 import { canonicalIP, topologyModelFromReport, filterTopologyModel } from './topology-model.js';
 import { TopologyRenderCoordinator } from './topology-renderer.js';
+import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport } from './topology-visualizer.js';
 
 const IP_LABEL_STORAGE_KEY = 'checknetwork.ip-labels.v1';
 export const LABEL_FILE = 1024 * 1024;
@@ -846,6 +847,13 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   let renderSource;
   let renderPhase = 'idle';
   let finalTopologyPlan;
+  const topologyViewState = { mode: '2d', transform: resetViewTransform() };
+  for (const input of doc.querySelectorAll('input[name="topology-view-mode"]')) input.checked = input.value === topologyViewState.mode;
+  doc.querySelector('#topology-view-status').textContent = '2D 그래프';
+  let topologyResizeObserver = null;
+  let topologyResizeObserved = false;
+  let topologyResizeHandle = null;
+  let pointerInteraction = null;
   const selectedScheduler = scheduler || (typeof win.requestAnimationFrame === 'function' && typeof win.cancelAnimationFrame === 'function'
     ? { schedule: callback => win.requestAnimationFrame(callback), cancel: handle => win.cancelAnimationFrame(handle) }
     : { schedule: callback => setTimer(callback, 0), cancel: handle => safeClearTimer(handle) });
@@ -871,6 +879,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       } else if (state.generation !== renderSource.renderGeneration) return;
       if (state.phase === 'ready' && state.plan) {
         finalTopologyPlan = { ownerId: state.ownerId, inputSignature: state.inputSignature, generation: state.generation, view: state.view, plan: state.plan };
+        if (state.view === 'topology' && state.empty !== true && state.renderable !== false) scheduleTopologyResize();
       }
       renderPhase = state.phase === 'error' ? 'render-error'
         : state.renderable === false ? 'render-limited'
@@ -987,6 +996,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       return;
     }
     const geo = activeView === 'geo-map';
+    if (geo) stopTopologyResizeObservation(); else ensureTopologyResizeObservation();
     const root = doc.querySelector(geo ? '#geo-map-result' : '#topology-result');
     const status = doc.querySelector(geo ? '#geo-render-status' : '#topology-render-status');
     renderPhase = 'rendering';
@@ -995,6 +1005,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     renderCoordinator.start({
       ownerId: renderSource.renderOwnerId, inputSignature: renderSource.signature,
       view: geo ? 'geo' : 'topology', model: filteredTopologyModel(), root, status,
+      mode: topologyViewState.mode, transform: topologyViewState.transform,
       workspace: {
         disposeHiddenViews() { doc.querySelector(geo ? '#topology-result' : '#geo-map-result').replaceChildren(); },
         drawGeo
@@ -1002,7 +1013,61 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     });
     renderState('topology');
   }
+
+  function updateTopologyView({ mode = topologyViewState.mode, transform = topologyViewState.transform, viewport, message } = {}) {
+    if (!activeInstance || activeView !== 'topology' || !renderSource || !Number.isInteger(renderSource.renderGeneration)) return false;
+    const changed = renderCoordinator.updateTopologyView({
+      ownerId: renderSource.renderOwnerId,
+      inputSignature: renderSource.signature,
+      generation: renderSource.renderGeneration,
+      mode, transform, ...(viewport ? { viewport } : {})
+    });
+    if (!changed) return false;
+    topologyViewState.mode = mode;
+    topologyViewState.transform = createViewTransform(transform);
+    const status = doc.querySelector('#topology-view-status');
+    status.textContent = message || `${mode === '3d' ? '3D' : '2D'} 그래프`;
+    return true;
+  }
+
+  function measuredTopologyViewport() {
+    const canvas = doc.querySelector('#topology-result canvas.topology-canvas');
+    if (!canvas?.isConnected) return null;
+    const rect = canvas.getBoundingClientRect();
+    const rootRect = doc.querySelector('#topology-result').getBoundingClientRect();
+    return normalizeViewport({
+      width: rect.width || rootRect.width || canvas.clientWidth || 800,
+      height: rect.height || canvas.clientHeight || Math.max(240, Math.round((rootRect.width || 800) * 0.55)),
+      dpr: Number(win.devicePixelRatio) || 1
+    });
+  }
+
+  function scheduleTopologyResize() {
+    if (!activeInstance || activeView !== 'topology' || topologyResizeHandle !== null) return;
+    topologyResizeHandle = selectedScheduler.schedule(() => {
+      topologyResizeHandle = null;
+      const viewport = measuredTopologyViewport();
+      if (viewport) updateTopologyView({ viewport });
+    });
+  }
+  function ensureTopologyResizeObservation() {
+    if (!topologyResizeObserver || topologyResizeObserved) return;
+    topologyResizeObserver.observe(doc.querySelector('#topology-result'));
+    topologyResizeObserved = true;
+  }
+  function stopTopologyResizeObservation() {
+    pointerInteraction = null;
+    if (topologyResizeHandle !== null) {
+      try { selectedScheduler.cancel(topologyResizeHandle); } catch { /* cleanup must continue */ }
+      topologyResizeHandle = null;
+    }
+    if (topologyResizeObserver && topologyResizeObserved) {
+      try { topologyResizeObserver.disconnect(); } catch { /* cleanup must continue */ }
+      topologyResizeObserved = false;
+    }
+  }
   function disposeTopologyRender(reason = 'dispose', clearSource = false) {
+    stopTopologyResizeObservation();
     renderCoordinator.cancel(reason);
     renderPhase = 'idle';
     doc.querySelector('#topology-result').replaceChildren(); doc.querySelector('#geo-map-result').replaceChildren();
@@ -1273,6 +1338,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     fullscreenEntries.forEach(entry => entry.button.setAttribute('aria-pressed', String(doc.fullscreenElement === entry.target)));
     if (doc.fullscreenElement) { fullscreenTarget = doc.fullscreenElement; announceFullscreen('전체 화면을 시작했습니다.'); }
     else if (fullscreenTarget) { const restore = fullscreenInvoker; fullscreenTarget = null; fullscreenInvoker = null; announceFullscreen('전체 화면을 종료했습니다.'); restore?.focus(); }
+    scheduleTopologyResize();
   });
   function downloadOwned(purpose) {
     const lane = lanes[purpose]; if (lane.phase !== 'ready' || !lane.result?.report) return;
@@ -1310,6 +1376,64 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     selectedTopologyTargets = event.target.dataset.filterAction === 'all' ? new Set(currentTopologyReport.results.map((_, index) => index)) : new Set(); startActiveTopologyRender();
   });
   const topologyRoot = doc.querySelector('#topology-result');
+  const topologyViewControls = doc.querySelector('#topology-view-controls');
+  listen(topologyViewControls, 'change', event => {
+    const mode = event.target.matches('input[name="topology-view-mode"]') ? event.target.value : '';
+    if (mode !== '2d' && mode !== '3d') return;
+    topologyViewState.mode = mode;
+    doc.querySelector('#topology-view-status').textContent = `${mode === '3d' ? '3D' : '2D'} 그래프`;
+    updateTopologyView({ mode });
+  });
+  listen(doc.querySelector('#topology-view-reset'), 'click', () => {
+    topologyViewState.transform = resetViewTransform();
+    updateTopologyView({ transform: topologyViewState.transform, message: `${topologyViewState.mode === '3d' ? '3D' : '2D'} 그래프 보기를 초기화했습니다.` });
+  });
+  listen(topologyRoot, 'pointerdown', event => {
+    const canvas = event.target.closest?.('canvas.topology-canvas');
+    if (!canvas || event.button !== 0 || activeView !== 'topology') return;
+    pointerInteraction = { canvas, x: event.clientX, y: event.clientY };
+    try { canvas.setPointerCapture?.(event.pointerId); } catch { /* capture is an enhancement */ }
+  });
+  listen(topologyRoot, 'pointermove', event => {
+    if (!pointerInteraction || event.target !== pointerInteraction.canvas || activeView !== 'topology') return;
+    const dx = event.clientX - pointerInteraction.x; const dy = event.clientY - pointerInteraction.y;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) return;
+    const delta = topologyViewState.mode === '3d' ? { yaw: dx * 0.01, pitch: dy * 0.01 } : { panX: dx, panY: dy };
+    const transform = updateViewTransform(topologyViewState.transform, delta);
+    if (updateTopologyView({ transform })) {
+      pointerInteraction.x = event.clientX; pointerInteraction.y = event.clientY;
+      event.preventDefault();
+    }
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) listen(topologyRoot, type, event => {
+    if (pointerInteraction?.canvas === event.target) pointerInteraction = null;
+  });
+  listen(topologyRoot, 'wheel', event => {
+    if (!event.target.closest?.('canvas.topology-canvas') || activeView !== 'topology' || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+    const direction = event.deltaY < 0 ? 1 : -1;
+    const transform = updateViewTransform(topologyViewState.transform, { zoom: direction * Math.max(0.05, topologyViewState.transform.zoom * 0.12) });
+    if (updateTopologyView({ transform })) event.preventDefault();
+  }, { passive: false });
+  listen(topologyRoot, 'keydown', event => {
+    if (!event.target.matches?.('canvas.topology-canvas') || activeView !== 'topology') return;
+    let transform;
+    if (event.key === 'Home') transform = resetViewTransform();
+    else if (event.key === '+' || event.key === '=') transform = updateViewTransform(topologyViewState.transform, { zoom: Math.max(0.05, topologyViewState.transform.zoom * 0.12) });
+    else if (event.key === '-') transform = updateViewTransform(topologyViewState.transform, { zoom: -Math.max(0.05, topologyViewState.transform.zoom * 0.12) });
+    else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      const x = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+      const y = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+      transform = topologyViewState.mode === '3d'
+        ? updateViewTransform(topologyViewState.transform, { yaw: x * 0.12, pitch: y * 0.12 })
+        : updateViewTransform(topologyViewState.transform, { panX: x * 24, panY: y * 24 });
+    } else return;
+    const message = event.key === 'Home' ? `${topologyViewState.mode === '3d' ? '3D' : '2D'} 그래프 보기를 초기화했습니다.` : undefined;
+    if (updateTopologyView({ transform, message })) event.preventDefault();
+  });
+  listen(win, 'resize', scheduleTopologyResize);
+  if (typeof win.ResizeObserver === 'function') {
+    topologyResizeObserver = new win.ResizeObserver(() => scheduleTopologyResize());
+  }
   const editTopologyNode = target => {
     const item = target.closest('.topology-node[data-label-address]');
     if (!item) return;
@@ -1413,6 +1537,8 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     activeInstance = false;
     ipLabelImportGeneration++;
     lifecycle.abort('destroy');
+    stopTopologyResizeObservation();
+    topologyResizeObserver = null;
     for (const remove of [...listeners].reverse()) { try { remove(); } catch { /* best-effort listener cleanup */ } }
     for (const request of active.values()) {
       request.reason = 'destroy';

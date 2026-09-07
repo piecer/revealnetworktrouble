@@ -221,6 +221,17 @@ class Fixture:
 
 
 class ArchiveSafetyTest(unittest.TestCase):
+    def assert_production_asset_contract(self, fx, result):
+        self.assertEqual(
+            validator.ASSETS,
+            ("app.js", "index.html", "state.js", "styles.css", "topology-model.js", "topology-renderer.js", "topology-visualizer.js"),
+        )
+        expected_identity = "".join(
+            f"{hashlib.sha256(fx.asset_data[name]).hexdigest()}  {name}\n"
+            for name in validator.ASSETS
+        ).encode()
+        self.assertEqual(result["asset_manifest"], hashlib.sha256(expected_identity).hexdigest())
+
     def test_full_validate_rejects_unexpected_outer_regular_and_directory_members(self):
         for extra in (
             (("unexpected-secret.txt", b"secret"),),
@@ -288,6 +299,7 @@ class ArchiveSafetyTest(unittest.TestCase):
         self.addCleanup(fx.close)
         result = fx.validate()
         self.assertEqual(set(result), {"archive", "config", "manifest", "rootfs", "layers", "asset_manifest"})
+        self.assert_production_asset_contract(fx, result)
 
     def test_full_validate_rejects_every_unselected_post_base_special(self):
         for kind in ("symlink", "hardlink", "char", "block", "fifo", "socket"):
