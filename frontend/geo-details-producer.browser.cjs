@@ -8,7 +8,7 @@ const {pathToFileURL} = require('node:url');
 const output = process.argv[2];
 if (!output) throw Error('an owned evidence directory is required');
 fs.mkdirSync(output, {recursive:true, mode:0o700});
-const assets = ['index.html','styles.css','app.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
+const assets = ['index.html','styles.css','app.js','common-prefix.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const fixtureNames = ['rich-full','rich-compact','empty-full','empty-compact','truncated-compact'];
 const fixtures = Object.fromEntries(fixtureNames.map(name => [name, fs.readFileSync(path.join(__dirname,`../testdata/geo-details-${name}-report.json`),'utf8')]));

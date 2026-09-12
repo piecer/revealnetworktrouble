@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
-import { createApp } from './app.js';
+import { createApp, LABEL_PAGE, MAX_DOCUMENT_ELEMENTS } from './app.js';
 
 const markup = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: { get: () => null }, text: async () => body });
@@ -124,7 +124,11 @@ test('destroy never removes label DOM claimed by a successor', () => {
     second = createApp({ document, window: dom.window, scheduleLabelRender(callback) { queue.push(callback); return callback; } });
     drain(queue);
     const rows = [...document.querySelector('#ip-label-rows').children];
-    assert.equal(rows.length, 100);
+    assert.ok(rows.length > 0);
+    const rowElements = rows[0].querySelectorAll('*').length + 1;
+    const baseElements = document.querySelectorAll('*').length - rows.length * rowElements;
+    assert.equal(rows.length, Math.min(LABEL_PAGE, Math.floor((MAX_DOCUMENT_ELEMENTS - baseElements) / rowElements)));
+    assert.ok(document.querySelectorAll('*').length <= MAX_DOCUMENT_ELEMENTS);
     first.destroy(); drain(queue);
     assert.deepEqual([...document.querySelector('#ip-label-rows').children], rows);
     second.destroy();

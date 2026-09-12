@@ -6,7 +6,7 @@ const {pathToFileURL}=require('node:url');
 const output=process.argv[2];
 if(!output)throw Error('an evidence output directory is required');
 fs.mkdirSync(output,{recursive:true,mode:0o700});
-const assets=['index.html','styles.css','app.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
+const assets=['index.html','styles.css','app.js','common-prefix.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
 const stats=total=>({total,displayed:total,omitted:0});
 const routeStats=total=>({...stats(total),complete:total,partial:0});
 function fixture(size) {

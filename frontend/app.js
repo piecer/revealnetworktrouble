@@ -6,6 +6,7 @@ import { canonicalIP, topologyModelFromReport, filterTopologyModel } from './top
 import { mountGeoMap } from './geo-map.js';
 import { TopologyRenderCoordinator } from './topology-renderer.js';
 import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport, routeColor } from './topology-visualizer.js';
+import { commonPrefix, COMMON_MAX_ADDRESSES, COMMON_MAX_INPUT_CHARS } from './common-prefix.js';
 
 const IP_LABEL_STORAGE_KEY = 'checknetwork.ip-labels.v1';
 export const LABEL_FILE = 1024 * 1024;
@@ -534,7 +535,7 @@ export function presentReport(document, report) {
   return markdown;
 }
 
-const APP_VIEW_NAMES = new Set(['diagnostics', 'topology', 'geo-map', 'ip-labels']);
+const APP_VIEW_NAMES = new Set(['diagnostics', 'topology', 'geo-map', 'ip-labels', 'common-prefix']);
 
 function oversizedResponseError() {
   return { kind: 'invalid-response', code: 'response_too_large', message: '서버 응답이 허용된 크기를 초과했습니다.', retryable: false };
@@ -1504,6 +1505,101 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     saveIPLabels(); renderIPLabelTable();
     refreshRenderedLabels(); doc.querySelector('#topology-label-name').value = ''; doc.querySelector('#topology-label-note').value = ''; doc.querySelector('#topology-label-delete').hidden = true;
     const message = doc.querySelector('#topology-label-message'); message.textContent = `${subject} 라벨을 삭제했습니다.`; message.className = 'mapping-message healthy';
+  });
+
+  // IP 공통 구간: 여러 주소를 family별로 그룹화해 모든 주소가 공유하는 가장 긴
+  // 접두(CIDR·범위)를 계산한다. 순수 계산은 common-prefix.js에서 수행하고 여기는
+  // 표시만 담당하며, XSS 방지를 위해 요소는 createElement/textContent로만 구성한다.
+  const FAMILY_LABEL = { v4: 'IPv4', v6: 'IPv6' };
+  function splitAddressList(text) {
+    return String(text ?? '').split(/[\n\r\t ,;]+/).map(value => value.trim()).filter(Boolean);
+  }
+  function renderCommonPrefix() {
+    const inputEl = doc.querySelector('#common-prefix-input');
+    const rawInput = String(inputEl.value ?? '');
+    const emptyEl = doc.querySelector('#common-prefix-empty');
+    const reportSection = doc.querySelector('#common-prefix-report-section');
+    const summaryEl = doc.querySelector('#common-prefix-summary');
+    const resultRoot = doc.querySelector('#common-prefix-result');
+    if (rawInput.length > COMMON_MAX_INPUT_CHARS) {
+      emptyEl.textContent = `입력은 최대 ${COMMON_MAX_INPUT_CHARS}자까지 분석할 수 있습니다.`;
+      emptyEl.hidden = false; reportSection.hidden = true; resultRoot.replaceChildren();
+      return;
+    }
+    emptyEl.textContent = '분석할 IP 주소를 넣고 공통 구간을 확인해 보세요.';
+    const list = splitAddressList(rawInput);
+    if (list.length === 0) {
+      emptyEl.hidden = false; reportSection.hidden = true; resultRoot.replaceChildren();
+      return;
+    }
+    emptyEl.hidden = true; reportSection.hidden = false;
+    const analysis = commonPrefix(list); // family별 그룹 + 생략/한도 보고
+    summaryEl.textContent = [
+      `입력 ${analysis.totalInput}개 · 분석 ${analysis.analyzed}개`,
+      analysis.truncated ? `${COMMON_MAX_ADDRESSES}개 초과분은 생략` : null,
+      analysis.skipped.length ? `무효 주소 ${analysis.skipped.length}개 제외` : null
+    ].filter(Boolean).join(' · ');
+
+    resultRoot.replaceChildren(); // 이전 결과를 완전히 교체해 누적/오래된 DOM 방지
+    if (analysis.groups.length === 0) {
+      const note = doc.createElement('p'); note.className = 'common-prefix-note';
+      note.textContent = `입력한 주소 중 유효한 IPv4/IPv6 주소를 찾지 못했습니다. ${analysis.skipped.map(s => s.raw).join(', ')}`;
+      resultRoot.append(note); return;
+    }
+
+    for (const group of analysis.groups) {
+      const card = doc.createElement('article'); card.className = 'common-prefix-card';
+      const head = doc.createElement('header'); head.className = 'common-prefix-card-head';
+      const familyTag = doc.createElement('span'); familyTag.className = `common-family common-${group.family}`;
+      familyTag.textContent = FAMILY_LABEL[group.family] ?? group.family;
+      const countLabel = doc.createElement('span'); countLabel.className = 'common-count';
+      countLabel.textContent = `${group.count}개 주소`;
+      head.append(familyTag, countLabel); card.append(head);
+
+      if (group.alone) {
+        // 같은 family 주소가 하나뿐이면 비교 대상이 없어 공통 구간을 계산하지 않는다.
+        const body = doc.createElement('p'); body.className = 'common-prefix-note';
+        body.textContent = `비교할 ${FAMILY_LABEL[group.family]} 주소가 1개라 공통 구간을 계산할 수 없습니다.`;
+        card.append(body); resultRoot.append(card); continue;
+      }
+
+      const dl = doc.createElement('dl'); dl.className = 'common-prefix-metrics';
+      const metric = (term, value) => {
+        const row = doc.createElement('div'); row.className = 'common-metric';
+        const dt = doc.createElement('dt'); dt.textContent = term;
+        const dd = doc.createElement('dd'); dd.textContent = String(value); dd.className = 'common-value';
+        row.append(dt, dd); return row;
+      };
+      dl.append(
+        metric('공유 비트', `${group.sharedBits}비트`),
+        metric('CIDR', group.cidr),
+        metric('주소 범위', `${group.rangeFirst} ~ ${group.rangeLast}`)
+      );
+      card.append(dl);
+
+      if (group.firstDiffBit !== null) {
+        const note = doc.createElement('p'); note.className = 'common-prefix-note';
+        note.textContent = `첫 다름 비트: MSB 기준 ${group.firstDiffBit}번째에서 주소들이 갈라집니다.`;
+        card.append(note);
+      }
+
+      const memberList = doc.createElement('ul'); memberList.className = 'common-members';
+      memberList.setAttribute('aria-label', `${FAMILY_LABEL[group.family]} 비교 대상`);
+      for (const member of group.members) {
+        const li = doc.createElement('li'); li.textContent = member.canonical; memberList.append(li);
+      }
+      card.append(memberList); resultRoot.append(card);
+    }
+
+    // 생략된 무효 주소가 있으면 사유를 함께 보여줘 입력을 바로잡게 한다.
+    if (analysis.skipped.length) {
+      const skipped = doc.createElement('p'); skipped.className = 'common-prefix-skipped';
+      skipped.textContent = `무효로 제외됨: ${analysis.skipped.map(s => s.raw).join(', ')}`;
+      resultRoot.append(skipped);
+    }
+  }
+  listen(doc.querySelector('#common-prefix-form'), 'submit', event => {
+    event.preventDefault(); renderCommonPrefix();
   });
 
   const switchView = (target, { focus = false } = {}) => {

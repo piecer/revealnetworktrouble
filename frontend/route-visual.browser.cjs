@@ -16,7 +16,7 @@ const server = http.createServer((req, res) => {
  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
  const base = `http://127.0.0.1:${server.address().port}`, browser = await chromium.launch(), results = [], assets = {};
  try {
-  for (const asset of ['index.html','styles.css','app.js','state.js','topology-model.js','topology-presentation.js','topology-renderer.js','topology-visualizer.js','geo-map.js']) {
+  for (const asset of ['index.html','styles.css','app.js','common-prefix.js','state.js','topology-model.js','topology-presentation.js','topology-renderer.js','topology-visualizer.js','geo-map.js']) {
    const bytes = Buffer.from(await (await fetch(base + '/' + asset)).arrayBuffer()); assert.deepEqual(bytes, fs.readFileSync(path.join(__dirname, asset))); assets[asset] = hash(bytes);
   }
   for (const [name, body] of reports) for (const width of [375,1440]) {

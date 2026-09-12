@@ -221,6 +221,7 @@ create_owned_web_container() {
         --network "$web_network_id" \
         --mount "type=bind,src=$source_dir/frontend/nginx.conf,dst=/etc/nginx/nginx.conf,readonly" \
         --mount "type=bind,src=$source_dir/frontend/app.js,dst=/usr/share/nginx/html/app.js,readonly" \
+        --mount "type=bind,src=$source_dir/frontend/common-prefix.js,dst=/usr/share/nginx/html/common-prefix.js,readonly" \
         --mount "type=bind,src=$source_dir/frontend/index.html,dst=/usr/share/nginx/html/index.html,readonly" \
         --mount "type=bind,src=$source_dir/frontend/state.js,dst=/usr/share/nginx/html/state.js,readonly" \
         --mount "type=bind,src=$source_dir/frontend/styles.css,dst=/usr/share/nginx/html/styles.css,readonly" \

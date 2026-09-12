@@ -27,7 +27,7 @@ const results = { assets: {}, pagination: [], imports: [], topology: [] };
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
     browser = await chromium.launch({ headless: true });
-    for (const file of ['index.html', 'app.js', 'state.js']) {
+    for (const file of ['index.html', 'app.js', 'common-prefix.js', 'state.js']) {
       const served = Buffer.from(await (await fetch(base + '/' + file)).arrayBuffer());
       assert.deepEqual(served, fs.readFileSync(path.join(root, file)));
       results.assets[file] = crypto.createHash('sha256').update(served).digest('hex');

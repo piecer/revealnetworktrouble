@@ -57,6 +57,7 @@ assert.equal(canonicalAliases.omitted, 2);
 assert.equal(viewFromHash('#ip-labels'), 'ip-labels');
 assert.equal(viewFromHash('#topology'), 'topology');
 assert.equal(viewFromHash('#geo-map'), 'geo-map');
+assert.equal(viewFromHash('#common-prefix'), 'common-prefix');
 assert.equal(viewFromHash('#unknown'), 'diagnostics');
 const views = [
   { dataset: { view: 'diagnostics' }, hidden: false },

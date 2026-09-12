@@ -16,7 +16,7 @@ RUN case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) \
     esac
 RUN rm -rf /usr/share/nginx/html/* /usr/share/nginx/html/.[!.]* /usr/share/nginx/html/..?*
 COPY nginx.conf /etc/nginx/nginx.conf
-COPY index.html styles.css app.js state.js topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js /usr/share/nginx/html/
+COPY index.html styles.css app.js common-prefix.js state.js topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js /usr/share/nginx/html/
 # Compose can customize the development port; the release default is byte-preserving.
 RUN case "$API_PORT" in ''|0*|*[!0-9]*) \
       printf '%s\n' 'API_PORT must be an integer from 1 to 65535 (no leading zeros)' >&2; exit 1 ;; \
@@ -27,7 +27,7 @@ RUN if [ "$API_PORT" != 9090 ]; then \
       sed -i "s|value=\"http://localhost:9090\"|value=\"http://localhost:$API_PORT\"|" /usr/share/nginx/html/index.html; \
     fi
 RUN cd /usr/share/nginx/html && \
-    sha256sum app.js index.html state.js styles.css topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js | sort -k2 > .checknetwork-assets.sha256 && \
+    sha256sum app.js common-prefix.js index.html state.js styles.css topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js | sort -k2 > .checknetwork-assets.sha256 && \
     touch -d "@$SOURCE_DATE_EPOCH" /etc/nginx/nginx.conf . .checknetwork-assets.sha256 \
-      app.js index.html state.js styles.css topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js
+      app.js common-prefix.js index.html state.js styles.css topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js
 EXPOSE 80

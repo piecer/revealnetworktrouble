@@ -81,6 +81,23 @@ textarea:focus { border-color:#6b754e; box-shadow:0 0 0 2px rgba(201,255,70,.08)
 .mapping-table td:nth-child(2),.mapping-table td:nth-child(3) { width:33%; }
 .mapping-table input { padding:8px 9px; font-size:11px; }
 .mapping-table code { color:#dce2d5; font-size:11px; }
+.common-prefix-actions { display:flex; align-items:center; gap:14px; margin-top:16px; }
+#common-prefix-empty { margin-top:18px; }
+#common-prefix-report-section { margin-top:24px; }
+.common-prefix-summary { color:var(--muted); font-size:13px; margin:6px 0 18px; letter-spacing:.02em; }
+.common-prefix-card { border:1px solid var(--line); border-radius:4px; padding:20px 22px; margin-bottom:16px; background:#101210; position:relative; overflow:hidden; }
+.common-prefix-card::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:#4a5b7a; }
+.common-prefix-card-head { display:flex; align-items:center; gap:12px; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid #23261f; }
+.common-family { font:700 10px ui-monospace,monospace; letter-spacing:.1em; text-transform:uppercase; padding:4px 8px; border-radius:2px; background:#0d0f0c; color:#9fb3d6; border:1px solid #2e3a52; }
+.common-family.common-v6 { color:#c9ff46; border-color:#4a5b2f; background:rgba(201,255,70,.06); }
+.common-count { font-size:12px; color:var(--muted); letter-spacing:.03em; margin-left:auto; }
+.common-prefix-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:16px; }
+.common-metric dt { font-size:9.5px; color:#7f857a; letter-spacing:.08em; text-transform:uppercase; margin-bottom:4px; }
+.common-metric dd { margin:0; font:700 15px ui-monospace,monospace; color:#e6ecdb; word-break:break-all; line-height:1.35; }
+.common-prefix-note { margin-top:12px; font-size:12px; color:#a8ad9e; letter-spacing:.01em; }
+.common-members { list-style:none; padding:0; margin:14px 0 0; display:flex; flex-wrap:wrap; gap:6px; }
+.common-members li { padding:5px 10px; background:#0d0f0c; border:1px solid #2a2d27; border-radius:3px; font:600 11.5px ui-monospace,monospace; color:#c4c9b8; }
+.common-prefix-skipped { margin-top:14px; padding:12px 14px; background:rgba(255,114,94,.06); border-left:3px solid #ff725e; font-size:12px; color:#f0b8ae; }
 .mapping-delete { padding:6px 8px; border:1px solid #67443e; background:transparent; color:#e98b7e; font-size:10px; }
 .empty-mapping { padding:28px !important; color:var(--muted); text-align:center; }
 .section-head { display:flex; justify-content:space-between; align-items:end; gap:24px; margin-bottom:28px; }

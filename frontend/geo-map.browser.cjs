@@ -4,7 +4,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_PATH || 'playwright');
 const fs=require('node:fs'), path=require('node:path'), assert=require('node:assert/strict');
 (async()=>{
  const [base,out,source]=process.argv.slice(2); fs.mkdirSync(out,{recursive:true,mode:0o700});
- if(!source) for(const name of ['app.js','state.js','topology-model.js','geo-map.js','topology-presentation.js','topology-renderer.js','topology-visualizer.js','styles.css','index.html']) assert.equal(await(await fetch(`${base}/${name}`)).text(),fs.readFileSync(path.join(__dirname,name),'utf8'),`exact source ${name}`);
+ if(!source) for(const name of ['app.js','common-prefix.js','state.js','topology-model.js','geo-map.js','topology-presentation.js','topology-renderer.js','topology-visualizer.js','styles.css','index.html']) assert.equal(await(await fetch(`${base}/${name}`)).text(),fs.readFileSync(path.join(__dirname,name),'utf8'),`exact source ${name}`);
  const browser=await chromium.launch(); const results=[];
  try { for(const width of [1440,375]) {
  const page=await browser.newPage({viewport:{width,height:1000}}); const errors=[];const requests=[];

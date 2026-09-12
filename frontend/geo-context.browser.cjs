@@ -3,7 +3,7 @@
 const {chromium}=require(process.env.PLAYWRIGHT_PATH||'playwright');
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const out=process.argv[2];assert.ok(out);fs.mkdirSync(out,{recursive:true});
-const assets=['index.html','styles.css','app.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
+const assets=['index.html','styles.css','app.js','common-prefix.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
 let report=JSON.parse(fs.readFileSync(path.join(__dirname,'../testdata/geo-details-rich-compact-report.json')));
 // In-memory synthetic coincident-coordinate variant; frozen witnesses untouched.
 for(const n of report.compact_topology.nodes)if(n.geolocation){n.geolocation.latitude=0;n.geolocation.longitude=0;}

@@ -18,7 +18,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ('app.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js',
+ASSETS = ('app.js', 'common-prefix.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js',
           'topology-renderer.js', 'geo-map.js', 'topology-presentation.js', 'topology-visualizer.js')
 
 

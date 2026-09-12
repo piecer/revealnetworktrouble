@@ -7,7 +7,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const assert = require('node:assert/strict');
 const root = __dirname;
-const assets = new Set(['index.html', 'styles.css', 'app.js', 'state.js', 'topology-model.js', 'topology-renderer.js', 'topology-presentation.js', 'topology-visualizer.js', 'geo-map.js']);
+const assets = new Set(['index.html', 'styles.css', 'app.js', 'common-prefix.js', 'state.js', 'topology-model.js', 'topology-renderer.js', 'topology-presentation.js', 'topology-visualizer.js', 'geo-map.js']);
 const parent = process.argv[2] || os.tmpdir();
 fs.mkdirSync(parent, { recursive: true });
 const output = fs.mkdtempSync(path.join(parent, 'checknetwork-browser-'));

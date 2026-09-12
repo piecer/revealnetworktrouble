@@ -9,7 +9,7 @@ import { JSDOM } from 'jsdom';
 import { createApp } from './app.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const assets = ['app.js', 'geo-map.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-presentation.js', 'topology-renderer.js', 'topology-visualizer.js'];
+const assets = ['app.js', 'common-prefix.js', 'geo-map.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-presentation.js', 'topology-renderer.js', 'topology-visualizer.js'];
 const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
 const instructions = dockerfile.replace(/\\\r?\n/g, '').split(/\r?\n/);
 
@@ -76,7 +76,27 @@ test('API_PORT rejects malformed or injectable values before changing HTML', asy
   }
 });
 
-test('canonical release materialization preserves all nine source assets and deterministic manifest', async () => {
+test('browser and live deployment inventories include every production module', async () => {
+  // Keep independently owned browser servers and evidence manifests complete.
+  const gates = ['browser-gates.cjs', 'geo-context.browser.cjs', 'geo-details.browser.cjs',
+    'geo-details-producer.browser.cjs', 'geo-map.browser.cjs', 'route-visual.browser.cjs', 'unknown-presentation.browser.cjs'];
+  for (const gate of gates) {
+    const source = await readFile(new URL(`./${gate}`, import.meta.url), 'utf8');
+    const declaration = source.match(/(?:const assets\s*=\s*(?:new Set\()?|for\s*\(const (?:asset|name) of )\[([^\]]+)\]/);
+    assert.ok(declaration, `${gate}: explicit source inventory`);
+    assert.deepEqual([...declaration[1].matchAll(/'([^']+)'/g)].map(match => match[1]).sort(), assets, gate);
+  }
+  const labels = await readFile(new URL('./label-integrity.browser.cjs', import.meta.url), 'utf8');
+  const evidence = labels.match(/for \(const file of \[([^\]]+)\]/);
+  assert.ok(evidence, 'label browser source evidence inventory');
+  assert.ok([...evidence[1].matchAll(/'([^']+)'/g)].some(match => match[1] === 'common-prefix.js'), 'label browser evidence includes shared-prefix bytes');
+  const live = await readFile(new URL('../scripts/test_deployment_live.py', import.meta.url), 'utf8');
+  const declaration = live.match(/ASSETS = \(([^)]+)\)/);
+  assert.ok(declaration, 'live deployment inventory');
+  assert.deepEqual([...declaration[1].matchAll(/'([^']+)'/g)].map(match => match[1]).sort(), assets);
+});
+
+test('canonical release materialization preserves all ten source assets and deterministic manifest', async () => {
   const outputs = [];
   try {
     for (let run = 0; run < 2; run++) {

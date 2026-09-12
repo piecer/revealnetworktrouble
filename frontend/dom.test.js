@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
-import { createApp } from './app.js';
+import { createApp, LABEL_PAGE, MAX_DOCUMENT_ELEMENTS } from './app.js';
 
 const markup = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const started = '2026-09-01T12:00:00Z';
@@ -68,6 +68,18 @@ function labelRows(count, offset = 0) {
   });
 }
 function drain(queue) { while (queue.length) queue.shift()(); }
+
+// The shared-prefix and Geo controls consume the same document-wide budget.
+function assertBudgetedLabelPage(document, total) {
+  const rows = [...document.querySelectorAll('#ip-label-rows tr[data-ip]')];
+  assert.ok(rows.length > 0);
+  const rowElements = rows[0].querySelectorAll('*').length + 1;
+  const baseElements = document.querySelectorAll('*').length - rows.length * rowElements;
+  const capacity = Math.min(LABEL_PAGE, Math.floor((MAX_DOCUMENT_ELEMENTS - baseElements) / rowElements));
+  assert.equal(rows.length, Math.min(total, capacity), 'fill the page without exceeding either bound');
+  assert.ok(document.querySelectorAll('*').length <= MAX_DOCUMENT_ELEMENTS);
+  return Math.ceil(total / capacity);
+}
 
 const credentialBase = 'http://localhost:9090';
 const credentialKey = base => `checknetwork.bearer.v1:${encodeURIComponent(base)}`;
@@ -802,8 +814,8 @@ test('stored labels are sanitized, bounded, rewritten, paginated, and progressiv
   assert.equal(stored.length, 500);
   assert.equal(stored.find(row => row.ip === '10.0.0.1').label, 'last wins');
   assert.match(document.querySelector('#ip-label-message').textContent, /제외|생략/);
-  assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100);
-  assert.equal(document.querySelector('#ip-label-page-status').textContent, '1 / 5');
+  const pages = assertBudgetedLabelPage(document, stored.length);
+  assert.equal(document.querySelector('#ip-label-page-status').textContent, `1 / ${pages}`);
   assert.equal(document.querySelector('#ip-label-prev').disabled, true);
   assert.equal(document.querySelector('#ip-label-next').disabled, false);
   assert.ok(batches.length > 1);
@@ -812,14 +824,14 @@ test('stored labels are sanitized, bounded, rewritten, paginated, and progressiv
 
   const next = document.querySelector('#ip-label-next'); next.focus(); next.click(); drain(queue);
   assert.equal(document.activeElement, next);
-  assert.equal(document.querySelector('#ip-label-page-status').textContent, '2 / 5');
-  assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100);
+  assert.equal(document.querySelector('#ip-label-page-status').textContent, `2 / ${pages}`);
+  assertBudgetedLabelPage(document, stored.length);
 
   const deleted = document.querySelector('#ip-label-rows .mapping-delete'); deleted.focus(); deleted.click(); drain(queue);
   assert.equal(document.activeElement?.classList.contains('mapping-delete'), true, 'delete must move focus to a surviving row action');
 });
 
-test('maximum report navigation and 100-row label import stay within the document-wide element budget', async t => {
+test('maximum report navigation and budgeted label import stay within the document-wide element budget', async t => {
   const maximum = JSON.parse(await readFile(new URL('../testdata/maximum-analysis-report.json', import.meta.url), 'utf8'));
   const queue = []; let peak = 0;
   const { dom, app, document } = setup(async () => response(JSON.stringify(maximum)), {
@@ -830,7 +842,7 @@ test('maximum report navigation and 100-row label import stay within the documen
 
   await app.start('diagnostics'); observe();
   const initialElements = document.querySelectorAll('*').length;
-  assert.equal(initialElements, 738, 'maximum valid report baseline including ten static Geo detail/navigation elements and one map/detail workspace');
+  assert.equal(initialElements, 760, 'maximum valid report baseline including Geo detail/navigation and shared-prefix controls');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -838,7 +850,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   await flush(); drainObserved();
 
-  assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100);
+  assertBudgetedLabelPage(document, 500);
   assert.ok(peak <= 1200, `document peak ${peak}`);
   assert.equal(document.querySelector('#analysis-report').childElementCount, 0, 'inactive report is unmounted, not retained hidden');
 
@@ -847,7 +859,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   assert.equal(document.querySelectorAll('.finding-toggle').length, 40, 'navigation reconstructs the owned report');
   assert.ok(document.querySelectorAll('*').length <= initialElements, 'reconstructed report remains no larger than the original mount');
   document.querySelector('[data-view-link="ip-labels"]').click(); drainObserved();
-  assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100, 'navigation reconstructs the current label page');
+  assertBudgetedLabelPage(document, 500); // Navigation reconstructs the budgeted page.
   assert.ok(peak <= 1200, `document peak after repeated navigation ${peak}`);
   t.diagnostic(`maximum report/label navigation DOM peak=${peak}`);
 });
@@ -2525,4 +2537,96 @@ test('responsive and accessibility contracts cover 320/375/400, focus, reduced m
   assert.match(css, /\.standalone-topology\s+\[data-detail\]:(?:hover|focus)[^}]*::after/s);
   assert.match(css, /--observation-width/);
   assert.match(css, /--route-color/);
+});
+
+test('common prefix view: empty input keeps the intro state and hides results', async () => {
+  const { document } = setup();
+  document.querySelector('[data-view-link="common-prefix"]').click();
+  assert.equal(document.querySelector('#diagnostics-view').hidden, true);
+  assert.equal(document.querySelector('#common-prefix-view').hidden, false);
+  const input = document.querySelector('#common-prefix-input');
+  input.value = '   \n  ';
+  document.querySelector('#common-prefix-form').dispatchEvent(new document.defaultView.Event('submit', { bubbles: true, cancelable: true }));
+  await flush();
+  assert.equal(document.querySelector('#common-prefix-empty').hidden, false);
+  assert.equal(document.querySelector('#common-prefix-report-section').hidden, true);
+});
+
+test('common prefix view rejects input beyond the pre-split character limit', async () => {
+  const { document } = setup();
+  document.querySelector('[data-view-link="common-prefix"]').click();
+  const input = document.querySelector('#common-prefix-input');
+  assert.equal(input.maxLength, 8192);
+  input.value = 'x'.repeat(8193); // DOM 속성 우회 값을 실행 경로에서도 거부해야 한다.
+  document.querySelector('#common-prefix-form').dispatchEvent(new document.defaultView.Event('submit', { bubbles: true, cancelable: true }));
+  await flush();
+  assert.equal(document.querySelector('#common-prefix-report-section').hidden, true);
+  assert.match(document.querySelector('#common-prefix-empty').textContent, /최대 8192자/);
+  assert.equal(document.querySelector('#common-prefix-result').childElementCount, 0);
+});
+
+test('common prefix view renders per-family cards with correct CIDR and range', async () => {
+  const { document } = setup();
+  document.querySelector('[data-view-link="common-prefix"]').click();
+  document.querySelector('#common-prefix-input').value = '192.168.0.5\n192.168.3.7,2001:db8::5;2001:db8::77';
+  document.querySelector('#common-prefix-form').dispatchEvent(new document.defaultView.Event('submit', { bubbles: true, cancelable: true }));
+  await flush();
+  assert.equal(document.querySelector('#common-prefix-empty').hidden, true);
+  assert.equal(document.querySelector('#common-prefix-report-section').hidden, false);
+
+  const cards = [...document.querySelectorAll('#common-prefix-result .common-prefix-card')];
+  assert.equal(cards.length, 2, 'v4 and v6 each produce one card');
+
+  const v4Card = cards.find(card => card.querySelector('.common-v4'));
+  const v6Card = cards.find(card => card.querySelector('.common-v6'));
+  assert.ok(v4Card && v6Card);
+
+  // v4: 192.168.0.5 vs 192.168.3.7 -> /22 network, range 192.168.0.0~192.168.3.255
+  assert.match(v4Card.querySelector('[data-metric="cidr"]')?.textContent || v4Card.textContent, /192\.168\.0\.0\/22/);
+  assert.match(v4Card.textContent, /192\.168\.0\.0 ~ 192\.168\.3\.255|192\.168\.0\.0\s*~\s*192\.168\.3\.255/);
+
+  // v6: 2001:db8::5 vs 2001:db8::77 -> /121 network
+  assert.match(v6Card.textContent, /2001:db8::\/121/);
+});
+
+test('common prefix view reports invalid addresses as skipped', async () => {
+  const { document } = setup();
+  document.querySelector('[data-view-link="common-prefix"]').click();
+  document.querySelector('#common-prefix-input').value = 'not-an-ip\n999.999.1.1\n8.8.8.8';
+  document.querySelector('#common-prefix-form').dispatchEvent(new document.defaultView.Event('submit', { bubbles: true, cancelable: true }));
+  await flush();
+  const summary = document.querySelector('#common-prefix-summary').textContent;
+  assert.match(summary, /무효 주소 \d+개 제외/);
+  // 유효한 8.8.8.8 하나만 남으므로 v4 단독 카드가 표시된다
+  const aloneNote = document.querySelector('.common-prefix-card .common-prefix-note');
+  assert.ok(aloneNote);
+});
+
+test('common prefix view re-renders without accumulating stale cards', async () => {
+  const { document } = setup();
+  document.querySelector('[data-view-link="common-prefix"]').click();
+  const form = document.querySelector('#common-prefix-form');
+  const submit = () => form.dispatchEvent(new document.defaultView.Event('submit', { bubbles: true, cancelable: true }));
+
+  document.querySelector('#common-prefix-input').value = '192.168.0.5\n192.168.3.7';
+  submit(); await flush();
+  const firstCount = document.querySelectorAll('#common-prefix-result .common-prefix-card').length;
+  assert.equal(firstCount, 1);
+
+  // 다른 family 조합으로 다시 렌더하면 카드가 교체되어 누적되지 않는다
+  document.querySelector('#common-prefix-input').value = '2001:db8::5\n2001:db8::77';
+  submit(); await flush();
+  assert.equal(document.querySelectorAll('#common-prefix-result .common-prefix-card').length, 1);
+});
+
+test('common prefix view stays within the document element budget', async () => {
+  const { document } = setup();
+  document.querySelector('[data-view-link="common-prefix"]').click();
+  document.querySelector('#common-prefix-input').value = [
+    ...Array.from({ length: 32 }, (_, index) => `10.0.0.${index + 1}`),
+    ...Array.from({ length: 32 }, (_, index) => `2001:db8::${(index + 1).toString(16)}`)
+  ].join('\n');
+  document.querySelector('#common-prefix-form').dispatchEvent(new document.defaultView.Event('submit', { bubbles: true, cancelable: true }));
+  await flush();
+  assert.ok(document.querySelectorAll('*').length <= 1200, `document elements ${document.querySelectorAll('*').length}`);
 });

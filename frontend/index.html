@@ -13,6 +13,7 @@
       <a href="#topology" data-view-link="topology">경로 토폴로지</a>
       <a href="#geo-map" data-view-link="geo-map">Geo 경로 지도</a>
       <a href="#ip-labels" data-view-link="ip-labels">IP 라벨</a>
+      <a href="#common-prefix" data-view-link="common-prefix">공통 구간</a>
     </nav>
     <header class="product-header">
       <p class="eyebrow">CHECKNETWORK / OPERATIONS</p>
@@ -174,6 +175,27 @@ google.com</textarea></label>
           <span id="ip-label-page-status" aria-live="polite">1 / 1</span>
           <button id="ip-label-next" class="secondary" type="button">다음</button>
         </nav>
+      </section>
+    </div>
+
+    <div id="common-prefix-view" class="app-view" data-view="common-prefix" hidden>
+      <section class="panel topology-setup" aria-labelledby="common-prefix-title">
+        <div class="section-head">
+          <div><p class="step">03 / SHARED SEGMENT</p><h2 id="common-prefix-title">IP 공통 구간 분석</h2></div>
+        </div>
+        <p class="section-description">여러 IP 주소를 입력하면 IPv4와 IPv6 family별로, 그 안에서 모든 주소가 공유하는 가장 긴 공통 접두를 CIDR과 주소 범위로 알려줍니다. 한 줄에 하나씩 넣거나 쉼표로 구분해도 됩니다.</p>
+        <form id="common-prefix-form">
+          <label class="topology-target-field common-prefix-target-field">분석 대상 IP <span class="field-hint">한 줄에 하나 · 최대 64개</span><textarea id="common-prefix-input" rows="5" maxlength="8192" placeholder="192.168.1.10&#10;192.168.1.55&#10;192.168.2.10&#10;2001:db8::7"></textarea></label>
+          <div class="common-prefix-actions">
+            <button class="primary" id="run-common-prefix" type="submit">공통 구간 분석</button>
+          </div>
+        </form>
+      </section>
+      <p id="common-prefix-empty" class="empty-topology" role="status" aria-live="polite">분석할 IP 주소를 넣고 공통 구간을 확인해 보세요.</p>
+      <section id="common-prefix-report-section" class="report-panel" hidden aria-labelledby="common-prefix-result-title">
+        <div class="section-head"><div><p class="step">결과</p><h2 id="common-prefix-result-title">공통 구간 결과</h2></div></div>
+        <p id="common-prefix-summary" class="common-prefix-summary" role="status" aria-live="polite"></p>
+        <div id="common-prefix-result"></div>
       </section>
     </div>
   </main>
