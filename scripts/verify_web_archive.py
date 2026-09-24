@@ -429,7 +429,7 @@ def _config_from_archive(
 
 def _authenticated_base_contract(
     path: str, limits: Limits, policy: Policy
-) -> tuple[tuple[dict[str, Any], ...], int]:
+) -> tuple[tuple[dict[str, Any], ...], int, dict[str, Any]]:
     config, contents, entry, directories = _config_from_archive(path, limits, False)
     config_name = entry["Config"]
     config_digest = _digest_named_blob(config_name, contents[config_name])
@@ -472,7 +472,10 @@ def _authenticated_base_contract(
     ).hexdigest()
     if history_digest != policy.base_history_digest:
         raise ValidationError("base archive does not have the exact pinned nginx history")
-    return tuple(history), len(policy.base_diff_ids)
+    runtime = config.get("config")
+    if not isinstance(runtime, dict):
+        raise ValidationError("pinned nginx runtime config is missing")
+    return tuple(history), len(policy.base_diff_ids), runtime
 
 
 def validate(archive_path: str, base_archive: str, source_dir: str, version: str, revision: str,
@@ -482,12 +485,25 @@ def validate(archive_path: str, base_archive: str, source_dir: str, version: str
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValidationError("expected revision is not exact lowercase 40-hex")
     config, contents, entry, directories = _config_from_archive(archive_path, limits, False)
-    base_history, base_count = _authenticated_base_contract(base_archive, limits, policy)
+    base_history, base_count, base_runtime = _authenticated_base_contract(base_archive, limits, policy)
     if config.get("architecture") != "amd64" or config.get("os") != "linux":
         raise ValidationError("derived Web archive platform is not exact linux/amd64")
-    labels = config.get("config", {}).get("Labels", {})
-    if labels.get("org.opencontainers.image.version") != version or labels.get("org.opencontainers.image.revision") != revision:
+    runtime = config.get("config")
+    if not isinstance(runtime, dict):
+        raise ValidationError("runtime config must be an object")
+    labels = runtime.get("Labels")
+    if (not isinstance(labels, dict) or not all(isinstance(value, str) for value in labels.values()) or
+            labels.get("org.opencontainers.image.version") != version or labels.get("org.opencontainers.image.revision") != revision):
         raise ValidationError("OCI version/revision labels do not match")
+    # The Web Dockerfile only adds labels and EXPOSE 80. Authenticate the base
+    # before using its complete runtime contract: entrypoint, command, user
+    # (including absence), directory, exact env list and all remaining fields.
+    # This rejects added overrides as well as changed/missing inherited values;
+    # borrowed-base smoke does not execute the derived image's defaults.
+    expected_runtime = {key: value for key, value in base_runtime.items() if key != "Labels"}
+    expected_runtime["ExposedPorts"] = {"80/tcp": {}}
+    if {key: value for key, value in runtime.items() if key != "Labels"} != expected_runtime:
+        raise ValidationError("runtime config does not match the pinned nginx base with allowed overrides")
     rootfs = config.get("rootfs")
     if not isinstance(rootfs, dict) or rootfs.get("type") != "layers" or not isinstance(rootfs.get("diff_ids"), list):
         raise ValidationError("image rootfs is malformed")

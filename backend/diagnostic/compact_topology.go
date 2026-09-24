@@ -428,7 +428,9 @@ func buildCompactTopology(report Report, options compactBuildOptions) compactBui
 					aggregate.geolocation = raw.Geolocation
 					aggregate.asn = asn
 				}
-				if raw.Hop > 0 && raw.LatencyMS >= 0 && !math.IsNaN(raw.LatencyMS) && !math.IsInf(raw.LatencyMS, 0) {
+				// Unknown hops and synthetic failure destinations carry no RTT
+				// observation. A responsive zero, however, is a real sample.
+				if raw.Hop > 0 && (raw.Status == "healthy" || raw.Status == "degraded") && raw.LatencyMS >= 0 && !math.IsNaN(raw.LatencyMS) && !math.IsInf(raw.LatencyMS, 0) {
 					aggregate.latencyTotal += raw.LatencyMS
 					aggregate.latencyCount++
 				}

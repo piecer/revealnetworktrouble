@@ -711,12 +711,17 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       if ([...rawLabel].length > LABEL || [...rawNote].length > NOTE) return { imported: 0, invalid: [], omitted: 0, reason: 'characters' };
       if (ip && !ipLabels.has(ip) && ipLabels.size >= LABEL_RECORDS) return { imported: 0, invalid: [], omitted: 1, reason: 'capacity' };
     }
-    const incoming = normalizeIPLabelRows(rows);
-    const combined = normalizeIPLabelRows([...ipLabels.values(), ...incoming.labels.values()]);
+    // Normalize the whole bounded file before admission so an existing-key update
+    // cannot be discarded just because 500 new keys sort ahead of it.
+    const incoming = normalizeIPLabelRows(rows, rows.length);
+    const combined = new Map(ipLabels);
     let imported = 0;
-    incoming.labels.forEach((mapping, key) => { if (combined.labels.get(key)?.label === mapping.label && combined.labels.get(key)?.note === mapping.note) imported++; });
+    incoming.labels.forEach((mapping, key) => {
+      if (!combined.has(key) && combined.size >= LABEL_RECORDS) return;
+      combined.set(key, mapping); imported++;
+    });
     const capacityOmitted = incoming.labels.size - imported;
-    ipLabels = combined.labels;
+    ipLabels = new Map([...combined].sort(([left], [right]) => compareCanonicalIP(left, right)));
     saveIPLabels();
     renderIPLabelTable();
     refreshRenderedLabels();
@@ -753,12 +758,10 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
 
   function renderIPLabelTable({ focusIndex } = {}) {
     if (!activeInstance) return;
+    if (activeView !== 'ip-labels') { unmountIPLabelTable(); return; }
     const root = doc.querySelector('#ip-label-rows'); if (!root) return;
-    const rows = [...ipLabels.values()]; const pages = Math.max(1, Math.ceil(rows.length / LABEL_PAGE));
-    ipLabelPage = Math.max(0, Math.min(ipLabelPage, pages - 1));
-    const visible = rows.slice(ipLabelPage * LABEL_PAGE, (ipLabelPage + 1) * LABEL_PAGE);
+    const rows = [...ipLabels.values()];
     const previous = doc.querySelector('#ip-label-prev'); const next = doc.querySelector('#ip-label-next'); const status = doc.querySelector('#ip-label-page-status');
-    previous.disabled = ipLabelPage === 0; next.disabled = ipLabelPage >= pages - 1; status.textContent = `${ipLabelPage + 1} / ${pages}`;
     cancelIPLabelRender();
     const generation = ipLabelRenderGeneration;
     const token = { instance: labelInstance, generation };
@@ -769,6 +772,17 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     ipLabelRenderLimited = false;
     view.dataset.state = 'rendering'; view.setAttribute('aria-busy', 'true');
     root.replaceChildren(); let offset = 0;
+    // Plan after removing the old page: hidden target controls still consume DOM.
+    // Every label row has the same structure; measure it off-document rather than
+    // relying on a row count that ignores the document-wide element budget.
+    const sample = rows.length ? makeIPLabelRow(doc.implementation.createHTMLDocument(''), rows[0]) : null;
+    const rowElements = sample ? 1 + sample.querySelectorAll('*').length : 1;
+    const remainingElements = Math.max(0, MAX_DOCUMENT_ELEMENTS - doc.querySelectorAll('*').length);
+    const pageSize = Math.max(1, Math.min(LABEL_PAGE, Math.floor(remainingElements / rowElements)));
+    const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+    ipLabelPage = Math.max(0, Math.min(ipLabelPage, pages - 1));
+    const visible = rows.slice(ipLabelPage * pageSize, (ipLabelPage + 1) * pageSize);
+    previous.disabled = ipLabelPage === 0; next.disabled = ipLabelPage >= pages - 1; status.textContent = `${ipLabelPage + 1} / ${pages}`;
     const finish = () => {
       if (!ownsRender()) return;
       view.dataset.state = 'ready'; view.setAttribute('aria-busy', 'false');
@@ -847,6 +861,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   let currentTopologyModel;
   let renderSource;
   let renderPhase = 'idle';
+  let renderEmptyMessage = '';
   let finalTopologyPlan;
   const topologyViewState = { mode: '2d', transform: resetViewTransform() };
   for (const input of doc.querySelectorAll('input[name="topology-view-mode"]')) input.checked = input.value === topologyViewState.mode;
@@ -882,6 +897,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
         finalTopologyPlan = { ownerId: state.ownerId, inputSignature: state.inputSignature, generation: state.generation, view: state.view, plan: state.plan };
         if (state.view === 'topology' && state.empty !== true && state.renderable !== false) scheduleTopologyResize();
       }
+      renderEmptyMessage = state.empty === true ? state.emptyMessage : '';
       renderPhase = state.phase === 'error' ? 'render-error'
         : state.renderable === false ? 'render-limited'
           : state.empty === true ? 'render-empty' : state.phase;
@@ -978,6 +994,10 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     renderCoordinator.start({
       ownerId: renderSource.renderOwnerId, inputSignature: renderSource.signature,
       view: geo ? 'geo' : 'topology', model: filteredTopologyModel(), root, status,
+      observationState: {
+        selectedCount: selectedTopologyTargets.size,
+        errorCodes: currentTopologyReport.results.filter((_, index) => selectedTopologyTargets.has(index)).map(result => result.error_code)
+      },
       mode: topologyViewState.mode, transform: topologyViewState.transform,
       workspace: {
         tooltip: doc.querySelector('#topology-node-tooltip'),
@@ -1075,9 +1095,10 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   }
   function readInput(purpose) {
     const common = { apiBaseURL: doc.querySelector('#api-base-url').value, authEnabled: doc.querySelector('#public-auth-enabled').checked };
-    return purpose === 'diagnostics'
-      ? canonicalDiagnosticsInput({ ...common, targets: collectTargets(), timeout_ms: doc.querySelector('#timeout').value })
-      : canonicalTopologyInput({ ...common, addresses: doc.querySelector('#topology-targets').value.split(/\n|,/), attempts: doc.querySelector('#topology-attempts').value, timeout_ms: doc.querySelector('#topology-timeout').value });
+    if (purpose === 'diagnostics') return canonicalDiagnosticsInput({ ...common, targets: collectTargets(), timeout_ms: doc.querySelector('#timeout').value });
+    const addresses = doc.querySelector('#topology-targets').value.split(/[\r\n,]/).map(address => address.trim()).filter(Boolean);
+    if (!addresses.length) throw new TypeError('invalid topology address');
+    return canonicalTopologyInput({ ...common, addresses, attempts: doc.querySelector('#topology-attempts').value, timeout_ms: doc.querySelector('#topology-timeout').value });
   }
   function clearRequestAlert(purpose) {
     const alert = doc.querySelector('#request-alert');
@@ -1105,7 +1126,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       ? '네트워크 응답 완료 · 화면을 표시하는 중입니다.'
       : renderStateName === 'render-error' ? '네트워크 응답은 완료했지만 화면 표시 중 오류가 발생했습니다. 원시 JSON 다운로드는 사용할 수 있습니다.'
         : renderStateName === 'render-limited' ? '문서 요소 한도로 토폴로지를 표시할 수 없습니다. 원시 JSON 다운로드는 사용할 수 있습니다.'
-          : renderStateName === 'render-empty' ? '선택한 TRACE 경로가 0개입니다.'
+          : renderStateName === 'render-empty' ? renderEmptyMessage
             : { idle: '입력을 확인하고 실행해 주세요.', loading: purpose === 'diagnostics' ? '진단 중입니다.' : '경로 분석 중입니다.', ready: purpose === 'topology' ? '네트워크 응답과 화면 표시가 완료되었습니다.' : '분석이 완료되었습니다.', error: '요청을 완료하지 못했습니다.', cancelled: '요청이 취소되었습니다.' }[lane.phase];
   }
   function publishError(purpose, error) {
@@ -1445,7 +1466,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     if (row) { const index = [...row.parentElement.children].indexOf(row); ipLabels.delete(row.dataset.ip); saveIPLabels(); renderIPLabelTable({ focusIndex: index }); refreshRenderedLabels(); }
   });
   listen(doc.querySelector('#ip-label-prev'), 'click', () => { if (ipLabelPage > 0) { ipLabelPage--; renderIPLabelTable(); } });
-  listen(doc.querySelector('#ip-label-next'), 'click', () => { if ((ipLabelPage + 1) * LABEL_PAGE < ipLabels.size) { ipLabelPage++; renderIPLabelTable(); } });
+  listen(doc.querySelector('#ip-label-next'), 'click', event => { if (!event.currentTarget.disabled) { ipLabelPage++; renderIPLabelTable(); } });
   listen(doc.querySelector('#topology-label-address'), 'change', event => {
     resetTopologyLabelEditorToIP();
     const ip = event.target.value.trim();
@@ -1521,9 +1542,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       try { request.controller.abort('destroy'); } catch { /* best-effort request cleanup */ }
     }
     active.clear();
-    cancelIPLabelRender();
-    const labelRoot = doc.querySelector('#ip-label-rows');
-    if (LABEL_ROOT_OWNERS.get(labelRoot)?.instance === labelInstance) LABEL_ROOT_OWNERS.delete(labelRoot);
+    unmountIPLabelTable();
     try { renderCoordinator?.dispose(); } catch { /* scheduler cleanup must not break destruction */ }
     renderSource = undefined; currentReport = undefined; currentTopologyReport = undefined; currentTopologyModel = undefined;
     return true;

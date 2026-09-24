@@ -2,6 +2,7 @@ FROM nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a
 ARG VERSION
 ARG REVISION
 ARG SOURCE_DATE_EPOCH
+ARG API_PORT=9090
 LABEL org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.revision="$REVISION"
 RUN test -n "$VERSION" && \
@@ -16,6 +17,15 @@ RUN case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) \
 RUN rm -rf /usr/share/nginx/html/* /usr/share/nginx/html/.[!.]* /usr/share/nginx/html/..?*
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY index.html styles.css app.js state.js topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js /usr/share/nginx/html/
+# Compose can customize the development port; the release default is byte-preserving.
+RUN case "$API_PORT" in ''|0*|*[!0-9]*) \
+      printf '%s\n' 'API_PORT must be an integer from 1 to 65535 (no leading zeros)' >&2; exit 1 ;; \
+    esac && \
+    { test "${#API_PORT}" -le 5 && test "$API_PORT" -le 65535; } || \
+      { printf '%s\n' 'API_PORT must be an integer from 1 to 65535 (no leading zeros)' >&2; exit 1; }
+RUN if [ "$API_PORT" != 9090 ]; then \
+      sed -i "s|value=\"http://localhost:9090\"|value=\"http://localhost:$API_PORT\"|" /usr/share/nginx/html/index.html; \
+    fi
 RUN cd /usr/share/nginx/html && \
     sha256sum app.js index.html state.js styles.css topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js | sort -k2 > .checknetwork-assets.sha256 && \
     touch -d "@$SOURCE_DATE_EPOCH" /etc/nginx/nginx.conf . .checknetwork-assets.sha256 \

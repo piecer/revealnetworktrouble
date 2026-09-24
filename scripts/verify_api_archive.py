@@ -544,17 +544,31 @@ def _validate_config(config: Any, version: str, revision: str, policy: Policy, d
     if not isinstance(runtime, dict):
         raise ValidationError("runtime config is missing")
     labels = runtime.get("Labels")
-    if not isinstance(labels, dict) or labels.get("org.opencontainers.image.version") != version or labels.get("org.opencontainers.image.revision") != revision:
+    if (not isinstance(labels, dict) or not all(isinstance(value, str) for value in labels.values()) or
+            labels.get("org.opencontainers.image.version") != version or labels.get("org.opencontainers.image.revision") != revision):
         raise ValidationError("OCI version/revision labels do not match")
     if runtime.get("User") != "65532:65532":
         raise ValidationError("runtime User must be exactly 65532:65532")
     if runtime.get("Entrypoint") != ["/checknetwork-api"]:
         raise ValidationError("runtime Entrypoint must be exactly /checknetwork-api")
     env = runtime.get("Env")
-    if not isinstance(env, list) or [item for item in env if isinstance(item, str) and item.startswith("PATH=")] != ["PATH=" + policy.path_env]:
-        raise ValidationError("runtime PATH is not exact")
+    # The canonical image inherits only Alpine's PATH, with / prepended for
+    # traceroute. CHECKNETWORK_* belongs to deployment configuration, never to
+    # baked defaults. Exact list equality also rejects duplicate names, malformed
+    # entries/types and other startup-affecting variables (not just bad ADDR).
+    if env != ["PATH=" + policy.path_env]:
+        raise ValidationError("runtime environment must contain only the exact PATH")
     if runtime.get("ExposedPorts") != {"8080/tcp": {}}:
         raise ValidationError("runtime exposed port must be exactly 8080/tcp")
+    if runtime.get("WorkingDir") != "/":
+        raise ValidationError("runtime WorkingDir must be exactly /")
+    # ENTRYPOINT resets the inherited Alpine shell command. No default args
+    # may divert startup (for example --version); accept only empty encodings.
+    if runtime.get("Cmd") not in (None, []):
+        raise ValidationError("runtime Cmd must be absent, null or an empty list")
+    allowed = {"Labels", "User", "Entrypoint", "Env", "ExposedPorts", "WorkingDir", "Cmd"}
+    if set(runtime) - allowed:
+        raise ValidationError("runtime config contains unsupported fields")
     return rootfs
 
 

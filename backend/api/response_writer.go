@@ -104,6 +104,7 @@ func (writer *responseWriter) setCORSHeaders(origin string) {
 	header.Set("Vary", "Origin")
 	header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	header.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	header.Set("Access-Control-Expose-Headers", "Retry-After")
 }
 
 func (writer *responseWriter) limitRequestBody(request *http.Request, limit int64) {

@@ -461,6 +461,8 @@ test('destroy aborts owned work and gates every public method without affecting 
 test('label CRUD and view events remain owned by their app instance', async () => {
   const a = setup(undefined, { configureWindow(win) { win.localStorage.setItem('checknetwork.ip-labels.v1', JSON.stringify([{ ip: '192.0.2.1', label: 'A-only', note: '' }])); } });
   const b = setup(undefined, { configureWindow(win) { win.localStorage.setItem('checknetwork.ip-labels.v1', JSON.stringify([{ ip: '198.51.100.1', label: 'B-only', note: '' }])); } });
+  a.document.querySelector('[data-view-link="ip-labels"]').click();
+  b.document.querySelector('[data-view-link="ip-labels"]').click();
   await flush();
   a.document.querySelector('#ip-label-address').value = '203.0.113.10';
   a.document.querySelector('#ip-label-name').value = 'A-new';
@@ -474,7 +476,7 @@ test('label CRUD and view events remain owned by their app instance', async () =
   assert.deepEqual(JSON.parse(b.dom.window.localStorage.getItem('checknetwork.ip-labels.v1')).map(row => row.label), ['B-only']);
 
   const bView = b.document.querySelector('#diagnostics-view').hidden;
-  a.document.querySelector('[data-view-link="ip-labels"]').click();
+  a.document.querySelector('[data-view-link="diagnostics"]').click();
   a.dom.window.dispatchEvent(new a.dom.window.Event('hashchange'));
   assert.equal(b.document.querySelector('#diagnostics-view').hidden, bView);
 });
@@ -737,7 +739,7 @@ test('target row admission counts hidden retained views and accepts exact DOM fi
 });
 
 test('initial stored-label render failure destroys partial app before rethrow and recreation has one submission', async () => {
-  const dom = new JSDOM(markup, { url: 'https://bootstrap.example/#diagnostics' });
+  const dom = new JSDOM(markup, { url: 'https://bootstrap.example/#ip-labels' });
   dom.window.localStorage.setItem('checknetwork.ip-labels.v1', JSON.stringify([{ ip: '192.0.2.4', label: 'stored', note: '' }]));
   let abandonedFetches = 0;
   assert.throws(() => createApp({
@@ -783,6 +785,7 @@ test('stored labels are sanitized, bounded, rewritten, paginated, and progressiv
   const rows = [...labelRows(502), { ip: '999.1.1.1', label: 'bad' }, { ip: '10.0.0.1', label: 'last wins' }];
   const queue = []; const batches = [];
   const { dom, document } = setup(undefined, {
+    url: 'https://labels.example/#ip-labels',
     scheduleLabelRender: callback => queue.push(callback),
     configureWindow(win) {
       win.localStorage.setItem('checknetwork.ip-labels.v1', JSON.stringify(rows));
@@ -826,7 +829,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   const drainObserved = () => { while (queue.length) { queue.shift()(); observe(); } };
 
   await app.start('diagnostics'); observe();
-  assert.equal(document.querySelectorAll('*').length, 729, 'maximum valid report baseline including topology controls, RTT legend and fixed tooltip');
+  assert.equal(document.querySelectorAll('*').length, 727, 'maximum valid report baseline without hidden empty label rows');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -841,7 +844,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   document.querySelector('[data-view-link="diagnostics"]').click(); observe();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 0);
   assert.equal(document.querySelectorAll('.finding-toggle').length, 40, 'navigation reconstructs the owned report');
-  assert.ok(document.querySelectorAll('*').length <= 729, 'reconstructed report remains no larger than the original mount');
+  assert.ok(document.querySelectorAll('*').length <= 727, 'reconstructed report remains no larger than the original mount');
   document.querySelector('[data-view-link="ip-labels"]').click(); drainObserved();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100, 'navigation reconstructs the current label page');
   assert.ok(peak <= 1200, `document peak after repeated navigation ${peak}`);
@@ -2457,7 +2460,7 @@ test('Geo copy describes the bounded Canvas overview without promising interacti
 });
 
 test('IP-label form remains wired with progressive pagination', async () => {
-  const { dom, document } = setup();
+  const { dom, document } = setup(undefined, { url: 'https://labels.example/#ip-labels' });
   document.querySelector('#ip-label-address').value = '203.0.113.10';
   document.querySelector('#ip-label-name').value = 'Seoul edge';
   document.querySelector('#ip-label-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));

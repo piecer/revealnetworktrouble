@@ -15,6 +15,22 @@ import verify_web_archive as validator
 VERSION = "1.2.3"
 REVISION = "1" * 40
 
+# Runtime metadata observed by read-only inspect of the pinned nginx base.
+# This remains synthetic archive evidence, not a built-image acceptance gate.
+BASE_RUNTIME = {
+    "ExposedPorts": {"80/tcp": {}},
+    "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "NGINX_VERSION=1.27.5", "PKG_RELEASE=1", "DYNPKG_RELEASE=1",
+        "NJS_VERSION=0.8.10", "NJS_RELEASE=1",
+    ],
+    "Entrypoint": ["/docker-entrypoint.sh"],
+    "Cmd": ["nginx", "-g", "daemon off;"],
+    "WorkingDir": "/",
+    "Labels": {"maintainer": "NGINX Docker Maintainers <docker-maint@nginx.com>"},
+    "StopSignal": "SIGQUIT",
+}
+
 
 def layer_bytes(members):
     payload = io.BytesIO()
@@ -64,11 +80,12 @@ def blob_name(data):
 
 def config_bytes(diff_ids, history, *, derived):
     value = {"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": diff_ids}, "history": history}
+    value["config"] = json.loads(json.dumps(BASE_RUNTIME))
     if derived:
-        value["config"] = {"Labels": {
+        value["config"]["Labels"].update({
             "org.opencontainers.image.version": VERSION,
             "org.opencontainers.image.revision": REVISION,
-        }}
+        })
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
@@ -81,17 +98,18 @@ def archive_bytes(layers, history, *, derived, config_override=None, outer_extra
     entries = [("manifest.json", json.dumps(manifest, separators=(",", ":")).encode()), (config_name, config)]
     entries.extend(zip(layer_names, layers))
     if buildx_shape:
+        docker_media = all(layer.startswith(b"\x1f\x8b") for layer in layers)
         oci = {
             "schemaVersion": 2,
-            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json" if docker_media else "application/vnd.oci.image.manifest.v1+json",
             "config": {
-                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "mediaType": "application/vnd.docker.container.image.v1+json" if docker_media else "application/vnd.oci.image.config.v1+json",
                 "digest": "sha256:" + config_name.rsplit("/", 1)[1],
                 "size": len(config),
             },
             "layers": [
                 {
-                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip" if docker_media else "application/vnd.oci.image.layer.v1.tar" + ("+gzip" if data.startswith(b"\x1f\x8b") else ""),
                     "digest": "sha256:" + name.rsplit("/", 1)[1],
                     "size": len(data),
                 }
@@ -111,6 +129,10 @@ def archive_bytes(layers, history, *, derived, config_override=None, outer_extra
                 "platform": {"architecture": "amd64", "os": "linux"},
             }],
         }
+        if not docker_media:
+            del index["mediaType"]
+            del index["manifests"][0]["annotations"]
+            del index["manifests"][0]["platform"]
         entries = [
             ("blobs", None),
             ("blobs/sha256", None),
@@ -211,6 +233,17 @@ class Fixture:
         )
         self.archive_path = self._write("derived-mutated.tar", archive)
 
+    def replace_runtime(self, runtime):
+        # Regenerate config/manifest/index names, digests and sizes. Keep the
+        # authenticated base and all layer/diff-ID identities unchanged.
+        config = json.loads(self.config)
+        config["config"] = runtime
+        archive, _, _, _ = archive_bytes(
+            [self.base_layer, *self.derived_layers], self.history, derived=True,
+            config_override=json.dumps(config).encode(), buildx_shape=True,
+        )
+        self.archive_path = self._write("runtime-mutated.tar", archive)
+
     def validate(self):
         return validator.validate(
             self.archive_path, self.base_path, self.source, VERSION, REVISION, policy=self.policy
@@ -285,6 +318,106 @@ class ArchiveSafetyTest(unittest.TestCase):
         )
         fx.archive_path = fx._write("derived-buildx.tar", derived_archive)
         fx.validate()
+
+    def test_runtime_defaults_must_match_the_authenticated_base(self):
+        mutations = {
+            "Entrypoint": [["/does-not-exist"], [], None, "/docker-entrypoint.sh", {}, [None]],
+            "Cmd": [["--cannot-start"], ["nginx", "-v"], [], None, "nginx", {}, False],
+            "User": ["65532:65532", "nginx", None, 0, [], {}],
+            "WorkingDir": ["/does-not-exist", "", None, [], {}],
+            "StopSignal": ["SIGSTOP", None, 9, []],
+            "ExposedPorts": [{"8080/tcp": {}}, {"80/tcp": []}, None, []],
+            "Healthcheck": [{"Test": ["CMD", "/does-not-exist"]}, None, []],
+            "Volumes": [{"/usr/share/nginx/html": {}}, {}, None],
+            "OnBuild": [["RUN /does-not-exist"], []],
+            "Shell": [["/bin/sh", "-c"]],
+            "ArgsEscaped": [True, False, 0],
+            "NetworkDisabled": [True, False],
+            "UnknownRuntimeField": [None, {}],
+        }
+        fx = Fixture()
+        self.addCleanup(fx.close)
+        fx.validate()
+        for field, values in mutations.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    runtime = json.loads(fx.config)["config"]
+                    runtime[field] = value
+                    fx.replace_runtime(runtime)
+                    with self.assertRaisesRegex(validator.ValidationError, "runtime"):
+                        fx.validate()
+        for field in ("Entrypoint", "Cmd", "WorkingDir", "Env", "StopSignal", "ExposedPorts"):
+            with self.subTest(missing=field):
+                runtime = json.loads(fx.config)["config"]
+                del runtime[field]
+                fx.replace_runtime(runtime)
+                with self.assertRaisesRegex(validator.ValidationError, "runtime"):
+                    fx.validate()
+
+    def test_runtime_environment_has_no_changed_extra_or_duplicate_names(self):
+        fx = Fixture()
+        self.addCleanup(fx.close)
+        env = BASE_RUNTIME["Env"]
+        mutations = [
+            [], None, {}, "PATH=/bin",
+            ["PATH=/bin", *env[1:]],
+            [*env[:-1], "NJS_RELEASE=999"],
+            [*env, "NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE=1"],
+            [*env, "LD_PRELOAD=/tmp/library.so"],
+            [*env, "NGINX_VERSION=broken"],
+            [*env, env[0]],
+            [*env, "BROKEN"], [*env, "=value"],
+            [*env, None], [*env, 1], [*env, {}],
+        ]
+        for changed in mutations:
+            with self.subTest(env=changed):
+                runtime = json.loads(fx.config)["config"]
+                runtime["Env"] = changed
+                fx.replace_runtime(runtime)
+                with self.assertRaisesRegex(validator.ValidationError, "runtime"):
+                    fx.validate()
+
+    def test_runtime_and_labels_wrong_types_fail_closed(self):
+        fx = Fixture()
+        self.addCleanup(fx.close)
+        for runtime in (None, [], "runtime", False):
+            with self.subTest(runtime=runtime):
+                fx.replace_runtime(runtime)
+                with self.assertRaisesRegex(validator.ValidationError, "runtime"):
+                    fx.validate()
+        original_labels = json.loads(fx.config)["config"]["Labels"]
+        for labels in (None, [], "labels", False, *(
+            {**original_labels, "extra": value} for value in (None, [], False, 1)
+        )):
+            with self.subTest(labels=labels):
+                runtime = json.loads(fx.config)["config"]
+                runtime["Labels"] = labels
+                fx.replace_runtime(runtime)
+                with self.assertRaisesRegex(validator.ValidationError, "labels"):
+                    fx.validate()
+
+    def test_allowed_label_overrides_preserve_runtime_and_closed_oci_graph(self):
+        fx = Fixture()
+        self.addCleanup(fx.close)
+        runtime = json.loads(fx.config)["config"]
+        runtime["Labels"]["org.opencontainers.image.description"] = "release metadata"
+        fx.replace_runtime(runtime)
+        result = fx.validate()
+        self.assert_production_asset_contract(fx, result)
+
+    def test_runtime_contract_cannot_be_redefined_by_an_untrusted_base(self):
+        fx = Fixture()
+        self.addCleanup(fx.close)
+        base = json.loads(config_bytes(
+            list(fx.policy.base_diff_ids), fx.base_history, derived=False
+        ))
+        base["config"]["Entrypoint"] = ["/does-not-exist"]
+        fx.replace_base([fx.base_layer], config_override=json.dumps(base).encode())
+        runtime = json.loads(fx.config)["config"]
+        runtime["Entrypoint"] = base["config"]["Entrypoint"]
+        fx.replace_runtime(runtime)
+        with self.assertRaisesRegex(validator.ValidationError, "exact pinned nginx config digest"):
+            fx.validate()
 
     def test_rejects_absolute_parent_and_noncanonical_paths(self):
         for name in ("/absolute", "../escape", "a/../escape", "./alias", "a//b"):

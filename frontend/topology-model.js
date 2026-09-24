@@ -342,7 +342,8 @@ function adaptLegacyTopology(report) {
       aggregate.hop_min = Math.min(aggregate.hop_min, observation.node.hop);
       aggregate.hop_max = Math.max(aggregate.hop_max, observation.node.hop);
       aggregate.observations++;
-      if (observation.node.hop > 0 && Number.isFinite(observation.node.latency_ms) && observation.node.latency_ms >= 0) {
+      if (observation.node.hop > 0 && ['healthy', 'degraded'].includes(observation.node.status) &&
+          Number.isFinite(observation.node.latency_ms) && observation.node.latency_ms >= 0) {
         aggregate.latencyTotal += observation.node.latency_ms;
         aggregate.latencyCount++;
       }

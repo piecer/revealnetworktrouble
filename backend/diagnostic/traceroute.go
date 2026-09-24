@@ -140,8 +140,26 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 		if c.Policy != nil {
 			addresses, resolveErr := c.Policy.Resolve(attemptCtx, destination)
 			if resolveErr != nil {
+				// Policy rejection remains a fail-closed, no-details outcome.
+				// Ordinary later resolution failures belong to this attempt,
+				// not to already completed route observations.
+				if len(attempts) == 0 || errors.Is(resolveErr, ErrNetworkPolicyBlocked) {
+					cancelAttempt()
+					return networkPolicyResult(KindTraceroute, target.Address, started, resolveErr)
+				}
+				if contextErr := attemptCtx.Err(); contextErr != nil {
+					resolveErr = contextErr
+				}
 				cancelAttempt()
-				return networkPolicyResult(KindTraceroute, target.Address, started, resolveErr)
+				errorCode := traceCommandErrorCode(resolveErr)
+				executionFailed++
+				if errorCode == "timeout" {
+					timedOut++
+				} else if errorCode == "cancelled" {
+					cancelled++
+				}
+				attempts = append(attempts, TraceAttempt{Attempt: attemptNumber, Status: StatusUnreachable, ErrorCode: errorCode, Message: "traceroute target resolution did not complete"})
+				continue
 			}
 			commandDestination = addresses[0].String()
 		}
@@ -203,7 +221,16 @@ func (c TracerouteChecker) Check(ctx context.Context, target Target) Result {
 	geoIPProviderFailures := 0
 	var geoIPEnrichment *EnrichmentCoverage
 	if c.geoIP != nil {
-		coverage := enrichTopologiesWithCoverage(ctx, attempts, c.geoIP)
+		// Enrichment is optional: reserve time to publish completed observations
+		// before Runner's report cutoff. Workers join before result publication;
+		// the production lookup releases its waiter even if a provider stalls.
+		enrichmentBudget := RequestBudgetGrace / 2
+		if deadline, ok := ctx.Deadline(); ok {
+			enrichmentBudget = min(enrichmentBudget, time.Until(deadline)/2)
+		}
+		enrichmentCtx, cancelEnrichment := context.WithTimeout(ctx, enrichmentBudget)
+		coverage := enrichTopologiesWithCoverage(enrichmentCtx, attempts, c.geoIP)
+		cancelEnrichment()
 		geoIPProviderFailures = enrichmentFailureCount(coverage.Failures)
 		geoIPEnrichment = &coverage
 	}
@@ -618,7 +645,8 @@ func classifyTopology(topology *Topology) {
 	for i := 1; i < len(topology.Nodes); i++ {
 		previous, current := topology.Nodes[i-1], &topology.Nodes[i]
 		link := TopologyLink{From: previous.ID, To: current.ID, Status: current.Status}
-		if current.Status == "healthy" && previous.Status == "healthy" && previous.Hop > 0 {
+		// A preceding jump changes quality, not the presence of its RTT sample.
+		if current.Status == "healthy" && (previous.Status == "healthy" || previous.Status == "degraded") && previous.Hop > 0 {
 			latencyDelta, valid := roundedTraceLatencyDelta(current.LatencyMS, previous.LatencyMS)
 			if valid {
 				link.LatencyDeltaMS = latencyDelta

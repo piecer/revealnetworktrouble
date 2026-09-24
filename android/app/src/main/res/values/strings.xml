@@ -16,6 +16,7 @@
     <string name="raw_share_warning_message">This raw JSON may contain sensitive target addresses and diagnostic details. After confirmation, Android’s share sheet controls which recipient receives it, and recipient apps may retain a copy.</string>
     <string name="raw_share_confirm">Share raw JSON</string><string name="raw_share_cancel">Cancel</string>
     <string name="raw_share_error">The raw report could not be prepared safely.</string>
+    <string name="retry_raw_cleanup">Retry raw share cleanup</string>
     <string name="raw_share_busy">A raw report share is already being prepared.</string>
     <string name="raw_share_state_cleaning">Cleaning previous raw share</string>
     <string name="raw_share_state_preparing">Preparing raw report</string>

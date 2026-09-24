@@ -462,14 +462,14 @@ func (l *IPWhoIsLookup) fetch(ctx context.Context, address string) (IPMetadata, 
 }
 
 type geoIPPayload struct {
-	Success     bool    `json:"success"`
-	Message     string  `json:"message"`
-	City        string  `json:"city"`
-	Region      string  `json:"region"`
-	Country     string  `json:"country"`
-	CountryCode string  `json:"country_code"`
-	Latitude    float64 `json:"latitude"`
-	Longitude   float64 `json:"longitude"`
+	Success     bool     `json:"success"`
+	Message     string   `json:"message"`
+	City        string   `json:"city"`
+	Region      string   `json:"region"`
+	Country     string   `json:"country"`
+	CountryCode string   `json:"country_code"`
+	Latitude    *float64 `json:"latitude"`
+	Longitude   *float64 `json:"longitude"`
 	Connection  struct {
 		ASN uint64 `json:"asn"`
 		Org string `json:"org"`
@@ -512,11 +512,15 @@ func decodeGeoIPResponse(body io.Reader) (IPMetadata, error) {
 		organization = payload.Connection.ISP
 	}
 	metadata := IPMetadata{
-		Geolocation: &GeoLocation{
-			City: payload.City, Region: payload.Region, Country: payload.Country,
-			CountryCode: payload.CountryCode, Latitude: payload.Latitude, Longitude: payload.Longitude,
-		},
 		ASN: &ASNInfo{Number: uint(payload.Connection.ASN), Organization: organization},
+	}
+	// Missing and JSON null are not coordinate observations. ASN-only metadata
+	// remains useful, but must never acquire a fabricated point at (0, 0).
+	if payload.Latitude != nil && payload.Longitude != nil {
+		metadata.Geolocation = &GeoLocation{
+			City: payload.City, Region: payload.Region, Country: payload.Country,
+			CountryCode: payload.CountryCode, Latitude: *payload.Latitude, Longitude: *payload.Longitude,
+		}
 	}
 	if !validProviderStrings(payload, organization) || !validIPMetadata(metadata) {
 		return IPMetadata{}, newGeoIPError(GeoIPErrorMalformed, false, nil)
@@ -701,20 +705,25 @@ func validProviderStrings(payload geoIPPayload, organization string) bool {
 }
 
 func validIPMetadata(metadata IPMetadata) bool {
-	if metadata.Geolocation == nil || metadata.ASN == nil {
+	if metadata.Geolocation == nil && canonicalASNInfo(metadata.ASN) == nil {
 		return false
 	}
-	geo := metadata.Geolocation
-	if math.IsNaN(geo.Latitude) || math.IsInf(geo.Latitude, 0) || geo.Latitude < -90 || geo.Latitude > 90 {
-		return false
+	var values []string
+	if geo := metadata.Geolocation; geo != nil {
+		if math.IsNaN(geo.Latitude) || math.IsInf(geo.Latitude, 0) || geo.Latitude < -90 || geo.Latitude > 90 {
+			return false
+		}
+		if math.IsNaN(geo.Longitude) || math.IsInf(geo.Longitude, 0) || geo.Longitude < -180 || geo.Longitude > 180 {
+			return false
+		}
+		if code := geo.CountryCode; code != "" && (len(code) != 2 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z') {
+			return false
+		}
+		values = append(values, geo.City, geo.Region, geo.Country, geo.CountryCode)
 	}
-	if math.IsNaN(geo.Longitude) || math.IsInf(geo.Longitude, 0) || geo.Longitude < -180 || geo.Longitude > 180 {
-		return false
+	if metadata.ASN != nil {
+		values = append(values, metadata.ASN.Organization)
 	}
-	if code := geo.CountryCode; code != "" && (len(code) != 2 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z') {
-		return false
-	}
-	values := []string{geo.City, geo.Region, geo.Country, geo.CountryCode, metadata.ASN.Organization}
 	total := 0
 	for _, value := range values {
 		if !utf8.ValidString(value) || len(value) > geoIPMaxStringBytes {

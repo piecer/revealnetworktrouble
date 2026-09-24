@@ -5,6 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 
+function assertPaintedGraph(result, needsLinks) {
+  assert.ok(result.colored > 100, 'latency-colored graph pixels');
+  assert.ok(result.paintedNodes > 0, 'actual pixels inside recorded circular nodes');
+  if (needsLinks) assert.ok(result.paintedLinks > 0, 'actual colored pixels at directed-link midpoints');
+}
+
 (async () => {
   const [base, output, log] = process.argv.slice(2);
   assert.ok(base && output, 'URL and output directory required');
@@ -26,10 +32,13 @@ const assert = require('node:assert/strict');
       const errors = [];
       await page.addInitScript(() => {
         const proto = CanvasRenderingContext2D.prototype;
-        for (const name of ['clearRect', 'beginPath', 'moveTo', 'lineTo', 'quadraticCurveTo', 'stroke']) {
+        for (const name of ['clearRect', 'beginPath', 'moveTo', 'lineTo', 'quadraticCurveTo', 'stroke', 'arc']) {
           const original = proto[name];
           proto[name] = function (...args) {
-            if (name === 'clearRect') this.canvas.graphStrokes = [];
+            if (name === 'clearRect') { this.canvas.graphStrokes = []; this.canvas.graphNodes = []; }
+            if (name === 'arc' && /^#[0-9a-f]{6}$/i.test(this.fillStyle)) {
+              this.canvas.graphNodes?.push({ x: args[0], y: args[1], radius: args[2], color: this.fillStyle });
+            }
             if (name === 'beginPath') this.graphPath = [];
             if (name === 'moveTo' || name === 'lineTo') this.graphPath?.push(args);
             if (name === 'quadraticCurveTo') this.graphPath?.push(args.slice(0, 2), args.slice(2));
@@ -53,20 +62,37 @@ const assert = require('node:assert/strict');
         await page.locator('#topology-view-reset').click();
         await page.locator('canvas.topology-canvas').scrollIntoViewIfNeeded();
         await page.waitForTimeout(150); // settle scheduled resize; no network probes
-        const result = await page.evaluate(() => {
+        const inspectGraph = ({ blank = false } = {}) => {
           const root = document.querySelector('#topology-result');
           const canvas = root.querySelector('canvas');
           const inspector = root.querySelector('details');
           const rect = canvas.getBoundingClientRect();
           const ctx = canvas.getContext('2d');
+          if (blank) {
+            // Keep draw-state, semantic DOM and recorded commands intact: the
+            // oracle must reject missing pixels even when those all look ready.
+            const strokes = canvas.graphStrokes, nodes = canvas.graphNodes;
+            ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
+            canvas.graphStrokes = strokes; canvas.graphNodes = nodes;
+          }
           const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          const nodeColors = new Set(['82,224,177', '201,255,70', '255,184,77', '255,113,133', '148,163,184']);
           let colored = 0;
           for (let i = 0; i < pixels.length; i += 4) {
-            if ((pixels[i] === 34 && pixels[i+1] === 197 && pixels[i+2] === 94) ||
-                (pixels[i] === 245 && pixels[i+1] === 158 && pixels[i+2] === 11) ||
-                (pixels[i] === 239 && pixels[i+1] === 68 && pixels[i+2] === 68)) colored++;
+            if (pixels[i+3] && nodeColors.has(`${pixels[i]},${pixels[i+1]},${pixels[i+2]}`)) colored++;
           }
           const dpr = Number(canvas.dataset.dpr);
+          const paintedNodes = (canvas.graphNodes || []).filter(node => {
+            const rgb = node.color.slice(1).match(/../g).map(v => parseInt(v, 16));
+            const x = Math.round((node.x + node.radius / 2) * dpr), y = Math.round((node.y + node.radius / 3) * dpr);
+            for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+              if (x + dx < 0 || x + dx >= canvas.width || y + dy < 0 || y + dy >= canvas.height) continue;
+              const offset = ((y + dy) * canvas.width + x + dx) * 4;
+              if (pixels[offset+3] && rgb.every((v, i) => pixels[offset+i] === v)) return true;
+            }
+            return false;
+          }).length;
           const paintedLinks = (canvas.graphStrokes || []).filter(({ points, color }) => {
             const from = points[0], to = points.at(-1);
             if (Math.hypot(to[0] - from[0], to[1] - from[1]) < 40) return false;
@@ -74,13 +100,16 @@ const assert = require('node:assert/strict');
             const x = Math.round(midpoint(0) * dpr), y = Math.round(midpoint(1) * dpr);
             const rgb = color.slice(1).match(/../g).map(v => parseInt(v, 16));
             for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+              if (x + dx < 0 || x + dx >= canvas.width || y + dy < 0 || y + dy >= canvas.height) continue;
               const offset = ((y + dy) * canvas.width + x + dx) * 4;
               if (rgb.every((v, i) => pixels[offset + i] === v)) return true;
             }
             return false;
           }).length;
           return {
-            paintedLinks,
+            paintedLinks, paintedNodes, recordedNodes: canvas.graphNodes?.length,
+            drawState: canvas.dataset.drawState,
+            semanticNodes: root.querySelectorAll('.topology-node').length,
             mode: canvas.dataset.mode, colored, canvas: rect.toJSON(),
             visible: canvas.checkVisibility() && rect.bottom > 0 && rect.top < innerHeight,
             closed: inspector?.open === false,
@@ -89,20 +118,27 @@ const assert = require('node:assert/strict');
             overflow: document.documentElement.scrollWidth > innerWidth,
             first: root.firstElementChild === canvas
           };
-        });
+        };
+        const result = await page.evaluate(inspectGraph);
         results.push({ name, width, requests, errors, ...result });
         await page.screenshot({ path: path.join(output, `${name}-${width}-${mode}.png`) });
         try {
           assert.equal(result.mode, mode);
           assert.ok(result.first && result.closed && result.visible);
           assert.equal(result.visibleCards, 0);
-          assert.ok(result.colored > 100, 'status-colored graph pixels');
-          if (name !== 'fixture') assert.ok(result.paintedLinks > 0, 'actual colored pixels at directed-link midpoints');
+          assertPaintedGraph(result, name !== 'fixture');
           assert.ok(result.canvas.width > 200 && result.canvas.height >= 220);
           assert.equal(result.overflow, false, 'no horizontal overflow');
           assert.ok(result.count <= 1200);
           assert.equal(requests, 1, 'mode/reset never request new report');
           assert.deepEqual(errors, []);
+          const blank = await page.evaluate(inspectGraph, { blank: true });
+          assert.equal(blank.drawState, 'rendered');
+          assert.equal(blank.recordedNodes, result.recordedNodes);
+          assert.equal(blank.semanticNodes, result.semanticNodes);
+          assert.equal(blank.colored, 0);
+          assert.throws(() => assertPaintedGraph(blank, name !== 'fixture'), /latency-colored graph pixels/);
+          results.at(-1).blankCanaryRejected = true;
         } catch (error) { failures.push(`${name}/${width}/${mode}: ${error.message}`); }
       }
       const summary = page.locator('#topology-result details > summary');

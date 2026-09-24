@@ -120,6 +120,11 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 		b.addCertificate(fact, FindingTLSCertificateExpiring, SeverityWarning, "TLS certificate is near expiry", "The observed peer certificate expires within 30 days of the analysis time.")
 	}
 	if fact.status == StatusHealthy {
+		// Reachability and path variation are independent observations. A
+		// healthy aggregate can still contain multiple completed hop sequences.
+		if fact.kind == KindTraceroute && fact.tracePathUnstable {
+			b.analyzeTrace(fact)
+		}
 		return
 	}
 

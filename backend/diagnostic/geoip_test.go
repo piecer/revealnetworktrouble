@@ -384,9 +384,9 @@ func TestIPWhoIsLookupStrictResponseMatrix(t *testing.T) {
 		body string
 		city string
 	}{
-		{"surrogate-pair", `{"success":true,"city":"\uD83D\uDE00"}`, "😀"},
-		{"string-delimiters-and-escapes", `{"success":true,"city":"[]{} quote=\" slash=\\","unknown":{"value":"[\"}\"]"}}`, `[]{} quote=" slash=\`},
-		{"unknown-large-number", `{"success":true,"city":"number","unknown":{"value":1e400}}`, "number"},
+		{"surrogate-pair", `{"success":true,"latitude":0,"longitude":0,"city":"\uD83D\uDE00"}`, "😀"},
+		{"string-delimiters-and-escapes", `{"success":true,"latitude":0,"longitude":0,"city":"[]{} quote=\" slash=\\","unknown":{"value":"[\"}\"]"}}`, `[]{} quote=" slash=\`},
+		{"unknown-large-number", `{"success":true,"latitude":0,"longitude":0,"city":"number","unknown":{"value":1e400}}`, "number"},
 	}
 	for _, tc := range accepted {
 		t.Run(tc.name, func(t *testing.T) {
@@ -669,7 +669,7 @@ func TestIPWhoIsLookupCacheIsBoundedLRUAndExpires(t *testing.T) {
 	calls := 0
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls++
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"success":true}`))}, nil
+		return geoIPResponse(validGeoIPBody("cache")), nil
 	})}
 	lookup := NewIPWhoIsLookupWithConfig(client, "https://geo.example.test/", nil, GeoIPCacheConfig{
 		MaxEntries: 2,

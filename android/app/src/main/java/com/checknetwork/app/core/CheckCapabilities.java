@@ -15,7 +15,6 @@ public final class CheckCapabilities {
     public static final int MAX_JSON_BYTES = 64 * 1024;
     public static final int MAX_LIST_ITEMS = 256;
     public static final int MAX_NAME_BYTES = 128;
-    private static final int MAX_JSON_DEPTH = 8;
     private static final long MAX_ADVERTISED_COUNT = 1_000_000L;
     private static final long MAX_ADVERTISED_TIMEOUT_MS = 86_400_000L;
 
@@ -57,7 +56,7 @@ public final class CheckCapabilities {
     /** Parses exactly one bounded JSON object, retaining only capabilities this client understands. */
     public static CheckCapabilities parse(String json) {
         try {
-            preflight(json);
+            CapabilityJsonPreflight.validate(json, MAX_JSON_BYTES);
             JSONTokener tokener = new JSONTokener(json);
             Object decoded = tokener.nextValue();
             if (!(decoded instanceof JSONObject source) || tokener.nextClean() != 0) throw invalid();
@@ -148,28 +147,6 @@ public final class CheckCapabilities {
                 + ", maxTracerouteAttempts=" + maxTracerouteAttempts + "}";
     }
 
-    private static void preflight(String json) {
-        if (json == null || json.getBytes(StandardCharsets.UTF_8).length > MAX_JSON_BYTES) throw invalid();
-        int depth = 0;
-        boolean quoted = false;
-        boolean escaped = false;
-        for (int index = 0; index < json.length(); index++) {
-            char current = json.charAt(index);
-            if (quoted) {
-                if (escaped) escaped = false;
-                else if (current == '\\') escaped = true;
-                else if (current == '"') quoted = false;
-            } else if (current == '"') {
-                quoted = true;
-            } else if (current == '{' || current == '[') {
-                if (++depth > MAX_JSON_DEPTH) throw invalid();
-            } else if (current == '}' || current == ']') {
-                if (--depth < 0) throw invalid();
-            }
-        }
-        if (quoted || depth != 0) throw invalid();
-    }
-
     private static JSONArray requiredArray(JSONObject source, String key) throws JSONException {
         Object value = required(source, key);
         if (!(value instanceof JSONArray array) || array.length() > MAX_LIST_ITEMS) throw invalid();
@@ -216,6 +193,6 @@ public final class CheckCapabilities {
     }
 
     private static IllegalArgumentException invalid() {
-        return new IllegalArgumentException("Invalid checks capability response");
+        return CapabilityJsonPreflight.invalid();
     }
 }

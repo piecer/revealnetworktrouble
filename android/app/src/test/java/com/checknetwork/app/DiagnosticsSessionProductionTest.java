@@ -48,6 +48,45 @@ public final class DiagnosticsSessionProductionTest {
             + "\"results\":[{\"kind\":\"dns\",\"address\":\"example.test\",\"status\":\"healthy\",\"latency_ms\":1,\"started_at\":\"2026-09-02T00:00:00Z\",\"details\":{\"addresses\":[\"192.0.2.1\"],\"answer_count\":1}}],"
             + "\"summary\":{\"total\":1,\"passed\":1,\"failed\":0}}";
 
+    @Test public void committedErrorPausedBeforeDispatchCannotFollowInputInvalidation() throws Exception {
+        // One real production worker suffices: no second request or concurrent transport is needed.
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Thread caller = Thread.currentThread();
+        CountDownLatch beforeDispatch = new CountDownLatch(1);
+        CountDownLatch resumeDispatch = new CountDownLatch(1);
+        ProbeTransports probes = new ProbeTransports("{invalid capability json", REPORT);
+        DiagnosticsSession session = DiagnosticsSession.createProductionForTests(runnable -> {
+            if (Thread.currentThread() != caller) {
+                beforeDispatch.countDown();
+                try { assertTrue(resumeDispatch.await(3, TimeUnit.SECONDS)); }
+                catch (InterruptedException interrupted) { throw new AssertionError(interrupted); }
+            }
+            runnable.run();
+        }, executor, probes, probes.clock);
+        List<RequestState> delivered = java.util.Collections.synchronizedList(new ArrayList<>());
+        try {
+            session.attach(this, delivered::add);
+            session.start(ApiConnectionConfig.create("https://api.example.test", false, null), dnsRequest());
+            assertTrue(beforeDispatch.await(3, TimeUnit.SECONDS));
+            RequestState committedError = session.state();
+            assertEquals(RequestState.Phase.ERROR, committedError.phase());
+            session.invalidateInput("edited");
+            RequestState idle = session.state();
+            assertEquals(committedError.ownerId(), idle.ownerId());
+            assertSame(idle, delivered.get(delivered.size() - 1));
+            resumeDispatch.countDown();
+            executor.submit(() -> {}).get(3, TimeUnit.SECONDS);
+            assertSame(idle, session.state());
+            assertSame(idle, delivered.get(delivered.size() - 1));
+            assertFalse(delivered.contains(committedError));
+            assertEquals(List.of("GET"), probes.executedMethods());
+        } finally {
+            resumeDispatch.countDown();
+            session.destroy();
+            executor.shutdownNow();
+        }
+    }
+
     @Test public void discoveryRunsBeforePostAndReducedServerBlocksLocally() throws Exception {
         ProbeTransports reduced = new ProbeTransports(REDUCED, REPORT);
         try (Fixture fixture = fixture(reduced)) {
@@ -179,6 +218,45 @@ public final class DiagnosticsSessionProductionTest {
                 ReportRequest.topologyBuilder().timeoutMs(1_000)
                         .addTarget(TargetInput.builder(CheckKind.TRACEROUTE, "trace.test").attempts(3).build()).build(),
                 CheckCapabilities.CapabilityMismatchException.Reason.TOPOLOGY_MODE);
+    }
+
+    @Test public void duplicateDiscoveryIsInvalidResponseWithoutReportPost() throws Exception {
+        assertInvalidDiscovery(ALL.replace("\"max_targets\":20", "\"max_targets\":1,\"max_targets\":20"));
+    }
+
+    @Test public void nonJsonDiscoveryIsInvalidResponseWithoutReportPost() throws Exception {
+        String prefix = ALL.substring(0, ALL.length() - 1) + ",\"unknown\":";
+        for (String body : List.of(prefix + "TRUE}", prefix + "\"\\q\"}",
+                ALL.replace('"', '\''), prefix + "['\"'," + "[".repeat(64) + "0"
+                        + "]".repeat(64) + ",'\"']}")) {
+            assertInvalidDiscovery(body);
+        }
+    }
+
+    @Test public void malformedUnicodeAndDeepDiscoveryAreInvalidResponseWithoutReportPost() throws Exception {
+        String prefix = ALL.substring(0, ALL.length() - 1) + ",\"unknown\":";
+        for (String value : List.of("\"\\uD800\"", "{\"\\uDC00\":0}",
+                "[".repeat(8) + "0" + "]".repeat(8))) {
+            assertInvalidDiscovery(prefix + value + "}");
+        }
+    }
+
+    private static void assertInvalidDiscovery(String body) throws Exception {
+        ProbeTransports probes = new ProbeTransports(body, REPORT);
+        try (Fixture fixture = fixture(probes)) {
+            fixture.session.start(ApiConnectionConfig.create("https://api.example.test", false, null), dnsRequest());
+            RequestState state = fixture.awaitTerminal();
+            fixture.awaitWorkerDrain();
+            assertEquals(RequestState.Phase.ERROR, state.phase());
+            assertEquals(TransportException.Kind.INVALID_RESPONSE, state.error().orElseThrow().kind());
+            assertFalse(state.report().isPresent());
+            assertFalse(state.rawJson().isPresent());
+            assertFalse(state.shareEligible());
+            assertEquals(1, fixture.terminalPublications);
+            assertEquals(List.of("GET"), probes.executedMethods());
+            assertEquals(0, probes.reportConnections.size());
+            assertNull(probes.reportDeadline);
+        }
     }
 
     @Test public void malformedDiscoveryStaysInvalidResponseAndProgrammingRuntimeStaysNetwork() throws Exception {

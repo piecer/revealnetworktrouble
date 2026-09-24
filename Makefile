@@ -50,10 +50,12 @@ export ANDROID_HOME ANDROID_SDK_ROOT
 
 REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
 
-.PHONY: test test-race vet frontend-deps web-test web-test-syntax run build \
+.PHONY: test test-race vet frontend-deps web-test web-test-syntax web-test-browser web-test-cors-browser run build \
 	android-wrapper-verify android-env-bootstrap-test android-env android-test android-lint \
 	android-assemble android-check ci-inner ci ci-clean-archive release verify-release \
 	verify-release-real verify-api-archive-real verify-web-archive-real verify-archives-real
+
+.PHONY: web-test-deployment web-test-deployment-live
 
 test: android-env-bootstrap-test
 	go test ./...
@@ -68,6 +70,21 @@ web-test:
 
 web-test-syntax:
 	npm --prefix frontend run test:syntax
+
+web-test-browser:
+	node frontend/browser-gates.cjs $(if $(BROWSER_OUTPUT_DIR),"$(BROWSER_OUTPUT_DIR)")
+	$(MAKE) web-test-cors-browser
+
+web-test-cors-browser:
+	CHECKNETWORK_RUN_BROWSER_TESTS=1 go test ./backend/api -run '^TestCORSRetryAfterBrowser$$' -count=1 -v
+
+web-test-deployment:
+	CHECKNETWORK_RUN_COMPOSE_TESTS=1 node --test frontend/deployment.test.js
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_deployment_ownership.py -v
+
+web-test-deployment-live:
+	@test -n "$(DEPLOYMENT_RECEIPTS)" || { printf '%s\n' 'Set DEPLOYMENT_RECEIPTS to a new evidence directory'; exit 1; }
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_deployment_live.py --receipts "$(DEPLOYMENT_RECEIPTS)"
 
 test-race:
 	go test -race ./...

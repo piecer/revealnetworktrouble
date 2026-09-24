@@ -30,6 +30,8 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 - 선택 변경 시 서버 재요청 없이 요약 지표, 노드, 링크, 범례를 즉시 다시 계산한다.
 - 경로 색상은 원래 결과 순서에 고정되어 필터 전후에 바뀌지 않는다.
 - 아무 목적지도 선택하지 않으면 빈 상태 안내를 표시하고 지표를 0으로 표시한다.
+- 대상은 선택했지만 관측 경로가 없으면 선택 해제로 표현하지 않는다. 실행 불가·timeout·취소·실행 실패·projection 제한을 고정된 로컬 상태 안내로 구분하고 원시 JSON 다운로드를 유지한다. 기존 finding/export 문구 계약은 변경하지 않는다.
+- textarea의 빈 개행·쉼표 구분자는 제거한 뒤 실제 주소 1~20개를 기존 strict validator에 전달한다. 빈 입력과 21개 실제 항목은 거부한다.
 - 연속 unknown은 route occurrence별 독립 표시 그룹으로 접는다. `응답없음 노드`를 해제하면 그 뒤의 응답 노드는 유지하고 앞뒤를 점선 `무응답 N홉 생략` 표시 구간으로 연결한다. 이는 직접 연결 관측이 아니며 raw/검증된 links에는 합성 링크를 넣지 않는다.
 - 요약은 서버 선택 수와 실제 화면의 displayed/total/omitted 노드·링크·경로를 구분한다.
 
@@ -61,6 +63,8 @@ CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 �
 - 직접 추가, 테이블 수정 및 개별 삭제를 지원한다.
 - 경로 토폴로지 화면에서는 IP를 직접 입력하거나 개별 IP 노드를 선택해 라벨과 설명을 바로 추가·수정·삭제할 수 있다.
 - 동일 IP를 다시 입력하거나 import하면 최신 값으로 갱신한다.
+- 500개 저장 한도에서도 기존 key 갱신은 허용하며 기존 key를 밀어내지 않는다. 초과 신규 key만 생략하고 incoming 중복·무효·한도 초과를 정확히 집계한다.
+- 라벨 표는 활성 view에서만 mount한다. 기존 페이지를 제거한 뒤 문서에 남은 DOM 예산과 실제 행 비용으로 최대 100행의 page size를 정하고, 20 targets와 500 labels 조합에서도 모든 페이지에 접근할 수 있어야 한다. 문서 1,200 요소/삽입 chunk 100 요소 상한은 유지한다.
 - 매핑은 `checknetwork.ip-labels.v1` key의 브라우저 local storage에 저장한다.
 
 - 저장소를 사용할 수 없는 환경에서도 현재 페이지의 메모리 내 편집은 유지한다.
@@ -153,11 +157,12 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 ## 13. Android 진단 클라이언트
 
 - Android는 `/api/v1/checks`를 bounded하게 조회한 뒤 server가 광고한 kind/limit/topology mode 안에서만 report를 요청한다.
-- 13종 kind를 제공하고 HTTP/HTTPS의 expected status와 traceroute attempts를 kind별로 검증한다. traceroute-only topology 요청은 compact mode를 사용한다.
+- 13종 kind를 제공하고 HTTP/HTTPS의 expected status와 traceroute attempts를 kind별로 검증한다. traceroute-only topology 요청은 compact mode를 사용한다. UI는 현재 kind에 해당하는 옵션만 request/signature로 투영하며, 비활성 옵션의 편집 값은 bounded saved draft에 보존한다. 직접 생성한 잘못된 옵션 조합의 core validation은 완화하지 않는다.
 - capability discovery와 report transport는 사용자 실행마다 하나의 315초 monotonic absolute deadline을 공유한다. discovery는 `min(10s, shared remaining)`, report는 request별 계산 deadline과 shared remaining의 교집합을 connection 생성·socket timeout·scheduler·body I/O·terminal publish 전에 다시 적용한다. 남은 시간이 0이면 새 연결을 열지 않는다.
 - report transport는 Content-Length와 stream을 UTF-8 8 MiB로 제한하고 cancel과 exactly-once disconnect를 적용한다.
 - 유효한 capability와 local selection의 불일치는 typed `UNSUPPORTED_CAPABILITY` 및 `CHECK_KIND`, `TARGET_COUNT`, `TIMEOUT`, `TRACEROUTE_ATTEMPTS`, `TOPOLOGY_MODE` 중 하나로 반환하고 고정된 UI 문구만 표시한다. malformed capability/report JSON과 schema 위반은 계속 `INVALID_RESPONSE`이며 임의 예외를 capability mismatch로 재분류하지 않는다.
-- request state는 owner ID와 canonical signature를 가지며 replacement, input mutation, cancel, recreation과 final destroy 뒤 stale success/error/finally를 게시하지 않는다.
+- request state는 owner ID와 canonical signature를 가지며 replacement, input mutation, cancel, recreation과 final destroy 뒤 stale success/error/finally를 게시하지 않는다. Session은 listener dispatch 실행 시점에도 immutable current state identity를 확인해 같은 요청의 이전 transition이 늦게 표시되지 않게 한다.
+- capability 성공 body는 UTF-8 64 KiB 이하 single object로 제한한다. materialization 전에 strict lexical/token preflight로 duplicate decoded keys, 비표준 JSON grammar, malformed UTF-16, trailing document, depth 8 초과를 unknown fields까지 거부한다. 유효한 unknown capability name의 forward compatibility와 local limit 교집합은 유지하며 malformed discovery는 report POST 없이 `INVALID_RESPONSE`다.
 - Android analysis 순서는 status/verdict/coverage → findings → evidence/actions → limitations/provider failures → raw results/compact summary다. confidence를 장애 확률로 표현하지 않는다. human export는 모든 finding code를 exhaustive switch로 매핑하며 `checker_panic`은 `Checker execution failed`, `checker_capacity_unavailable`은 `Checker capacity was unavailable`로 표시하고 traceroute failure로 오표기하지 않는다.
 - capability mismatch UI는 reason별 fixed localized copy만 사용한다: unsupported check kind, target count, timeout, traceroute attempts, topology mode. server value나 exception prose는 반사하지 않는다.
 - release는 HTTPS만 허용하고 기본 origin은 비어 있다. Bearer는 메모리에서만 사용하며 URL, signature, saved state, preferences, report, log 또는 share에 포함하지 않는다.
@@ -194,10 +199,13 @@ JSON은 배열 또는 IP-key 객체를 지원한다.
 - raw share는 Application process-wide singleton `RawShareRuntime`의 single slot이다. queue가 없고 concurrent prepare는 `BUSY`; UTF-8 sizing, scan, write, force, atomic rename, URI validation, revoke/delete는 caller/main thread 밖 single worker에서 수행한다. raw file은 최대 8 MiB, recognized live set은 최대 2 files/16 MiB다.
 - startup/replacement/retry/disposal reconciliation은 한 open scan session에서 step당 32 entries와 32 deletes를 처리하고 cursor가 전진하지 않거나 close/delete/revoke/path 검증이 실패하면 `CLEANUP_FAILED`로 fail closed해 새 share admission을 닫는다. owner identity와 operation/listener generation이 detached/recreated Activity로 stale URI/callback을 전달하지 못하게 한다.
 - private `cache/shared-reports`만 사용하고 recognized random token filename, no-follow regular-file/parent checks, create-new temp, fsync, same-parent atomic move를 요구한다. non-exported `FileProvider`는 `FLAG_GRANT_READ_URI_PERMISSION`만 부여한다.
+- raw share 버튼은 현재 rendered READY owner와 runtime IDLE/GRANTED에서만 새 경고를 열며 매번 확인을 요구한다. chooser/materialization 실패와 observed lease cleanup 후 다시 확인할 수 있지만 busy/retired/cleanup-failed에서는 준비를 허용하지 않는다. 회전 이전 Activity의 경고 확인은 무효다. `Retry raw share cleanup`은 CLEANUP_FAILED에서만 보이는 명시적 bounded retry이며 자동 반복이나 preparation queue를 만들지 않는다.
 - grant lease는 exact 15분 process-observed TTL이다. `onResume` 등 프로세스가 `observe()`했을 때 expiry를 revoke/cleanup한다. process death 뒤 stock provider grant의 실제 만료, 수신자가 이미 연 descriptor, 수신자 복사본 삭제는 앱이 강제할 수 없으며 device acceptance limitation이다.
 
 ## 17. 운영 probe, telemetry와 release identity
 
+- Compose API host port와 frontend build-time default는 `CHECKNETWORK_API_PORT`(기본 8090) 하나로 연결하고 loopback publish를 유지한다. Frontend Dockerfile의 canonical default 9090은 source asset bytes를 보존한다. nginx는 stable URLs의 etag/if-modified-since 처리를 끄고 no-store를 반환하여 fixed epoch의 false 304를 차단한다.
+- Offline image validation은 runtime startup policy도 닫는다. API는 PATH-only environment, exact entrypoint/user/directory/port와 empty Cmd만 허용하며 additional runtime fields를 거부한다. Web은 authenticated pinned base의 non-label runtime config와 canonical EXPOSE 80을 요구한다. 유효한 추가 string label metadata는 허용하지만 malformed label values는 거부한다. 배포 시 runtime environment 주입과 이미지의 baked defaults는 별개다.
 - outer operational handler는 정확한 raw path의 `GET`/`HEAD /livez`와 `/readyz`만 business auth/rate middleware 밖에서 처리한다. `HEAD` body는 비어 있다. liveness body는 `{"status":"live"}`다. Startup traceroute capability selection은 trusted deployment `PATH`의 exact platform executable을 resolve한 뒤 `127.0.0.1`에서 fixed candidate grammars를 전체 2초/combined 32 KiB로 기능 probe한다. Unix는 common numeric `-n -q 1 -w 2 -m 30`을 먼저, `-n` 없는 compatible grammar를 다음으로 시도한다. 성공한 exact path+grammar는 immutable하게 캐시되어 readiness와 실행이 공유한다. Timeout/overflow/nonzero/unparseable/loopback 미도달을 포함해 전부 실패하면 capability는 nil이고 executable이 있어도 unavailable이다. nil capability에서 runtime PATH lookup이나 grammar fallback은 없다. Client screen/export는 exact fixed `Traceroute capability was unavailable, so no route observation was established.`만 사용하고 server prose/target을 반사하지 않는다. Probe는 임의 target/GeoIP를 조회하지 않으며 readiness는 일시적인 connection/report/body/checker 포화에 flap하지 않는다.
 - readiness body는 ready `{"status":"ready"}`, startup/drain/traceroute 부재 시 각각 `{"status":"not_ready","reason":"starting|draining|traceroute_unavailable"}`이며 non-ready는 503이다. drain이 시작되면 `/livez`는 200을 유지하고 `/readyz`는 operational 503이다. Business request는 outer wrapper가 raw body를 쓰지 않고 closed API boundary로 전달하며 **route → public auth → rate limit → server_draining → body decode → report/checker admission** 순서를 지킨다. 따라서 unauthorized/rate-limited request는 해당 canonical error를 유지하고, 그 뒤의 draining request는 fixed `503 server_draining` + canonical `Retry-After`로 닫히며 body read/report/checker/SSRF work는 시작하지 않는다. Compose API healthcheck는 `/readyz`를 사용한다.
 - telemetry `outcome`은 진단 결과가 아니라 delivery/lifecycle 결과만 나타낸다. 완전히 전달된 valid report의 `report_finish`만 `report_status`, `analysis_verdict`, `total_results`, `failed_results`, `finding_count`를 추가한다. diagnostic tuple이 없거나 malformed/모순이면 extension만 생략하고 valid base event는 유지한다. raw target/IP/path/query/body, credential, provider/error/panic prose와 ID metric label은 금지한다.
@@ -217,7 +225,7 @@ Label placement uses at most nine vertical candidates per visible node, conserva
 
 Historical record: - Stage 9 2D/3D Canvas 구현과 production asset closure는 source에 반영되었고 Compose SemVer regression fix 뒤 현재 Web inventory는 298 tests다. 그러나 final canonical gates와 독립 review, immutable candidate release 및 exact-SHA closure가 남아 있으므로 Stage 9은 완료가 아니라 **implementation pending final gates/review** 상태다.
 
-Route-visual slice current source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators remain API 28 + Web 25 = 53; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](docs/ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](docs/ASN-CONTEXT.md). Independent review/release remains pending.
 - Physical Chrome/Firefox/Safari에서 interaction·DPR·320/375/400 px를 확인하고 실제 screen reader로 semantic inspector/fallback을 확인하는 수동 acceptance는 자동 Node/jsdom test가 대신하지 않는다.
 
 기존 Stage 8 release sequencing 기록은 아래 acceptance의 선행 이력으로 유지한다.

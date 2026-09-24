@@ -414,6 +414,17 @@ function truncationSummary(plan, localLimitation = null) {
   return parts.join(' · ');
 }
 
+function emptyObservationMessage(observationState, plan) {
+  if (observationState?.selectedCount === 0) return '선택한 TRACE 경로가 0개입니다.';
+  if (plan.serverTruncation?.truncated || plan.adapterTruncation?.truncated) return '표시 제한으로 선택한 경로를 표시할 수 없습니다. 원시 JSON과 제한 정보를 확인하세요.';
+  const codes = observationState?.errorCodes || [];
+  if (codes.includes('traceroute_unavailable')) return 'Traceroute 기능을 사용할 수 없어 경로를 관측하지 못했습니다. 서버 실행 환경을 확인하세요.';
+  if (codes.includes('timeout')) return '경로 검사 시간이 초과되어 관측한 경로가 없습니다. 제한 시간과 실행 환경을 확인하세요.';
+  if (codes.includes('cancelled')) return '경로 검사가 취소되어 관측한 경로가 없습니다.';
+  if (codes.some(code => ['traceroute_failed', 'traceroute_execution_incomplete', 'checker_panic', 'checker_capacity_unavailable', 'network_policy_blocked'].includes(code))) return '경로 검사 실행이 완료되지 않아 관측한 경로가 없습니다. 원시 JSON에서 실행 결과를 확인하세요.';
+  return '선택한 대상에서 관측된 경로가 없습니다. 원시 JSON에서 검사 결과를 확인하세요.';
+}
+
 class TopologyRenderCoordinator {
   constructor({ document, schedule, cancelScheduled, ownsRequest, onState = () => {} }) {
     if (!document || typeof document.createElement !== 'function') throw new TypeError('document is required');
@@ -429,7 +440,7 @@ class TopologyRenderCoordinator {
     this.current = null;
   }
 
-  start({ ownerId, inputSignature, view, model, root, status, workspace, focusTarget, labelRecords, mode = '2d', transform = {}, viewport } = {}) {
+  start({ ownerId, inputSignature, view, model, root, status, workspace, focusTarget, labelRecords, observationState, mode = '2d', transform = {}, viewport } = {}) {
     this.cancel('replaced');
     const generation = ++this.generation;
     if (!root || root.ownerDocument !== this.document || !status || status.ownerDocument !== this.document) {
@@ -476,14 +487,15 @@ class TopologyRenderCoordinator {
     const topologySemanticTotal = session.plan.semanticCounts.topology.nodes +
       session.plan.semanticCounts.topology.links + session.plan.semanticCounts.topology.routes;
     if (view === 'topology' && topologySemanticTotal === 0) {
+      const emptyMessage = emptyObservationMessage(observationState, session.plan);
       const empty = this.document.createElement('p');
       empty.className = 'topology-empty-state';
-      empty.textContent = '선택된 TRACE 경로 0개 · 표시할 토폴로지가 없습니다.';
+      empty.textContent = emptyMessage;
       root.replaceChildren(empty);
       root.setAttribute('aria-busy', 'false');
-      status.textContent = '선택된 TRACE 경로 0개';
+      status.textContent = emptyMessage;
       session.finished = true;
-      this.onState({ phase: 'ready', generation, ownerId, inputSignature, view, completed: 0, total: 0, plan: session.plan, empty: true });
+      this.onState({ phase: 'ready', generation, ownerId, inputSignature, view, completed: 0, total: 0, plan: session.plan, empty: true, emptyMessage });
       return generation;
     }
 

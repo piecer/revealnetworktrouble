@@ -551,6 +551,41 @@ public final class ReportParserTest {
         assertEquals(136,validRows);assertTrue("broad fixture-derived incompatible corpus",rejected>700);
     }
 
+    @Test public void producerObservationWitnessPreservesRTTAndASNWithoutInventingCoordinates() throws Exception {
+        Report parsed=ReportParser.parse(producerFixture("compact-observation-integrity-report.json"));
+        java.util.List<?> nodes=(java.util.List<?>)parsed.compactTopology().orElseThrow().opaqueData().get("nodes");
+        boolean destination=false,zero=false,unknown=false;
+        for(Object value:nodes){
+            java.util.Map<?,?> node=(java.util.Map<?,?>)value;
+            assertFalse("absent coordinates stay absent",node.containsKey("geolocation"));
+            if("8.8.8.8".equals(node.get("address"))){
+                destination=true;assertEquals(100.0,((Number)node.get("latency_ms_avg")).doubleValue(),0.0);
+                assertEquals(15169,((Number)((java.util.Map<?,?>)node.get("asn")).get("number")).intValue());
+            }
+            if("9.9.9.9".equals(node.get("address"))){zero=true;assertEquals(0.0,((Number)node.get("latency_ms_avg")).doubleValue(),0.0);}
+            if("unknown".equals(node.get("kind"))){unknown=true;assertFalse(node.containsKey("latency_ms_avg"));}
+        }
+        assertTrue(destination&&zero&&unknown);
+    }
+
+    @Test public void repairedTraceObservationsCrossFullAndCompactBoundaries() throws Exception {
+        String[][] cases={{"healthy-varied-paths","2","traceroute_path_unstable"},
+            {"later-DNS-failure","1","traceroute_execution_failed"},
+            {"slow-optional-GeoIP","1",""},{"consecutive-RTT-jumps","1","traceroute_path_degraded"}};
+        for(String[] test:cases) for(String mode:new String[]{"full","compact"}) {
+            Report report=ReportParser.parse(producerFixture("trace-observation-"+test[0]+"-"+mode+".json"));
+            int reached=Integer.parseInt(test[1]);
+            assertEquals(reached,((Number)report.results().get(0).details().get("attempts_reached")).intValue());
+            if(!test[2].isEmpty()) assertEquals(Report.FindingCode.valueOf(test[2].toUpperCase(java.util.Locale.ROOT)),report.analysis().orElseThrow().findings().get(0).code());
+            if("compact".equals(mode)) assertEquals(reached,report.compactTopology().orElseThrow().routeCount());
+            if("later-DNS-failure".equals(test[0])&&"full".equals(mode)){
+                java.util.List<?> attempts=(java.util.List<?>)report.results().get(0).details().get("attempts");
+                java.util.Map<?,?> failed=(java.util.Map<?,?>)attempts.get(1);
+                assertEquals("traceroute_failed",failed.get("error_code"));assertFalse(failed.containsKey("topology"));
+            }
+        }
+    }
+
     @Test public void reviewReproductionsMatchWebAndAllEightTracerouteWitnessesParse() throws Exception {
         for(String plain:new String[]{"imap","pop3","smtp","ssh","submission"}){
             JSONObject invalid=oneResultReport(resultObject(plain,"unreachable").put("error_code","invalid_address"));

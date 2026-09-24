@@ -134,6 +134,9 @@ public final class DiagnosticsSession {
             dispatcher.dispatch(() -> {
                 synchronized (DiagnosticsSession.this) {
                     if (destroyed || owner != expectedOwner || listener != expectedListener) return;
+                    // Attachment identity alone cannot fence an older transition of the same request.
+                    // Check at delivery time, after dispatcher delays/reordering, not at enqueue time.
+                    if (coordinator.state() != state) return;
                 }
                 try { expectedListener.onStateChanged(state); }
                 catch (RuntimeException ignored) { }

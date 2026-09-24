@@ -27,7 +27,7 @@ Stage 8의 구현 계약은 다음과 같다.
 
 Historical record: Compose SemVer regression fix 뒤 현재 Stage 9 Web source inventory는 298 tests다. Producer findings 23, result shapes 31과 expanded result matrix 136, presentation `6/10/21/23/33`, API errors 16와 structural mutations 85, Android debug/release 각각 direct-child XML 297 tests + variant canaries 2, API/Web offline archive validator 28+25=53 tests, exact real release-gate fake cases 12는 유지된다. Production exact gate는 canonical inventory를 기준으로 umask 077/027/000 세 pass를 비교한다. Stage 9 final canonical gates와 독립 review, 새 external manifest, manifest-derived temporary release, commit과 exact-SHA closure는 아직 pending이다. 실제 브라우저와 screen reader 수동 검증도 pending이며 자동 test count로 완료를 주장하지 않는다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest와 검증 증거에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. 이를 final artifact-cleanup 또는 release 성공으로 해석하지 않는다.
 
-Route-visual slice current source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators remain API 28 + Web 25 = 53; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](docs/ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](docs/ASN-CONTEXT.md). Independent review/release remains pending.
 
 신규 리포트는 단순 PASS/FAIL과 함께 원인 후보, 그 판단을 지지하는 관측 증거, 안전한 다음 확인 단계와 분석 한계를 구조화된 `analysis`로 제공한다. 분석 confidence는 장애 확률이 아니며 현재 수집한 telemetry의 근거 수준을 뜻한다.
 
@@ -63,12 +63,12 @@ cd frontend
 python3 -m http.server 3000
 ```
 
-직접 실행 시 브라우저에서 `http://localhost:3000`을 열고 API 주소에 `http://localhost:8080`을 입력합니다. Docker Compose에서는 API 주소가 `http://localhost:9090`입니다.
+직접 실행 시 브라우저에서 `http://localhost:3000`을 열고 API 주소에 `http://localhost:8080`을 입력합니다. Docker Compose의 기본 API 주소는 `http://localhost:8090`이며 Web 이미지도 같은 기본 주소로 빌드됩니다. `CHECKNETWORK_API_PORT`를 설정하면 host publish와 Web build argument가 함께 바뀝니다. 변경 후에는 Web 이미지를 다시 빌드해야 합니다. Compose 밖의 정적 HTML 및 canonical release 기본값은 기존 `http://localhost:9090`을 유지합니다.
 
 ```bash
 docker compose up --build --wait
-curl --fail http://127.0.0.1:9090/readyz
-curl --fail http://127.0.0.1:9090/api/v1/health
+curl --fail http://127.0.0.1:8090/readyz
+curl --fail http://127.0.0.1:8090/api/v1/health
 curl --fail http://127.0.0.1:3000/
 ```
 

@@ -56,6 +56,44 @@ public final class DiagnosticsSessionTest {
         session.attach(first,states::add); session.detach(first); dispatcher.runAll(); assertTrue(states.isEmpty());
         Object second=new Object(); session.attach(second,states::add); session.destroy(); dispatcher.runAll(); assertTrue(states.isEmpty());
     }
+    @Test public void queuedSameOwnerLoadingCannotOverwriteReadyEvenInReverseDispatchOrder() {
+        FakeFactory factory = new FakeFactory();
+        QueueDispatcher dispatcher = new QueueDispatcher();
+        RequestCoordinator coordinator = new RequestCoordinator(factory);
+        DiagnosticsSession session = new DiagnosticsSession(coordinator, dispatcher, null);
+        List<RequestState> states = new ArrayList<>();
+        session.attach(this, state -> {
+            assertFalse("listener must not run under the reducer lock", Thread.holdsLock(coordinator));
+            states.add(state);
+        });
+        dispatcher.runAll();
+        states.clear();
+        session.start(request("one.test"));
+        RequestState loading = session.state();
+        factory.calls.get(0).succeed(RAW, ReportParser.parse(RAW));
+        RequestState ready = session.state();
+        assertEquals(loading.ownerId(), ready.ownerId());
+        assertEquals(loading.signature(), ready.signature());
+        Collections.reverse(dispatcher.queued);
+        dispatcher.runAll();
+        assertEquals(List.of(ready), states);
+    }
+
+    @Test public void queuedReplayAndCancelledSnapshotCannotFollowNewIdleTransition() {
+        FakeFactory factory = new FakeFactory();
+        QueueDispatcher dispatcher = new QueueDispatcher();
+        DiagnosticsSession session = new DiagnosticsSession(new RequestCoordinator(factory), dispatcher, null);
+        List<RequestState> states = new ArrayList<>();
+        session.start(request("one.test"));
+        session.attach(this, states::add); // queued LOADING replay
+        session.cancel();
+        session.invalidateInput("edited");
+        RequestState idle = session.state();
+        Collections.reverse(dispatcher.queued);
+        dispatcher.runAll();
+        assertEquals(List.of(idle), states);
+    }
+
     private static ReportRequest request(String address){return ReportRequest.builder().addTarget(TargetInput.of(CheckKind.DNS,address)).build();}
     private static final class QueueDispatcher implements DiagnosticsSession.Dispatcher {final List<Runnable> queued=new ArrayList<>();public void dispatch(Runnable r){queued.add(r);}void runAll(){List<Runnable> copy=new ArrayList<>(queued);queued.clear();copy.forEach(Runnable::run);}}
     private static final class FakeFactory implements RequestCoordinator.CallFactory {final List<FakeCall> calls=new ArrayList<>();public RequestCoordinator.CancellableCall create(ReportRequest r){FakeCall c=new FakeCall();calls.add(c);return c;}}

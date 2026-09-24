@@ -13,7 +13,7 @@ services:
       CHECKNETWORK_API_KEY: ${CHECKNETWORK_API_KEY:-}
       CHECKNETWORK_RATE_LIMIT_PER_MINUTE: ${CHECKNETWORK_RATE_LIMIT_PER_MINUTE:-}
     ports:
-      - "127.0.0.1:9090:8080"
+      - "127.0.0.1:${CHECKNETWORK_API_PORT:-8090}:8080"
     stop_grace_period: 6m
     restart: unless-stopped
     cpus: 2.0
@@ -29,6 +29,7 @@ services:
     build:
       context: ./frontend
       args:
+        API_PORT: ${CHECKNETWORK_API_PORT:-8090}
         VERSION: ${CHECKNETWORK_VERSION:-0.1.0-dev}
         REVISION: ${CHECKNETWORK_REVISION:-0000000000000000000000000000000000000000}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}

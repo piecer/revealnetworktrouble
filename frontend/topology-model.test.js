@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 
 import { normalizeReport } from './state.js';
@@ -78,6 +79,22 @@ function legacyTopology(resultIndex, attempt, hops = 30) {
     links: nodes.slice(1).map((node, index) => ({ from: nodes[index].id, to: node.id, status: 'healthy', latency_delta_ms: 1 }))
   };
 }
+
+test('real producer full and compact models preserve observed RTT without synthetic zero samples', async () => {
+  const models = [];
+  for (const mode of ['full', 'compact']) {
+    const bytes = await readFile(new URL(`../testdata/${mode}-observation-integrity-report.json`, import.meta.url), 'utf8');
+    const input = normalizeReport(JSON.parse(bytes));
+    const before = structuredClone(input);
+    const model = topologyModelFromReport(input);
+    assert.equal(model.nodes.find(node => node.address === '8.8.8.8').latency_ms_avg, 100, mode);
+    assert.equal(model.nodes.find(node => node.address === '9.9.9.9').latency_ms_avg, 0, mode);
+    assert.equal(model.nodes.find(node => node.kind === 'unknown').latency_ms_avg, undefined, mode);
+    assert.deepEqual(input, before);
+    models.push(model.nodes.map(({ address, latency_ms_avg }) => ({ address: address ?? '', latency_ms_avg })));
+  }
+  assert.deepEqual(models[0], models[1]);
+});
 
 test('exports the frontend data, document, chunk, and label ceilings', () => {
   assert.deepEqual(

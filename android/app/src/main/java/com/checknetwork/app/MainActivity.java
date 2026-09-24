@@ -90,7 +90,7 @@ public final class MainActivity extends Activity {
     private CheckBox authEnabled;
     private TextView error,status;
     private ProgressBar progress;
-    private Button run,cancel,retry,share,shareRaw,addTarget;
+    private Button run,cancel,retry,share,shareRaw,retryRawCleanup,addTarget;
     private Report readyReport;
     private ReadyRaw readyRaw;
     private RawShareRuntime rawRuntime;
@@ -131,13 +131,13 @@ public final class MainActivity extends Activity {
         catch(RuntimeException failure){if(isCurrentRawAttachment(observedRuntime,observedOwner,observedGeneration))showRawShareFailure();}
     }
 
-    private void attachRawRuntime(){rawRuntime.attach(retained.rawOwner,this::renderRawShareState);rawAttached=true;rawAttachmentGeneration++;}
+    private void attachRawRuntime(){rawRuntime.attach(retained.rawOwner,this::renderRawShareState);rawAttached=true;rawAttachmentGeneration++;refreshRawShareEligibility();}
     private void detachRawRuntime(){if(!rawAttached)return;rawAttached=false;rawAttachmentGeneration++;rawRuntime.detach(retained.rawOwner);}
     private boolean isCurrentRawAttachment(RawShareRuntime expectedRuntime,Object expectedOwner,long expectedGeneration){return rawAttached&&rawRuntime==expectedRuntime&&retained!=null&&retained.rawOwner==expectedOwner&&rawAttachmentGeneration==expectedGeneration&&!isFinishing()&&!isDestroyed();}
 
     private void bindViews(){
         targets=findViewById(R.id.targets);report=findViewById(R.id.report);results=findViewById(R.id.results);apiUrl=findViewById(R.id.api_url);timeout=findViewById(R.id.timeout);bearer=findViewById(R.id.bearer);authEnabled=findViewById(R.id.auth_enabled);
-        error=findViewById(R.id.error);status=findViewById(R.id.request_status);progress=findViewById(R.id.progress);run=findViewById(R.id.run);cancel=findViewById(R.id.cancel);retry=findViewById(R.id.retry);share=findViewById(R.id.share);shareRaw=findViewById(R.id.share_raw);addTarget=findViewById(R.id.add_target);
+        error=findViewById(R.id.error);status=findViewById(R.id.request_status);progress=findViewById(R.id.progress);run=findViewById(R.id.run);cancel=findViewById(R.id.cancel);retry=findViewById(R.id.retry);share=findViewById(R.id.share);shareRaw=findViewById(R.id.share_raw);retryRawCleanup=findViewById(R.id.retry_raw_cleanup);addTarget=findViewById(R.id.add_target);
     }
 
     private void restoreForm(Bundle state){
@@ -157,6 +157,7 @@ public final class MainActivity extends Activity {
         TextWatcher watcher=watcher();apiUrl.addTextChangedListener(watcher);timeout.addTextChangedListener(watcher);bearer.addTextChangedListener(watcher);
         authEnabled.setOnCheckedChangeListener((v,checked)->{findViewById(R.id.bearer_label).setVisibility(checked?View.VISIBLE:View.GONE);bearer.setVisibility(checked?View.VISIBLE:View.GONE);inputMutated();});
         addTarget.setOnClickListener(v->{if(targets.getChildCount()<MAX_TARGETS){addTargetRow(CheckKind.DNS,"","","");inputMutated();}});
+        retryRawCleanup.setOnClickListener(v->retryRawCleanup());
         run.setOnClickListener(v->startDiagnostics());retry.setOnClickListener(v->startDiagnostics());cancel.setOnClickListener(v->{clearReady();session.cancel();});share.setOnClickListener(v->shareReadyReport());shareRaw.setOnClickListener(v->warnBeforeRawShare());
     }
 
@@ -224,10 +225,12 @@ public final class MainActivity extends Activity {
     private int addressHint(CheckKind kind){return switch(kind){case DNS->R.string.hint_dns;case TCP->R.string.hint_tcp;case HTTP->R.string.hint_http;case HTTPS->R.string.hint_https;case TRACEROUTE->R.string.hint_trace;default->R.string.hint_service;};}
     private static int kindIndex(CheckKind kind){return kind.ordinal();}
 
-    private FormState collectForm(){
+    private FormState collectForm(){return collectForm(true);}
+    // Saved UI drafts retain inactive options; request/signature snapshots never include them.
+    private FormState collectForm(boolean applicableOnly){
         final int timeoutMs;try{timeoutMs=Integer.parseInt(timeout.getText().toString().trim());}catch(NumberFormatException e){throw new IllegalArgumentException(getString(R.string.error_timeout));}
         List<FormState.Target> values=new ArrayList<>();
-        for(int i=0;i<targets.getChildCount();i++){View row=targets.getChildAt(i);CheckKind kind=CheckKind.values()[((Spinner)row.findViewById(R.id.kind)).getSelectedItemPosition()];values.add(new FormState.Target(kind,((EditText)row.findViewById(R.id.address)).getText().toString(),((EditText)row.findViewById(R.id.expected_status)).getText().toString(),((EditText)row.findViewById(R.id.attempts)).getText().toString()));}
+        for(int i=0;i<targets.getChildCount();i++){View row=targets.getChildAt(i);CheckKind kind=CheckKind.values()[((Spinner)row.findViewById(R.id.kind)).getSelectedItemPosition()];values.add(new FormState.Target(kind,((EditText)row.findViewById(R.id.address)).getText().toString(),(!applicableOnly||kind.supportsExpectedStatus())?((EditText)row.findViewById(R.id.expected_status)).getText().toString():"",(!applicableOnly||kind==CheckKind.TRACEROUTE)?((EditText)row.findViewById(R.id.attempts)).getText().toString():""));}
         return new FormState(apiUrl.getText().toString(),timeoutMs,values);
     }
     private void startDiagnostics(){
@@ -306,10 +309,10 @@ public final class MainActivity extends Activity {
             publishStep(generation,expected,CommitPoint.SHARE_ELIGIBILITY,()->{
                 readyReport=expected.report();
                 readyRaw=new ReadyRaw(expected.ownerId(),expected.signature(),expected.raw());
-                share.setEnabled(true);shareRaw.setEnabled(true);
+                share.setEnabled(true);
             });
             if(!isCurrentReady(generation,expected))throw new StalePresentationException();
-            hideError();presentationPhase=PresentationPhase.RENDERED;
+            hideError();presentationPhase=PresentationPhase.RENDERED;refreshRawShareEligibility();
         }catch(StalePresentationException stale){discardCandidate(candidate);recoverCurrentInstalledHierarchy();}
         catch(RuntimeException failure){rollbackCandidateIfCurrent(generation,expected,candidate,true);}
     }
@@ -366,10 +369,10 @@ public final class MainActivity extends Activity {
         long warnedOwner=candidate.ownerId();String warnedSignature=candidate.signature();
         AlertDialog warning=new AlertDialog.Builder(this).setTitle(R.string.raw_share_warning_title).setMessage(R.string.raw_share_warning_message)
                 .setNegativeButton(R.string.raw_share_cancel,null).setPositiveButton(R.string.raw_share_confirm,(dialog,which)->shareConfirmedRaw(warnedOwner,warnedSignature)).show();
-        rawWarningDialog=warning;warning.setOnDismissListener(dialog->{if(rawWarningDialog==warning)rawWarningDialog=null;});
+        rawWarningDialog=warning;refreshRawShareEligibility();warning.setOnDismissListener(dialog->{if(rawWarningDialog==warning){rawWarningDialog=null;refreshRawShareEligibility();}});
     }
     private void shareConfirmedRaw(long warnedOwner,String warnedSignature){
-        ReadyRaw candidate=readyRaw;if(candidate==null)return;
+        ReadyRaw candidate=readyRaw;if(candidate==null||!rawAttached||isFinishing()||isDestroyed())return;
         RequestState current=session.state();
         if(candidate.ownerId()!=warnedOwner||!candidate.signature().equals(warnedSignature)||current.phase()!=RequestState.Phase.READY||current.ownerId()!=candidate.ownerId()||!current.signature().equals(candidate.signature())||!current.rawJson().filter(candidate.json()::equals).isPresent())return;
         PendingRawShare request=new PendingRawShare(candidate.ownerId(),candidate.signature(),candidate.json());
@@ -388,7 +391,7 @@ public final class MainActivity extends Activity {
             case GRANTED->status.setText(R.string.raw_share_state_granted);
             case RETIRED->status.setText(R.string.raw_share_state_retired);
             case DISPOSED->status.setText(R.string.raw_share_state_disposed);
-            case CLEANUP_FAILED->showRawShareFailure();
+            case CLEANUP_FAILED->{pendingRawShare=null;showRawShareFailure();}
             case IDLE->{
                 boolean failed=pendingRawShare!=null&&snapshot.failure()!=null;
                 pendingRawShare=null;
@@ -396,6 +399,23 @@ public final class MainActivity extends Activity {
                 else if(session.state().phase()==RequestState.Phase.READY)status.setText(R.string.state_ready);
             }
         }
+        refreshRawShareEligibility();
+    }
+
+    private void refreshRawShareEligibility(){
+        RawShareRuntime.Phase phase=rawRuntime.snapshot().phase();
+        boolean cleanupFailed=rawAttached&&!isFinishing()&&!isDestroyed()&&phase==RawShareRuntime.Phase.CLEANUP_FAILED;
+        retryRawCleanup.setVisibility(cleanupFailed?View.VISIBLE:View.GONE);retryRawCleanup.setEnabled(cleanupFailed);
+        boolean rendered=readyRaw!=null&&presentationPhase==PresentationPhase.RENDERED&&installedCandidateOwner!=null&&isCurrentReady(installedCandidateGeneration,installedCandidateOwner);
+        shareRaw.setEnabled(rawAttached&&!isFinishing()&&!isDestroyed()&&rendered&&pendingRawShare==null&&rawWarningDialog==null&&(phase==RawShareRuntime.Phase.IDLE||phase==RawShareRuntime.Phase.GRANTED));
+    }
+
+    private void retryRawCleanup(){
+        if(!rawAttached||isFinishing()||isDestroyed()||rawRuntime.snapshot().phase()!=RawShareRuntime.Phase.CLEANUP_FAILED)return;
+        if(rawRuntime.retryCleanup()==RawShareRuntime.Admission.ACCEPTED){
+            pendingRawShare=null;hideError();status.setText(R.string.raw_share_state_cleaning);
+        }
+        refreshRawShareEligibility();
     }
 
     private void launchMaterializedRaw(RawShareRuntime.Snapshot notified){
@@ -421,7 +441,7 @@ public final class MainActivity extends Activity {
     }
     private void showRawShareFailure(){showError(getString(R.string.raw_share_error));}
 
-    @Override protected void onSaveInstanceState(Bundle out){super.onSaveInstanceState(out);try{FormState form=collectForm();out.putString(KEY_API,bounded(form.apiBase()));out.putInt(KEY_TIMEOUT,form.timeoutMs());ArrayList<String> kinds=new ArrayList<>(),addresses=new ArrayList<>(),expected=new ArrayList<>(),attempts=new ArrayList<>();for(FormState.Target target:form.targets()){kinds.add(target.kind().wireValue());addresses.add(bounded(target.address()));expected.add(bounded(target.expectedStatus()));attempts.add(bounded(target.attempts()));}out.putStringArrayList(KEY_KINDS,kinds);out.putStringArrayList(KEY_ADDRESSES,addresses);out.putStringArrayList(KEY_EXPECTED,expected);out.putStringArrayList(KEY_ATTEMPTS,attempts);}catch(RuntimeException ignored){}}
+    @Override protected void onSaveInstanceState(Bundle out){super.onSaveInstanceState(out);try{FormState form=collectForm(false);out.putString(KEY_API,bounded(form.apiBase()));out.putInt(KEY_TIMEOUT,form.timeoutMs());ArrayList<String> kinds=new ArrayList<>(),addresses=new ArrayList<>(),expected=new ArrayList<>(),attempts=new ArrayList<>();for(FormState.Target target:form.targets()){kinds.add(target.kind().wireValue());addresses.add(bounded(target.address()));expected.add(bounded(target.expectedStatus()));attempts.add(bounded(target.attempts()));}out.putStringArrayList(KEY_KINDS,kinds);out.putStringArrayList(KEY_ADDRESSES,addresses);out.putStringArrayList(KEY_EXPECTED,expected);out.putStringArrayList(KEY_ATTEMPTS,attempts);}catch(RuntimeException ignored){}}
     @Override public Object onRetainNonConfigurationInstance(){retainingSession=true;retained.bearer=bearer.getText().toString();retained.authEnabled=authEnabled.isChecked();return retained;}
     @Override protected void onDestroy(){
         for(int i=0;i<targets.getChildCount();i++)detachTargetRowListeners(targets.getChildAt(i));
@@ -429,6 +449,8 @@ public final class MainActivity extends Activity {
         boolean finalDestroy=!retainingSession&&!isChangingConfigurations();
         if(finalDestroy){pendingRawShare=null;rawRuntime.retire(retained.rawOwner);session.destroy();}
         detachRawRuntime();
+        pendingRawShare=null;readyRaw=null;
+        if(rawWarningDialog!=null){rawWarningDialog.dismiss();rawWarningDialog=null;}
         super.onDestroy();
     }
     private record ReadyRaw(long ownerId,String signature,String json){}

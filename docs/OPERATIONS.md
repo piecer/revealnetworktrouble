@@ -26,6 +26,10 @@ traceroute의 공인 IP는 서버에서 GeoIP 제공자에 전달된다. 사내 
 
 ## 실행 및 자원 envelope
 
+Compose의 `CHECKNETWORK_API_PORT`는 API host publish와 frontend `API_PORT` build argument의 단일 입력이며 unset/empty 기본값은 8090이다. 예를 들어 `CHECKNETWORK_API_PORT=18090 docker compose up --build --wait`는 API와 새 Web HTML 기본 주소를 함께 18090으로 바꾼다. 포트는 leading zero 없는 1..65535 decimal만 허용한다. 이 값은 build-time 설정이므로 기존 Web container의 환경 변수만 변경해서는 HTML이 바뀌지 않는다. Canonical release와 Compose 밖의 frontend Dockerfile 기본값은 9090이며, 그 경우 nine source assets의 bytes는 바뀌지 않는다. 이것은 설정 예시이며 이번 회귀 검증에서 실행 중인 배포를 재시작하지 않았다.
+
+nginx stable asset URLs는 `etag off`, `if_modified_since off`, `Cache-Control: no-store`를 함께 적용한다. 동일 `SOURCE_DATE_EPOCH`와 같은 길이의 다른 파일에 오래된 conditional validators를 보내도 새 bytes를 200으로 반환해야 한다. 단순 `no-cache`만으로 잘못된 304를 해결했다고 간주하지 않는다. 재현 가능한 mtime 정규화와 asset manifest 생성은 유지한다.
+
 | 계층 | 기본/고정 경계 | 포화·초과 결과 |
 |---|---:|---|
 | accepted connections | 기본 128, 설정 hard max 256 | handler 생성 전 socket 즉시 close + interruptible 5 ms accept backoff; HTTP status 없음 |
@@ -145,7 +149,11 @@ Web도 같은 revision/version/epoch와 exact release platform `linux/amd64`를 
 
 성공 output은 API `api_archive`, `api_config`, `api_manifest`, `api_rootfs`, `api_binary`, `api_traceroute` 여섯 field와 Web `archive`, `config`, `manifest`, `rootfs`, `asset_manifest` 다섯 field다. Docker CLI/daemon/buildx 또는 required pinned base cache 부재는 skip이 아니라 실패다. Stage 8 historical source inventory는 Web 260 tests(456 semantic mutations including 13 generic cancelled-detail rejections), producer findings 23/result shapes 31/expanded semantic result matrix 136, presentation `6/10/21/23/33`, Android debug/release 각각 direct-child XML 297 tests + variant canaries 2, archive validators API 28 + Web 25 = 53 tests, exact real release-gate fake cases 12다. Compose SemVer fix 뒤 current source inventory는 Web 298 tests다. 최신 parent focused gates와 Task 1~15 task-level reviews는 blocker 0 / major 0이지만 documentation edits 뒤 final clean-environment `make ci`는 아직 pending이다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest/검증에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. New manifest/temp release/five-way review/commit 및 postcommit exact-SHA `make ci-clean-archive`, `make verify-release`, `make release`도 pending이며 final claim이 아니다. 이전 임시 manifest version/record count/hash는 current evidence가 아니다.
 
-Route-visual slice current source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators remain API 28 + Web 25 = 53; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application contract script. Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure remains **nine assets**, including self-contained `geo-map.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
+
+## Offline runtime startup 계약
+
+현재 offline runtime 검증은 API의 exact PATH-only environment, UID/GID `65532:65532`, entrypoint `/checknetwork-api`, WorkingDir `/`, port `8080/tcp`, absent/null/empty Cmd를 요구하고 추가 runtime fields를 거부한다. `CHECKNETWORK_*`는 이미지에 bake하지 않고 deployment에서 주입한다. Web은 인증된 pinned nginx base의 전체 non-label runtime config와 일치해야 하며 canonical EXPOSE 80만 허용한다. 두 이미지 모두 OCI label 값은 string이어야 한다. Self-consistent archive mutation tests는 이 정책의 거부 경계를 검증하지만 실제 derived image 실행이나 clean exact-SHA release acceptance를 대신하지 않는다.
 
 ## Stage 8 manifest/commit 운영 순서
 

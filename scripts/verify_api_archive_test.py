@@ -123,6 +123,7 @@ def fixture(*, base_entries=None, layer_entries=None, gzip_layer=False, docker_m
             "Env": ["PATH=" + PATH_ENV],
             "Entrypoint": ["/checknetwork-api"],
             "User": "65532:65532",
+            "WorkingDir": "/",
             "ExposedPorts": {"8080/tcp": {}},
             "Labels": {
                 "org.opencontainers.image.version": VERSION,
@@ -463,6 +464,104 @@ class APIArchiveValidatorTest(unittest.TestCase):
             replace_content_addressed_config(fx, json.dumps(config, separators=(",", ":")).encode())
             with self.subTest(name=name):
                 self.assert_rejected(fx, "labels|User|Entrypoint|PATH|port")
+
+    def test_runtime_environment_is_the_complete_canonical_default(self):
+        # Rebuild every descriptor/hash, so rejection is runtime policy, not a
+        # stale config digest. Deployment-time env is not baked-image policy.
+        environments = [
+            ["PATH=" + PATH_ENV, "CHECKNETWORK_ADDR=not-a-listen-address"],
+            ["PATH=" + PATH_ENV, "CHECKNETWORK_ADDR=0.0.0.0:8080"],
+            ["PATH=" + PATH_ENV, "CHECKNETWORK_MODE=public"],
+            ["PATH=" + PATH_ENV, "CHECKNETWORK_MAX_CONNECTIONS=-1"],
+            ["PATH=" + PATH_ENV, "CHECKNETWORK_UNKNOWN="],
+            ["PATH=" + PATH_ENV, "LD_PRELOAD=/tmp/library.so"],
+            ["PATH=" + PATH_ENV, "GODEBUG=panicnil=1"],
+            ["PATH=" + PATH_ENV, "PATH=" + PATH_ENV],
+            ["PATH=" + PATH_ENV, "CHECKNETWORK_MODE=trusted-local", "CHECKNETWORK_MODE=public"],
+            ["PATH=" + PATH_ENV, "CHECKNETWORK_MODE"],
+            ["PATH=" + PATH_ENV, "=value"],
+            ["PATH=" + PATH_ENV, None],
+            ["PATH=" + PATH_ENV, 1],
+            ["PATH=" + PATH_ENV, {}],
+            None, {}, "PATH=" + PATH_ENV, [],
+        ]
+        for env in environments:
+            with self.subTest(env=env):
+                fx = fixture()
+                config = json.loads(next(e[1] for e in fx.outer if e[0] == fx.names["config"]))
+                config["config"]["Env"] = env
+                replace_content_addressed_config(fx, json.dumps(config).encode())
+                self.assert_rejected(fx, "runtime.*(?:environment|PATH)")
+        self.validate(fixture())
+
+    def test_runtime_command_directory_and_override_shapes_are_closed(self):
+        mutations = {
+            "Cmd": [["--version"], ["/bin/sh"], "", {}, False, [None]],
+            "WorkingDir": ["/tmp", "", None, [], False],
+            "Entrypoint": [None, [], "/checknetwork-api", ["/checknetwork-api", "--version"]],
+            "User": [None, 65532, ["65532:65532"]],
+            "ExposedPorts": [None, [], {"8080/tcp": []}],
+            "Healthcheck": [{"Test": ["CMD", "/does-not-exist"]}, None, []],
+            "Volumes": [{"/": {}}, {}, None],
+            "OnBuild": [["RUN /does-not-exist"], []],
+            "Shell": [["/bin/sh", "-c"]],
+            "ArgsEscaped": [True, False, 0],
+            "StopSignal": ["SIGSTOP", None],
+            "NetworkDisabled": [True, False],
+            "UnknownRuntimeField": [None, {}],
+        }
+        for field, values in mutations.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    fx = fixture()
+                    config = json.loads(next(e[1] for e in fx.outer if e[0] == fx.names["config"]))
+                    config["config"][field] = value
+                    replace_content_addressed_config(fx, json.dumps(config).encode())
+                    self.assert_rejected(fx, "runtime")
+        for field in ("Env", "Entrypoint", "User", "WorkingDir", "ExposedPorts"):
+            with self.subTest(missing=field):
+                fx = fixture()
+                config = json.loads(next(e[1] for e in fx.outer if e[0] == fx.names["config"]))
+                del config["config"][field]
+                replace_content_addressed_config(fx, json.dumps(config).encode())
+                self.assert_rejected(fx, "runtime")
+
+    def test_canonical_empty_command_serializations_are_accepted(self):
+        # ENTRYPOINT resets Alpine's inherited shell CMD. Exporters may omit
+        # it or encode the no-arguments value as null/an empty list.
+        for command in (None, []):
+            with self.subTest(command=command):
+                fx = fixture()
+                config = json.loads(next(e[1] for e in fx.outer if e[0] == fx.names["config"]))
+                config["config"]["Cmd"] = command
+                replace_content_addressed_config(fx, json.dumps(config).encode())
+                self.validate(fx)
+        self.validate(fixture())
+
+    def test_runtime_and_label_types_fail_closed_before_extraction(self):
+        for value in (None, [], "invalid", False):
+            for field in ("config", "Labels", "extra_label"):
+                with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as temp:
+                    fx = fixture()
+                    config = json.loads(next(e[1] for e in fx.outer if e[0] == fx.names["config"]))
+                    if field == "config":
+                        config["config"] = value
+                    elif field == "Labels":
+                        config["config"]["Labels"] = value
+                    else:
+                        if isinstance(value, str):
+                            continue  # Extra string labels are supported metadata.
+                        config["config"]["Labels"]["extra"] = value
+                    replace_content_addressed_config(fx, json.dumps(config).encode())
+                    self.assert_rejected(fx, "runtime|labels", extract_dir=temp)
+                    self.assertEqual(list(Path(temp).iterdir()), [])
+
+    def test_allowed_label_metadata_preserves_the_full_archive_graph(self):
+        fx = fixture()
+        config = json.loads(next(e[1] for e in fx.outer if e[0] == fx.names["config"]))
+        config["config"]["Labels"]["org.opencontainers.image.description"] = "release metadata"
+        replace_content_addressed_config(fx, json.dumps(config).encode())
+        self.validate(fx)
 
     def test_duplicate_keys_in_config_and_oci_manifest_are_rejected(self):
         fx = fixture()

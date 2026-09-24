@@ -434,6 +434,40 @@ test('Web result parser consumes all 136 producer-fixture matrix rows repeatedly
   }
 });
 
+test('producer observation witness preserves measured RTT and ASN without inventing coordinates', async () => {
+  const bytes = await readFile(new URL('../testdata/compact-observation-integrity-report.json', import.meta.url), 'utf8');
+  const report = normalizeReport(JSON.parse(bytes));
+  const nodes = report.compact_topology.nodes;
+  assert.equal(nodes.find(node => node.address === '8.8.8.8').latency_ms_avg, 100);
+  assert.equal(nodes.find(node => node.address === '9.9.9.9').latency_ms_avg, 0);
+  assert.equal(nodes.find(node => node.kind === 'unknown').latency_ms_avg, undefined);
+  for (const node of nodes) assert.equal(node.geolocation, undefined);
+  assert.equal(nodes.find(node => node.address === '8.8.8.8').asn.number, 15169);
+});
+
+test('repaired trace observations cross full and compact consumer boundaries', async () => {
+  for (const [scenario, routes, finding] of [
+    ['healthy-varied-paths', 2, 'traceroute_path_unstable'],
+    ['later-DNS-failure', 1, 'traceroute_execution_failed'],
+    ['slow-optional-GeoIP', 1, null],
+    ['consecutive-RTT-jumps', 1, 'traceroute_path_degraded'],
+  ]) {
+    for (const mode of ['full', 'compact']) {
+      const bytes = await readFile(new URL(`../testdata/trace-observation-${scenario}-${mode}.json`, import.meta.url), 'utf8');
+      const report = normalizeReport(JSON.parse(bytes));
+      assert.equal(report.results[0].details.attempts_reached, routes);
+      if (finding) assert.equal(report.analysis.findings[0].code, finding);
+      if (mode === 'compact') assert.equal(report.compact_topology.routes.length, routes);
+      if (scenario === 'later-DNS-failure' && mode === 'full') {
+        const failed = report.results[0].details.attempts[1];
+        assert.equal(failed.error_code, 'traceroute_failed');
+        assert.equal(failed.topology, undefined);
+      }
+      if (scenario === 'slow-optional-GeoIP') assert.equal(report.analysis.coverage.enrichment[0].failures[0].kind, 'timeout');
+    }
+  }
+});
+
 test('all eight producer traceroute witnesses normalize with only completed attempts projected', async () => {
   const fixtureNames = [
     'traceroute-timeout-full-report.json',
