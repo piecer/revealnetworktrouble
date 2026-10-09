@@ -160,7 +160,7 @@ public final class ReportTransport {
             Scheduled deadline = null;
             try {
                 remainingDeadlineOrThrow(startedNanos, budgetMillis);
-                HttpURLConnection opened = connections.open(config.reportsEndpoint().toURL());
+                HttpURLConnection opened = connections.open(new URL(config.reportsEndpoint().toASCIIString() + "?geo_details=1"));
                 connection.set(opened);
                 if (terminal.get() != Terminal.ACTIVE) disconnectOnce();
                 long remainingMillis = remainingDeadlineOrThrow(startedNanos, budgetMillis);

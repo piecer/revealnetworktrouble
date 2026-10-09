@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -308,6 +309,11 @@ func (s *Server) decodeReportRequest(response responder, request *http.Request) 
 
 func (s *Server) createReport(response responder, request *http.Request) {
 	observation := observationFromRequest(request)
+	query, queryErr := url.ParseQuery(request.URL.RawQuery)
+	if values, present := query["geo_details"]; queryErr != nil || (present && (len(values) != 1 || values[0] != "1")) {
+		s.rejectReport(response, request, apiErrorInvalidRequest, apiErrorMetadata{})
+		return
+	}
 	decoded, ok := s.decodeReportRequest(response, request)
 	if !ok {
 		return
@@ -360,13 +366,7 @@ func (s *Server) createReport(response responder, request *http.Request) {
 	}
 
 	marshalStarted := time.Now()
-	var payload []byte
-	var marshalErr error
-	if decoded.TopologyMode == diagnostic.TopologyModeCompact {
-		payload, marshalErr = marshalCompactResponse(report)
-	} else {
-		payload, marshalErr = marshalFullResponse(report)
-	}
+	payload, marshalErr := marshalReportResponse(report, decoded.TopologyMode, query.Get("geo_details") == "1")
 	observation.marshalDuration = time.Since(marshalStarted)
 	if marshalErr != nil {
 		releaseAdmission()
@@ -678,6 +678,12 @@ func marshalCompactResponseForTest(report diagnostic.Report, marshal compactRepo
 }
 
 func marshalCompactResponseWithBuilder(report diagnostic.Report, marshal compactReportMarshaler, buildTopology compactTopologyBuilder) ([]byte, error) {
+	return marshalCompactResponseRetainingSnapshot(report, marshal, buildTopology, nil)
+}
+
+// Retain the exact typed winner; optional extensions must not reconstruct it
+// from JSON or run topology rollback again after legacy fitting has finished.
+func marshalCompactResponseRetainingSnapshot(report diagnostic.Report, marshal compactReportMarshaler, buildTopology compactTopologyBuilder, winner *diagnostic.Report) ([]byte, error) {
 	build, cached := report.CachedCompactTopologyBuild()
 	if !cached {
 		build = buildTopology(report, -1, true)
@@ -687,7 +693,8 @@ func marshalCompactResponseWithBuilder(report diagnostic.Report, marshal compact
 
 	marshalTopology := func(topology *diagnostic.CompactTopology, responseLimited, geoLimited bool) ([]byte, bool, error) {
 		setCompactTruncationReasons(topology, responseLimited, geoLimited)
-		payload, err := marshal(diagnostic.BuildCompactReport(report, topology))
+		candidate := diagnostic.BuildCompactReport(report, topology)
+		payload, err := marshal(candidate)
 		if err != nil {
 			if isFullResponseBudgetError(err) {
 				return nil, false, nil
@@ -695,7 +702,11 @@ func marshalCompactResponseWithBuilder(report diagnostic.Report, marshal compact
 			return nil, false, fmt.Errorf("%w: %w", errResponseSerialization, err)
 		}
 		payload = append(payload, '\n')
-		return payload, len(payload) < diagnostic.CompactTopologyMaxResponseBytes, nil
+		fits := len(payload) < diagnostic.CompactTopologyMaxResponseBytes
+		if fits && winner != nil {
+			*winner = candidate
+		}
+		return payload, fits, nil
 	}
 
 	payload, fits, err := marshalTopology(initial, false, false)

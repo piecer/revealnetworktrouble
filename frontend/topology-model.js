@@ -1,7 +1,7 @@
 'use strict';
-import { presentTopology } from './topology-presentation.js';
+import { presentTopology, canonicalPublicIP } from './topology-presentation.js';
 
-import { normalizeCompactTopology } from './state.js';
+import { normalizeCompactTopology, normalizeGeoDetails } from './state.js';
 
 const DATA_NODES = 500;
 const DATA_LINKS = 1000;
@@ -409,10 +409,32 @@ function adaptLegacyTopology(report) {
 }
 
 function topologyModelFromReport(input) {
+  // Validate the original closed sidecar before the legacy snapshot can erase
+  // hidden/symbol fields or trailing array holes. Never read a root accessor.
+  const geoDescriptor = input && typeof input === 'object'
+    ? Object.getOwnPropertyDescriptor(input, 'geo_details') : undefined;
+  let details;
+  if (geoDescriptor) {
+    if (!geoDescriptor.enumerable || !Object.hasOwn(geoDescriptor, 'value')) {
+      throw new TypeError('report.geo_details must be an own enumerable data field');
+    }
+    details = normalizeGeoDetails(geoDescriptor.value);
+  }
   const report = snapshotPlainData(input, 'report');
   if (!report || typeof report !== 'object' || Array.isArray(report)) throw new TypeError('report must be an object');
-  if (report.compact_topology !== undefined && report.compact_topology !== null) return compactModel(report.compact_topology, report);
-  return adaptLegacyTopology(report);
+  const model = report.compact_topology !== undefined && report.compact_topology !== null
+    ? compactModel(report.compact_topology, report) : adaptLegacyTopology(report);
+  if (details) {
+    const byAddress = new Map(details.entries.map(entry => [entry.address, entry]));
+    for (const node of model.nodes) {
+      const entry = node.public_ip === true ? byAddress.get(canonicalPublicIP(node.address)) : undefined;
+      if (entry) node.geo_details = entry;
+    }
+    // Raw-scope records may outnumber retained nodes. Only the aggregate crosses
+    // into the view plan; no supplemental record creates a node or map position.
+    model.geo_details_summary = Object.freeze({total: details.total, omitted: details.omitted});
+  }
+  return model;
 }
 
 function filterTopologyModel(inputModel, selectedResultIndexes, { showUnresponsive = true } = {}) {
@@ -710,7 +732,8 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
   const estimatedDOMElements = renderable ? existingDOMElements + reserve + mountCost : existingDOMElements;
   return {
     view, renderable, presentation,
-    topology: { nodes: selectedNodes, links: selectedLinks, routes: selectedRoutes },
+    topology: { nodes: selectedNodes, links: selectedLinks, routes: selectedRoutes,
+      ...(model.geo_details_summary ? {geo_details_summary: clonePlain(model.geo_details_summary)} : {}) },
     geo: { markers, segments, arrows },
     labels: {
       maxFileBytes: LABEL_FILE, maxRecords: LABEL_RECORDS, pageSize: LABEL_PAGE,

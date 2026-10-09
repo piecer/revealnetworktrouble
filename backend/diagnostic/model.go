@@ -107,14 +107,15 @@ const (
 )
 
 type Report struct {
-	ID              string           `json:"id"`
-	Status          Status           `json:"status"`
-	StartedAt       time.Time        `json:"started_at"`
-	DurationMS      int64            `json:"duration_ms"`
-	Summary         Summary          `json:"summary"`
-	Results         []Result         `json:"results"`
-	Analysis        *Analysis        `json:"analysis,omitempty"`
-	CompactTopology *CompactTopology `json:"compact_topology,omitempty"`
+	ID              string             `json:"id"`
+	Status          Status             `json:"status"`
+	StartedAt       time.Time          `json:"started_at"`
+	DurationMS      int64              `json:"duration_ms"`
+	Summary         Summary            `json:"summary"`
+	Results         []Result           `json:"results"`
+	Analysis        *Analysis          `json:"analysis,omitempty"`
+	CompactTopology *CompactTopology   `json:"compact_topology,omitempty"`
+	GeoDetails      *GeoDetailsSidecar `json:"geo_details,omitempty"`
 	compactBuild    *CompactTopologyBuildResult
 }
 

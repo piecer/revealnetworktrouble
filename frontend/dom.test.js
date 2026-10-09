@@ -345,7 +345,7 @@ test('credential indeterminate state is isolated when the canonical API base cha
   document.querySelector('#api-base-url').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
   await app.start('diagnostics');
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, `${otherBase}/api/v1/reports`);
+  assert.equal(requests[0].url, `${otherBase}/api/v1/reports?geo_details=1`);
   assert.equal(Object.hasOwn(requests[0].init.headers, 'Authorization'), false);
   assert.equal(faults.calls.length, 6);
 
@@ -829,7 +829,8 @@ test('maximum report navigation and 100-row label import stay within the documen
   const drainObserved = () => { while (queue.length) { queue.shift()(); observe(); } };
 
   await app.start('diagnostics'); observe();
-  assert.equal(document.querySelectorAll('*').length, 727, 'maximum valid report baseline without hidden empty label rows');
+  const initialElements = document.querySelectorAll('*').length;
+  assert.equal(initialElements, 738, 'maximum valid report baseline including ten static Geo detail/navigation elements and one map/detail workspace');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -844,7 +845,7 @@ test('maximum report navigation and 100-row label import stay within the documen
   document.querySelector('[data-view-link="diagnostics"]').click(); observe();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 0);
   assert.equal(document.querySelectorAll('.finding-toggle').length, 40, 'navigation reconstructs the owned report');
-  assert.ok(document.querySelectorAll('*').length <= 727, 'reconstructed report remains no larger than the original mount');
+  assert.ok(document.querySelectorAll('*').length <= initialElements, 'reconstructed report remains no larger than the original mount');
   document.querySelector('[data-view-link="ip-labels"]').click(); drainObserved();
   assert.equal(document.querySelectorAll('#ip-label-rows tr').length, 100, 'navigation reconstructs the current label page');
   assert.ok(peak <= 1200, `document peak after repeated navigation ${peak}`);
@@ -2380,7 +2381,7 @@ test('shared fullscreen controller reports failures, tracks exit, and restores i
 
 test('fullscreen controller announces unsupported API without throwing', async () => {
   const { document } = setup();
-  document.querySelector('#geo-map-result').requestFullscreen = undefined;
+  document.querySelector('#geo-map-view').requestFullscreen = undefined;
   document.querySelector('#geo-map-fullscreen').click(); await flush();
   assert.match(document.querySelector('#fullscreen-status').textContent, /지원하지/);
 });
@@ -2442,6 +2443,43 @@ test('IP-label table exposes an accessible caption and scoped headers', () => {
   const table = document.querySelector('.mapping-table');
   assert.ok(table.querySelector('caption') || table.getAttribute('aria-label') || table.getAttribute('aria-labelledby'));
   assert.deepEqual([...table.querySelectorAll('thead th')].map(th => th.getAttribute('scope')), ['col', 'col', 'col', 'col']);
+});
+
+test('Geo fullscreen includes persistent detail and paginated location controls', async () => {
+ const {document,app,dom}=setup(undefined,{url:'https://ui.example.test/#geo-map'});
+ const button=document.querySelector('#geo-map-fullscreen'),target=document.getElementById(button.getAttribute('aria-controls'));
+ assert.ok(target.contains(document.querySelector('#geo-node-detail')),'fullscreen cannot hide the selected facts');
+ assert.ok(target.contains(document.querySelector('#geo-page-next')));
+ let entered=false;target.requestFullscreen=async()=>{entered=true;};button.click();await flush();assert.equal(entered,true);app.destroy();dom.window.close();
+});
+
+test('Geo app mounts existing facts in static readable detail and accessible selection controls', async () => {
+ const queue=[];
+ const value=report('geo-details',{results:[compactTraceResult('geo.example')],compact_topology:compactTopology()});
+ const {document,app,dom}=setup(async()=>response(JSON.stringify(value)),{url:'https://ui.example.test/#topology',scheduler:{schedule(fn){queue.push(fn);return fn;},cancel(){}},configureWindow(win){win.HTMLCanvasElement.prototype.getContext=()=>null;}});
+ await flush();await app.start('topology');drain(queue);
+ document.querySelector('[data-view-link="geo-map"]').click();await flush();drain(queue);
+ const detail=document.querySelector('#geo-node-detail');assert.ok(detail,'persistent detail exists in actual app');
+ assert.match(detail.textContent,/192\.0\.2\.1/);assert.match(detail.textContent,/Seoul/);assert.match(detail.textContent,/시도 1/);
+ assert.equal(document.querySelector('.topology-geo-list button').getAttribute('aria-pressed'),'true');
+ for(const id of ['geo-node-previous','geo-node-next','geo-page-previous','geo-page-next'])assert.ok(document.getElementById(id));
+ assert.ok(document.querySelectorAll('*').length<=1200);
+ app.invalidate('topology');assert.doesNotMatch(detail.textContent,/192\.0\.2\.1/);assert.equal(document.querySelector('#geo-node-next').disabled,true);
+ app.destroy();dom.window.close();
+});
+
+test('Geo and graph retain identity across switches, reset on reports and reconcile route filtering', async () => {
+ const queue=[],value=report('selection',{results:[compactTraceResult('geo.example')],compact_topology:compactTopology()});
+ const {document,app,dom}=setup(async()=>response(JSON.stringify(value)),{url:'https://ui.example.test/#topology',scheduler:{schedule(fn){queue.push(fn);return fn;},cancel(){}},configureWindow(win){win.CanvasRenderingContext2D=function(){};win.HTMLCanvasElement.prototype.getContext=()=>new Proxy({},{get:(o,k)=>o[k]??(()=>{}),set:(o,k,v)=>(o[k]=v,true)});}});
+ const view=async name=>{document.querySelector(`[data-view-link="${name}"]`).click();await flush();drain(queue);};
+ await flush();await app.start('topology');drain(queue);await view('geo-map');
+ document.querySelector('.topology-geo-list button').click();await view('topology');
+ assert.equal(document.querySelector('.topology-canvas').dataset.selectedNodeId,'n2');
+ document.querySelector('.topology-canvas').dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));assert.equal(document.querySelector('#topology-label-address').value,'192.0.2.1');
+ document.querySelector('#topology-label-name').value='selected alias';submit(document,'#topology-label-form');drain(queue);await view('geo-map');assert.match(document.querySelector('#geo-node-detail').textContent,/selected alias/);
+ await view('topology');document.querySelector('[data-filter-action="none"]').click();drain(queue);await view('geo-map');assert.doesNotMatch(document.querySelector('#geo-node-detail').textContent,/192\.0\.2\.1|selected alias/);
+ await view('topology');await app.start('topology');drain(queue);assert.equal(document.querySelector('.topology-canvas').dataset.selectedNodeId,'','new reports cannot inherit reused node IDs');
+ app.destroy();dom.window.close();
 });
 
 test('Canvas Geo view does not request or store unused tile credentials', () => {

@@ -81,13 +81,15 @@ public final class Report {
     private final List<Result> results;
     private final Analysis analysis;
     private final CompactTopology compactTopology;
+    private final GeoDetails geoDetails;
 
     Report(String id, Status status, Instant startedAt, long durationMs, Summary summary,
-           List<Result> results, Analysis analysis, CompactTopology compactTopology) {
+           List<Result> results, Analysis analysis, CompactTopology compactTopology, GeoDetails geoDetails) {
         this.id = id; this.status = status; this.startedAt = startedAt; this.durationMs = durationMs;
         this.summary = summary; this.results = Collections.unmodifiableList(results);
-        this.analysis = analysis; this.compactTopology = compactTopology;
+        this.analysis = analysis; this.compactTopology = compactTopology; this.geoDetails = geoDetails;
     }
+    public Optional<GeoDetails> geoDetails() { return Optional.ofNullable(geoDetails); }
     public String id() { return id; }
     public Status status() { return status; }
     public Instant startedAt() { return startedAt; }

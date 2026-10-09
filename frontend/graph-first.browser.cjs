@@ -50,7 +50,7 @@ function assertPaintedGraph(result, needsLinks) {
         }
       });
       page.on('pageerror', error => errors.push(error.message));
-      await page.route('**/api/v1/reports', route => {
+      await page.route('**/api/v1/reports?geo_details=1', route => {
         requests++;
         return route.fulfill({ status: 200, contentType: 'application/json', body });
       });

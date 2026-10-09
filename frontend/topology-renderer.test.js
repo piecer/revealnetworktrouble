@@ -6,6 +6,7 @@ import { normalizeReport } from './state.js';
 import { readFileSync } from 'node:fs';
 import { topologyModelFromReport, planTopologyDOM } from './topology-model.js';
 import { drawTopologyCanvas, TopologyRenderCoordinator } from './topology-renderer.js';
+import { mountGeoMap } from './geo-map.js';
 
 function harness({ owns = () => true, html = '', context = fakeContext() } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>${html}<main id="root"></main><p id="status"></p></body></html>`, { pretendToBeVisual: true });
@@ -49,6 +50,9 @@ function fakeContext() {
   }
   context.save = () => { stack.push({ ...state }); calls.push(['save']); };
   context.restore = () => { Object.assign(state, stack.pop()); calls.push(['restore']); };
+  // Geo context labels use a real Canvas text halo; retain the same call
+  // recording for this newly exercised standard method.
+  context.strokeText = (...args) => calls.push(['strokeText', ...args]);
   context.fillText = (...args) => calls.push(['fillText', ...args, { textAlign: state.textAlign, textBaseline: state.textBaseline }]);
   for (const name of ['fillStyle', 'strokeStyle', 'lineWidth', 'font', 'textAlign', 'textBaseline']) {
     Object.defineProperty(context, name, {
@@ -778,16 +782,18 @@ test('Geo mounts canvas plus an accessible list, draws semantic data separately,
   let semantic;
   h.coordinator.start({
     ownerId: 'A', inputSignature: 'a', view: 'geo', model, root: h.root, status: h.status,
-    workspace: { drawGeo(value) { drawCalls++; semantic = value.geo; assert.ok(value.canvas.isConnected); return () => cleaned++; } }
+    workspace: { drawGeo(value) { drawCalls++; semantic = value.geo; assert.ok(value.canvas.isConnected); assert.equal(value.list.querySelectorAll('button').length,100); assert.deepEqual(value.facts.nodes, nodes); assert.equal(value.facts.routes.length,1); assert.equal(value.isActive(),true); return () => cleaned++; } }
   });
   h.runNext();
   assert.equal(drawCalls, 0, 'drawing has its own callback after mount');
   h.runNext();
+  assert.equal(drawCalls, 0, 'all list slots must mount before interactive paging');
+  h.runNext();
   assert.equal(drawCalls, 1);
   h.runAll();
   assert.equal(h.root.querySelectorAll('canvas').length, 1);
-  assert.equal(h.root.querySelectorAll('ul').length, 1);
-  assert.equal(h.root.querySelectorAll('ul > li').length, 100);
+  assert.equal(h.root.querySelectorAll('.topology-geo-list[role="group"]').length, 1);
+  assert.equal(h.root.querySelectorAll('.topology-geo-list > button').length, 100);
   assert.equal(h.root.querySelectorAll('[data-segment], [data-arrow]').length, 0);
   assert.ok(semantic.markers.length <= 500);
   assert.ok(semantic.segments.length <= 1000);
@@ -795,6 +801,62 @@ test('Geo mounts canvas plus an accessible list, draws semantic data separately,
   h.coordinator.dispose();
   assert.equal(cleaned, 1);
   assert.equal(h.root.childElementCount, 0);
+});
+
+test('Geo actual document admission keeps all 500 identities reachable even with fewer than 100 slots', () => {
+ for(const budget of [2,20,102]) {
+  const h=harness({html:'<p id="detail"></p><button id="previous"></button><button id="next"></button><button id="pagePrevious"></button><button id="pageNext"></button><p id="pageStatus"></p>'}),model=topologyModel(500);
+  model.nodes.forEach((n,i)=>Object.assign(n,{address:`8.1.${Math.floor(i/256)}.${i%256}`,public_ip:true,geolocation:{latitude:0,longitude:0}}));
+  while(h.document.querySelectorAll('*').length<1200-300-budget)h.document.body.append(h.document.createElement('i'));
+  const controls=Object.fromEntries(['detail','previous','next','pagePrevious','pageNext','pageStatus'].map(id=>[id,h.document.getElementById(id)]));
+  h.coordinator.start({ownerId:1,inputSignature:'budget',view:'geo',model,root:h.root,status:h.status,workspace:{drawGeo:args=>mountGeoMap({...args,controls,win:h.dom.window,scheduler:{schedule:h.schedule,cancel:h.cancelScheduled}})}});
+  while(h.queue.length){const before=h.document.querySelectorAll('*').length;h.runNext();const after=h.document.querySelectorAll('*').length;assert.ok(after-before<=100);assert.ok(after<=1200);}
+  const slots=[...h.root.querySelectorAll('.topology-geo-list button')];assert.equal(slots.length,budget-2);
+  const seen=new Set();
+  if(slots.length)for(;;){slots.filter(b=>!b.hidden).forEach(b=>seen.add(b.dataset.nodeId));if(controls.pageNext.disabled)break;controls.pageNext.click();}
+  else{seen.add(h.root.querySelector('canvas').dataset.selectedNodeId);for(let i=1;i<500;i++){controls.next.click();seen.add(h.root.querySelector('canvas').dataset.selectedNodeId);}}
+  assert.equal(seen.size,500);assert.deepEqual([...h.root.querySelectorAll('.topology-geo-list button')],slots);assert.ok(h.document.querySelectorAll('*').length<=1200);
+  h.coordinator.dispose();h.dom.window.close();
+ }
+});
+
+test('graph shares explicit selection without treating hover as selection or losing alias/drag interactions', () => {
+ const h=harness({html:'<p id="tooltip"></p>'}),model=topologyModel(3),changes=[],edits=[];
+ h.root.addEventListener('click',e=>{if(e.target.matches('button.topology-node'))edits.push(e.target.dataset.nodeId);});
+ h.coordinator.start({ownerId:'A',inputSignature:'a',view:'topology',model,root:h.root,status:h.status,workspace:{selectedNodeId:'n2',onSelect:id=>changes.push(id),tooltip:h.document.querySelector('#tooltip')}});h.runAll();
+ const canvas=h.root.querySelector('canvas');assert.equal(canvas.dataset.selectedNodeId,'n2');
+ canvas.getBoundingClientRect=()=>({left:0,top:0,width:800,height:480});
+ const p=h.coordinator.current.projection.nodes.find(n=>n.id==='n1').screen;
+ const pointer=(type,x=p.x,y=p.y)=>{const e=new h.dom.window.MouseEvent(type,{clientX:x,clientY:y,button:0,bubbles:true});Object.defineProperty(e,'pointerId',{value:1});canvas.dispatchEvent(e);};
+ pointer('pointermove');assert.deepEqual(changes,[]);assert.equal(canvas.dataset.selectedNodeId,'n2');
+ canvas.dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'[',bubbles:true}));assert.equal(changes.at(-1),'n1');
+ pointer('click');assert.equal(edits.at(-1),'n1');assert.equal(changes.at(-1),'n1');
+ pointer('pointerdown');pointer('pointermove',p.x+30,p.y+15);pointer('pointerup',p.x+30,p.y+15);const editCount=edits.length;pointer('click',p.x+30,p.y+15);assert.equal(edits.length,editCount);
+ assert.ok(h.coordinator.current.nodeOffsets.get('n1').x>0);assert.equal(model.nodes[1].geolocation,undefined);
+ h.root.querySelector('[data-node-id="n0"]').click();assert.equal(changes.at(-1),'n0');
+ h.coordinator.dispose();h.dom.window.close();
+});
+
+test('keyboard selection traverses folded unknown spans without inventing raw identities', () => {
+ const h=harness(),model=topologyModel(4),changes=[];
+ for(const i of [1,2])Object.assign(model.nodes[i],{kind:'unknown',address:'',status:'unknown'});
+ model.links=model.nodes.slice(1).map((n,i)=>({from:model.nodes[i].id,to:n.id,status:'unknown'}));
+ model.routes=[{result_index:0,attempt:1,status:'healthy',complete:true,node_ids:model.nodes.map(n=>n.id)}];
+ h.coordinator.start({ownerId:1,inputSignature:'fold',view:'topology',model,root:h.root,status:h.status,workspace:{onSelect:id=>changes.push(id)}});h.runAll();
+ const canvas=h.root.querySelector('canvas'),group=h.coordinator.current.projection.nodes.find(n=>n.kind==='unknown-group');
+ const order=h.coordinator.current.projection.nodes.map(n=>n.id);
+ for(const id of [...order.slice(1),order[0]]) {canvas.dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:']'}));assert.equal(canvas.dataset.selectedNodeId,id);}
+ assert.ok(changes.includes(group.id));
+ assert.equal(model.nodes.some(n=>n.id===group.id),false);h.coordinator.dispose();h.dom.window.close();
+});
+
+test('Geo callbacks retain the same owner guard after replacement or lost request ownership', () => {
+ let owns=true;const h=harness({owns:()=>owns}),model=topologyModel(2),changes=[];let mount;
+ model.nodes.forEach(n=>Object.assign(n,{public_ip:true,geolocation:{latitude:0,longitude:0}}));
+ h.coordinator.start({ownerId:'A',inputSignature:'a',view:'geo',model,root:h.root,status:h.status,workspace:{selectedNodeId:'n1',onSelect:id=>changes.push(id),drawGeo:value=>{mount=value;}}});h.runAll();
+ assert.equal(mount.selectedNodeId,'n1');mount.onSelect('n0');assert.deepEqual(changes,['n0']);
+ owns=false;mount.onSelect('n1');assert.equal(mount.isActive(),false);assert.deepEqual(changes,['n0']);
+ h.coordinator.cancel();owns=true;h.coordinator.start({ownerId:'B',inputSignature:'b',view:'topology',model,root:h.root,status:h.status});h.runAll();mount.onSelect('n1');assert.deepEqual(changes,['n0']);h.coordinator.dispose();h.dom.window.close();
 });
 
 test('labels materialize trusted shell and exact-cost rows with inert text', () => {

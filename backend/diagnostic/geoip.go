@@ -54,11 +54,12 @@ const (
 )
 
 type IPMetadata struct {
-	Geolocation *GeoLocation `json:"geolocation,omitempty"`
-	ASN         *ASNInfo     `json:"asn,omitempty"`
-	Source      GeoIPSource  `json:"-"`
-	FetchedAt   time.Time    `json:"-"`
-	ExpiresAt   time.Time    `json:"-"`
+	Geolocation *GeoLocation      `json:"geolocation,omitempty"`
+	ASN         *ASNInfo          `json:"asn,omitempty"`
+	Source      GeoIPSource       `json:"-"`
+	FetchedAt   time.Time         `json:"-"`
+	ExpiresAt   time.Time         `json:"-"`
+	GeoDetails  GeoDetailSnapshot `json:"-"`
 }
 
 type GeoIPErrorKind string
@@ -229,6 +230,9 @@ func (l *IPWhoIsLookup) Lookup(ctx context.Context, ip net.IP) (IPMetadata, erro
 			l.cache[address] = entry
 			metadata := cloneIPMetadata(entry.metadata)
 			metadata.Source = GeoIPSourceCache
+			if metadata.GeoDetails.Provider != "" {
+				metadata.GeoDetails.Source = GeoIPSourceCache
+			}
 			l.mu.Unlock()
 			return metadata, nil
 		}
@@ -359,6 +363,11 @@ func (l *IPWhoIsLookup) completeFlight(flight *geoIPFlight, metadata IPMetadata,
 		metadata.FetchedAt = now
 		metadata.ExpiresAt = now.Add(l.cacheTTL)
 		metadata = cloneIPMetadata(metadata)
+	}
+	if metadata.GeoDetails.Provider == "ipwho.is" && validGeoDetailText(metadata.GeoDetails) {
+		metadata.GeoDetails.Source = GeoIPSourceUpstream
+		metadata.GeoDetails.FetchedAt = now
+		metadata.GeoDetails.ExpiresAt = now.Add(l.cacheTTL)
 	}
 	flight.metadata, flight.err, flight.terminal = metadata, err, true
 	current := l.inflight[flight.address] == flight
@@ -492,6 +501,14 @@ func decodeGeoIPResponse(body io.Reader) (IPMetadata, error) {
 	if err := validateStrictGeoIPJSON(data); err != nil {
 		return IPMetadata{}, newGeoIPError(GeoIPErrorMalformed, false, nil)
 	}
+	metadata, legacyErr := decodeLegacyGeoIPPayload(data)
+	metadata.GeoDetails = decodeGeoDetails(data)
+	return metadata, legacyErr
+}
+
+// Keep legacy validation, success/error classification and cache eligibility
+// independent of the optional supplemental text decoder.
+func decodeLegacyGeoIPPayload(data []byte) (IPMetadata, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var payload geoIPPayload
 	if err := decoder.Decode(&payload); err != nil {

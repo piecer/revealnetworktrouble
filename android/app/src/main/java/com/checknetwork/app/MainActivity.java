@@ -322,7 +322,12 @@ public final class MainActivity extends Activity {
         int index=0;
         for(AnalysisPresentation.Block block:value.blocks()){
             if(index++==1)checkpoint.at(RenderPoint.MID_BUILD);
-            if(block.folded()){activity.addFoldedBlock(candidate,block);continue;}
+            if(block.folded()){
+                final long generation = activity.presentationGeneration;
+                value.geoDetails().ifPresent(details -> candidate.addView(new GeoDetailsView(activity, details,
+                        () -> generation == activity.presentationGeneration && candidate.getParent() == activity.results)));
+                activity.addFoldedBlock(candidate,block);continue;
+            }
             TextView heading=new TextView(activity);heading.setText(block.heading());heading.setTextColor(activity.getColor(R.color.lime));heading.setTextSize(18);heading.setTypeface(null,android.graphics.Typeface.BOLD);ViewCompat.setAccessibilityHeading(heading,true);heading.setPadding(0,12,0,4);candidate.addView(heading);
             TextView body=new TextView(activity);body.setText(block.body());body.setTextColor(activity.getColor(R.color.ink));body.setTextSize(15);body.setPadding(0,0,0,12);candidate.addView(body);
         }

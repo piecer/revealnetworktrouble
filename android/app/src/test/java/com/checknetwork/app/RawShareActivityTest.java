@@ -52,6 +52,30 @@ public final class RawShareActivityTest {
         MainActivity.resetSessionFactoryForTests();
     }
 
+    @Test public void extendedReportRawShareKeepsExactWireAndRequiresFreshConfirmation() throws Exception {
+        String raw = com.checknetwork.app.core.GeoDetailsTest.fixture("geo-details-rich-full-report.json")
+                .replace("\"schema_version\":1", "\"schema_version\":10e-1");
+        Report report = ReportParser.parse(raw);
+        assertTrue(report.geoDetails().isPresent());
+        Fixture fixture = fixture();
+        fixture.activity.findViewById(R.id.run).performClick();
+        fixture.calls.calls.get(0).succeed(raw, report);
+        assertEquals(raw, fixture.session.state().rawJson().orElseThrow());
+        fixture.activity.findViewById(R.id.share_raw).performClick();
+        AlertDialog warning = ShadowAlertDialog.getLatestAlertDialog();
+        assertNotNull(warning);
+        assertEquals(0, sharedFiles(fixture.activity).length);
+        warning.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(0, sharedFiles(fixture.activity).length);
+        confirmRawShare(fixture, fixture.activity);
+        assertNotSame(warning, ShadowAlertDialog.getLatestAlertDialog());
+        assertArrayEquals(raw.getBytes(StandardCharsets.UTF_8), Files.readAllBytes(onlySharedFile(fixture.activity).toPath()));
+        fixture.activity.findViewById(R.id.run).performClick();
+        fixture.flushRaw();
+        assertEquals(0, sharedFiles(fixture.activity).length);
+    }
+
     @Test public void rawShareIsUnavailableBeforeCurrentRequestIsReady() {
         Fixture fixture = fixture();
         Button rawShare = fixture.activity.findViewById(R.id.share_raw);

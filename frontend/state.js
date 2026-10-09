@@ -1,4 +1,5 @@
 'use strict';
+import { canonicalPublicIP } from './topology-presentation.js';
 
 const REQUEST_PHASES = Object.freeze(['idle', 'loading', 'ready', 'error', 'cancelled']);
 const ERROR_KINDS = Object.freeze(['http', 'network', 'timeout', 'invalid-response', 'cancelled']);
@@ -506,6 +507,49 @@ function header(response, name) {
   try { return response?.headers?.get?.(name) ?? null; } catch { return null; }
 }
 
+// Inspect raw tokens before JSON.parse loses duplicate keys and decimal precision.
+// Syntax is still decided by JSON.parse. Without a root sidecar, the legacy
+// duplicate/numeric policy is untouched. Iterative traversal avoids stack growth.
+function validateGeoDetailsJSON(body) {
+  const tokens = /\s*("(?:[^"\\]|\\[\s\S])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}\[\],:])/gy;
+  const stack = [];
+  let cursor = 0, hasGeo = false, duplicate = false, invalidNumber = false;
+  while (cursor < body.length) {
+    tokens.lastIndex = cursor;
+    const match = tokens.exec(body);
+    if (!match) break; // Invalid syntax or trailing whitespace: JSON.parse below.
+    cursor = tokens.lastIndex;
+    const token = match[1], parent = stack.at(-1);
+    if (token === '{' || token === '[') {
+      const sidecar = stack.length === 1 && parent?.type === '{' && parent.key === 'geo_details';
+      stack.push({ type: token, keys: new Set(), keyExpected: token === '{', key: '', sidecar });
+    } else if (token === '}' || token === ']') stack.pop();
+    else if (token === ':') { if (parent) parent.keyExpected = false; }
+    else if (token === ',') { if (parent?.type === '{') parent.keyExpected = true; }
+    else if (parent?.type === '{' && parent.keyExpected && token[0] === '"') {
+      const key = JSON.parse(token);
+      duplicate ||= parent.keys.has(key);
+      parent.keys.add(key); parent.key = key;
+      if (stack.length === 1 && key === 'geo_details') hasGeo = true;
+    } else if (parent?.sidecar && ['schema_version', 'total', 'omitted'].includes(parent.key) && /^-?\d/.test(token)) {
+      invalidNumber ||= !exactGeoCount(token, parent.key === 'schema_version' ? 1 : 6200);
+    }
+  }
+  if (hasGeo && (duplicate || invalidNumber)) throw schemaError('report.geo_details', 'duplicate decoded key or nonintegral count');
+}
+
+function exactGeoCount(token, maximum) {
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token);
+  if (!match) return false;
+  const [, sign, whole, fraction = '', exponent = '0'] = match;
+  const digits = (whole + fraction).replace(/^0+/, '');
+  if (!digits) return true; // Includes -0 and all equivalent zero spellings.
+  const significant = digits.replace(/0+$/, '');
+  const shift = Number(exponent) - fraction.length + digits.length - significant.length;
+  if (sign || !Number.isSafeInteger(shift) || shift < 0 || significant.length + shift > 4) return false;
+  return Number(significant) * 10 ** shift <= maximum;
+}
+
 function parseResponse(response, bodyText, nowMS = Date.now()) {
   const status = Number.isInteger(response?.status) ? response.status : 0;
   const ok = typeof response?.ok === 'boolean' ? response.ok : status >= 200 && status < 300;
@@ -513,7 +557,7 @@ function parseResponse(response, bodyText, nowMS = Date.now()) {
   if (ok) {
     let parsed;
     if (body.trim()) {
-      try { parsed = JSON.parse(body); } catch {
+      try { validateGeoDetailsJSON(body); parsed = JSON.parse(body); } catch {
         return { ok: false, error: normalizedError('invalid-response', 'invalid_response', { status, message: 'The server returned malformed JSON.' }) };
       }
     }
@@ -753,7 +797,7 @@ function setOwnValue(value, key, fieldValue) {
   Object.defineProperty(value, key, { value: fieldValue, enumerable: true, configurable: true, writable: true });
 }
 
-function goJSONStringBytes(value, path) {
+function goJSONStringBytes(value, path, maxUTF8 = COMPACT_LIMITS.maxGeoBundleBytes) {
   let encoded = 2;
   let utf8 = 0;
   for (let index = 0; index < value.length; index++) {
@@ -772,7 +816,7 @@ function goJSONStringBytes(value, path) {
       else if (code < 0x20 || code === 0x3c || code === 0x3e || code === 0x26 || code === 0x2028 || code === 0x2029) encoded += 6;
       else encoded += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
     }
-    if (utf8 > COMPACT_LIMITS.maxGeoBundleBytes) throw schemaError(path, 'Geo string exceeds byte limit');
+    if (utf8 > maxUTF8) throw schemaError(path, 'Geo string exceeds byte limit');
   }
   return encoded;
 }
@@ -1318,9 +1362,72 @@ function enforceReportBudget(value) {
   }
 }
 
+const GEO_DETAIL_TEXT = Object.freeze(['city', 'region', 'country', 'country_code', 'continent', 'continent_code', 'region_code', 'postal', 'timezone', 'isp', 'network_domain']);
+function geoDetailTimestamp(value, path) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) || value.startsWith('0000')) {
+    throw schemaError(path, 'expected Gregorian UTC millisecond timestamp');
+  }
+  return utcTimestamp(value, path);
+}
+
+function normalizeGeoDetails(value) {
+  const path = 'report.geo_details';
+  const source = object(value, path);
+  exactFields(source, ['schema_version', 'total', 'omitted', 'entries'], path);
+  const schema_version = integer(source.schema_version, `${path}.schema_version`, 1, 1);
+  const total = integer(source.total, `${path}.total`, 0, 6200);
+  const omitted = integer(source.omitted, `${path}.omitted`, 0, total);
+  const rawEntries = array(source.entries, `${path}.entries`, 500);
+  // Arrays also have a closed shape: dense, enumerable owned indices only.
+  const indices = Array.from({length: rawEntries.length}, (_, index) => String(index));
+  const arrayKeys = Reflect.ownKeys(rawEntries);
+  if (arrayKeys.length !== indices.length + 1 || arrayKeys.some(key => key !== 'length' && !indices.includes(key))) {
+    throw schemaError(`${path}.entries`, 'expected dense array without hooks');
+  }
+  requireFields(rawEntries, indices, `${path}.entries`);
+  if (total !== rawEntries.length + omitted) throw schemaError(path, 'counts do not agree');
+  // Canonical Go encoding includes every key, punctuation and HTML/Unicode escape;
+  // number spellings and raw whitespace do not consume this standalone budget.
+  let bytes = `{"schema_version":1,"total":${total},"omitted":${omitted},"entries":[]}`.length;
+  let previous = '';
+  const encoder = new TextEncoder();
+  const entries = rawEntries.map((entry, index) => {
+    const itemPath = `${path}.entries[${index}]`, item = object(entry, itemPath);
+    allowedFields(item, ['address', 'provider', 'source'], [...GEO_DETAIL_TEXT, 'fetched_at', 'expires_at'], itemPath);
+    const address = text(item.address, `${itemPath}.address`, {max: 45});
+    if (canonicalPublicIP(address) !== address || address <= previous) throw schemaError(itemPath, 'expected sorted unique canonical public IP');
+    previous = address;
+    if (item.provider !== 'ipwho.is' || !['upstream', 'cache'].includes(item.source)) throw schemaError(itemPath, 'unsupported provider or source');
+    const normalized = { address, provider: item.provider, source: item.source };
+    let textBytes = 0;
+    for (const key of GEO_DETAIL_TEXT) if (Object.hasOwn(item, key)) {
+      const fieldPath = `${itemPath}.${key}`, field = text(item[key], fieldPath, {max: 256});
+      goJSONStringBytes(field, fieldPath, 256); // Valid Unicode, exact UTF-8 bound.
+      textBytes += encoder.encode(field).byteLength;
+      if (textBytes > 1536) throw schemaError(itemPath, 'supplemental text byte limit');
+      normalized[key] = field;
+    }
+    const hasFetched = Object.hasOwn(item, 'fetched_at'), hasExpires = Object.hasOwn(item, 'expires_at');
+    if (hasFetched !== hasExpires) throw schemaError(itemPath, 'timestamps must be paired');
+    if (hasFetched) {
+      normalized.fetched_at = geoDetailTimestamp(item.fetched_at, `${itemPath}.fetched_at`);
+      normalized.expires_at = geoDetailTimestamp(item.expires_at, `${itemPath}.expires_at`);
+      if (normalized.expires_at < normalized.fetched_at) throw schemaError(itemPath, 'expiry precedes fetch');
+    }
+    bytes += (index ? 1 : 0) + 2;
+    Object.entries(normalized).forEach(([key, field], fieldIndex) => {
+      bytes += (fieldIndex ? 1 : 0) + key.length + 3 + goJSONStringBytes(field, `${itemPath}.${key}`);
+    });
+    if (bytes > 131072) throw schemaError(path, 'canonical Go sidecar byte limit');
+    return Object.freeze(normalized);
+  });
+  return Object.freeze({ schema_version, total, omitted, entries: Object.freeze(entries) });
+}
+
 function normalizeReport(value) {
   enforceReportBudget(value);
   const source = object(value, 'report');
+  if (Object.hasOwn(source, 'geo_details')) requireFields(source, ['geo_details'], 'report');
   requireFields(source, ['id', 'status', 'started_at', 'duration_ms', 'summary', 'results'], 'report');
   const results = array(source.results, 'report.results', SCHEMA_LIMITS.results).map(normalizeResult);
   const summarySource = object(source.summary, 'report.summary');
@@ -1361,7 +1468,8 @@ function normalizeReport(value) {
   return {
     id: text(source.id, 'report.id'), status,
     started_at: timestamp(source.started_at, 'report.started_at'), duration_ms: integer(source.duration_ms, 'report.duration_ms'),
-    summary, results, analysis: normalizedAnalysis, compact_topology: compactTopology
+    summary, results, analysis: normalizedAnalysis, compact_topology: compactTopology,
+    ...(Object.hasOwn(source, 'geo_details') ? { geo_details: normalizeGeoDetails(ownValue(source, 'geo_details')) } : {})
   };
 }
 
@@ -1369,5 +1477,5 @@ export {
   REQUEST_PHASES, ERROR_KINDS, SCHEMA_LIMITS,
   createRequestLane, canonicalDiagnosticsInput, canonicalTopologyInput, inputSignature,
   transitionRequest, ownsRequest, clientTimeoutMS, parseRetryAfter, normalizeRequestError, parseResponse,
-  normalizeReport, normalizeAnalysis, normalizeResult, normalizeTopology, normalizeCompactTopology
+  normalizeReport, normalizeAnalysis, normalizeResult, normalizeTopology, normalizeCompactTopology, normalizeGeoDetails
 };

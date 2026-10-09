@@ -859,6 +859,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   const active = new Map(); const laneBases = new Map(); const revisions = new Map(); const credentialIndeterminate = new Set(); let ownerSequence = 0;
   let activeView = viewFromHash(win.location.hash);
   let currentTopologyModel;
+  let selectedNodeId = null;
   let renderSource;
   let renderPhase = 'idle';
   let renderEmptyMessage = '';
@@ -968,15 +969,24 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     filter.append(heading, actions, toggles);
     if (active?.selector) filter.querySelector(active.selector)?.focus();
   }
-  function drawGeo({ canvas, geo, signal }) {
+  function resetGeoDetail() {
+    doc.querySelector('#geo-node-detail').textContent = '위치가 있는 경로를 불러오세요.';
+    doc.querySelector('#geo-map-message').textContent = '';
+    doc.querySelector('#geo-page-status').textContent = '0개 위치';
+    for (const id of ['geo-node-previous', 'geo-node-next', 'geo-page-previous', 'geo-page-next']) doc.getElementById(id).disabled = true;
+  }
+  function drawGeo({ canvas, geo, facts, list, isActive, selectedNodeId, onSelect, signal }) {
     if (!canvas) return undefined;
-    return mountGeoMap({ canvas, geo, signal, win, scheduler: selectedScheduler,
-      controls: { message: doc.querySelector('#geo-map-message'), zoomIn: doc.querySelector('#geo-zoom-in'), zoomOut: doc.querySelector('#geo-zoom-out'), fit: doc.querySelector('#geo-fit') } });
+    return mountGeoMap({ canvas, geo, facts, list, isActive, selectedNodeId, onSelect, signal, win, scheduler: selectedScheduler,
+      controls: { detail: doc.querySelector('#geo-node-detail'), previous: doc.querySelector('#geo-node-previous'), next: doc.querySelector('#geo-node-next'),
+        pagePrevious: doc.querySelector('#geo-page-previous'), pageNext: doc.querySelector('#geo-page-next'), pageStatus: doc.querySelector('#geo-page-status'),
+        message: doc.querySelector('#geo-map-message'), zoomIn: doc.querySelector('#geo-zoom-in'), zoomOut: doc.querySelector('#geo-zoom-out'), fit: doc.querySelector('#geo-fit') } });
   }
   function startActiveTopologyRender() {
     unmountDiagnosticsPresentation();
     unmountIPLabelTable();
     renderCoordinator.cancel('view-change');
+    resetGeoDetail();
     doc.querySelector(activeView === 'geo-map' ? '#topology-result' : '#geo-map-result').replaceChildren();
     doc.querySelector(activeView === 'geo-map' ? '#topology-render-status' : '#geo-render-status').textContent = '';
     if (!currentTopologyReport || !currentTopologyModel || !renderSource || !['topology', 'geo-map'].includes(activeView)) {
@@ -991,15 +1001,18 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     renderPhase = 'rendering';
     finalTopologyPlan = undefined;
     if (!geo) { renderTopologySummary(); renderTopologyTargetFilter(currentTopologyReport.results || []); }
+    const model = filteredTopologyModel();
+    if (!model.nodes.some(node => node.id === selectedNodeId)) selectedNodeId = null;
     renderCoordinator.start({
       ownerId: renderSource.renderOwnerId, inputSignature: renderSource.signature,
-      view: geo ? 'geo' : 'topology', model: filteredTopologyModel(), root, status,
+      view: geo ? 'geo' : 'topology', model, root, status,
       observationState: {
         selectedCount: selectedTopologyTargets.size,
         errorCodes: currentTopologyReport.results.filter((_, index) => selectedTopologyTargets.has(index)).map(result => result.error_code)
       },
       mode: topologyViewState.mode, transform: topologyViewState.transform,
       workspace: {
+        selectedNodeId, onSelect: id => { selectedNodeId = id; },
         tooltip: doc.querySelector('#topology-node-tooltip'),
         disposeHiddenViews() { doc.querySelector(geo ? '#topology-result' : '#geo-map-result').replaceChildren(); },
         drawGeo
@@ -1114,6 +1127,8 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       disposeTopologyRender('clear', true);
       doc.querySelector('#topology-result-summary').replaceChildren(); doc.querySelector('#topology-target-filter').replaceChildren();
       currentTopologyReport = undefined; currentTopologyModel = undefined; selectedTopologyTargets = new Set();
+      selectedNodeId = null;
+      resetGeoDetail();
     }
   }
   function renderState(purpose) {
@@ -1198,7 +1213,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       request.timer = setTimer(() => { if (active.get(purpose) === request) { request.reason = 'timeout'; controller.abort('timeout'); } }, remaining);
       const headers = { 'Content-Type': 'application/json' }; const token = input.authEnabled ? tokenFor(input.apiBaseURL) : '';
       if (token) { const url = new URL(input.apiBaseURL); if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)) throw { kind: 'http', code: 'insecure_auth', message: 'Bearer credential은 HTTPS API에만 전송할 수 있습니다.', retryable: false }; headers.Authorization = `Bearer ${token}`; }
-      const response = await fetchImpl(`${input.apiBaseURL}/api/v1/reports`, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+      const response = await fetchImpl(`${input.apiBaseURL}/api/v1/reports?geo_details=1`, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
       const body = await readResponseText(response); const parsed = parseResponse(response, body, clock()); if (!parsed.ok) throw parsed.error;
       let report;
       try { report = sanitizeCredentialReflection(parsed.report, token); }
@@ -1214,7 +1229,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
         currentReport = report;
       } else {
         lanes[purpose] = transitionRequest(lanes[purpose], { type: 'REQUEST_SUCCEEDED', ownerId, inputSignature: signature, report, completedAt: clock() });
-        currentTopologyReport = report; currentTopologyModel = topologyModel;
+        currentTopologyReport = report; currentTopologyModel = topologyModel; selectedNodeId = null;
         selectedTopologyTargets = new Set(report.results.map((_, index) => index)); showUnresponsiveTopologyNodes = true;
         renderSource = { requestOwnerId: ownerId, renderOwnerId: `topology-render:${report.id}:${signature}`, signature, report };
         ui(purpose).report.hidden = false;
@@ -1304,7 +1319,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   const fullscreenStatus = doc.querySelector('#fullscreen-status');
   const fullscreenEntries = [
     { button: doc.querySelector('#topology-fullscreen'), target: doc.querySelector('#topology-result') },
-    { button: doc.querySelector('#geo-map-fullscreen'), target: doc.querySelector('#geo-map-result') }
+    { button: doc.querySelector('#geo-map-fullscreen'), target: doc.querySelector('#geo-map-view') }
   ];
   let fullscreenInvoker = null; let fullscreenTarget = null; let fullscreenGeneration = 0;
   const ownsFullscreen = generation => activeInstance && !lifecycle.signal.aborted && generation === fullscreenGeneration;

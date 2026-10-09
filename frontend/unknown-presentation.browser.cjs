@@ -32,7 +32,7 @@ const crypto = require('node:crypto');
           };
         }
       });
-      await page.route('**/api/v1/reports', r => r.fulfill({ status: 200, contentType: 'application/json', body }));
+      await page.route('**/api/v1/reports?geo_details=1', r => r.fulfill({ status: 200, contentType: 'application/json', body }));
       await page.goto(base + '/#topology'); await page.locator('#run-topology').click();
       const ready = () => page.waitForFunction(() => document.querySelector('canvas.topology-canvas')?.dataset.drawState === 'rendered' && document.querySelector('#topology-result')?.getAttribute('aria-busy') === 'false');
       await ready();

@@ -128,7 +128,7 @@ const results = { assets: {}, pagination: [], imports: [], topology: [] };
     const { page, errors } = await newPage(0);
     try {
       const posts = [];
-      await page.route('**/api/v1/reports', route => { posts.push(route.request().postDataJSON()); return route.fulfill({ status: 400, contentType: 'application/json', body: '{}' }); });
+      await page.route('**/api/v1/reports?geo_details=1', route => { posts.push(route.request().postDataJSON()); return route.fulfill({ status: 400, contentType: 'application/json', body: '{}' }); });
       await page.locator('[data-view-link="topology"]').click();
       for (const [name, text, addresses] of [
         ['LF', 'example.com\n', ['example.com']], ['CRLF', 'example.com\r\n', ['example.com']],

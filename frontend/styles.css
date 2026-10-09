@@ -294,10 +294,29 @@ dt { color:var(--muted); font-size:11px; } dd { margin:3px 0 0; font:600 17px ui
 .standalone-topology [data-detail] { position:relative; }
 .standalone-topology [data-detail]:hover::after,.standalone-topology [data-detail]:focus::after { content:attr(data-detail); position:absolute; z-index:10; left:8px; bottom:calc(100% + 6px); width:max-content; max-width:min(360px,80vw); padding:7px 9px; border:1px solid #56614c; border-radius:4px; background:#080b08; color:#eef2e8; box-shadow:0 8px 24px rgba(0,0,0,.45); font:10px/1.45 ui-monospace,monospace; white-space:normal; pointer-events:none; }
 .standalone-topology button.topology-node[draggable="true"] { cursor:grab; }
-.geo-map-result { display:grid; gap:14px; margin-top:18px; }
+.geo-map-workspace { display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,360px); gap:14px; align-items:start; margin-top:18px; }
+.geo-map-result { display:grid; min-width:0; gap:14px; }
 .topology-geo-canvas { display:block; width:100%; height:clamp(300px,55vh,620px); border:1px solid #394b40; border-radius:10px; background:radial-gradient(circle at 50% 45%,#15231e,#08100e 70%); }
 .topology-geo-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr)); gap:7px; margin:0; padding:0; list-style:none; }
-.topology-geo-list li { padding:8px 10px; border:1px solid #2d3831; border-radius:4px; background:#101510; color:#aeb8ae; font:9px/1.4 ui-monospace,monospace; }
+.topology-geo-list button { min-width:0; padding:10px; border:1px solid #566e66; border-radius:4px; background:#101510; color:#d9e5d9; text-align:left; overflow-wrap:anywhere; font:12px/1.5 ui-monospace,monospace; }
+.topology-geo-list button[aria-pressed="true"] { border-color:var(--lime); background:#253221; }
+.geo-node-panel { position:sticky; top:8px; min-width:0; padding:12px; border:1px solid #566e66; border-radius:8px; background:#101510; }
+.geo-node-panel h3 { margin:0 0 8px; font-size:14px; }
+.geo-node-panel .geo-map-controls { margin:0 0 8px; }
+#geo-node-detail { max-height:calc(clamp(300px,55vh,620px) - 110px); margin:0; overflow:auto; overscroll-behavior:contain; white-space:pre-wrap; overflow-wrap:anywhere; font:14px/1.7 ui-monospace,monospace; }
+/* The compact selection dock stays inside this workspace, not over other views.
+   Its complete text is a named, keyboard/touch scroll region, never ellipsized. */
+@media (max-width:760px) {
+  /* hidden on body creates a non-scrolling sticky ancestor; clip does not. */
+  html:has(#geo-map-view:not([hidden])),body:has(#geo-map-view:not([hidden])) { overflow-x:clip; }
+  .geo-map-workspace { grid-template-columns:minmax(0,1fr); }
+  .geo-map-result { grid-area:1/1; padding-bottom:216px; }
+  .geo-node-panel { grid-area:1/1; z-index:2; top:calc(100dvh - 216px); height:208px; display:flex; flex-direction:column; padding:10px; }
+  .geo-node-panel h3 { font-size:12px; }
+  .geo-node-panel .geo-map-controls { flex:none; }
+  #geo-node-detail { min-height:0; max-height:none; flex:1; }
+}
+#geo-map-view:fullscreen { width:100%; margin:0; padding:12px; overflow:auto; background:#090c0a; }
 @media (max-width:400px) { .standalone-topology { grid-template-columns:1fr; }.standalone-topology .topology-route { grid-column:auto; }.report-actions { flex-wrap:wrap; }.mapping-pagination { gap:8px; }.topology-geo-list { grid-template-columns:minmax(0,1fr); }.topology-view-toolbar { align-items:stretch; }.topology-view-controls,.topology-view-help { flex-basis:100%; }.topology-view-controls label { flex:1; }.topology-view-controls span { justify-content:center; width:100%; }.topology-view-mode-status { margin-left:auto; }.topology-canvas { min-height:240px; aspect-ratio:4/3; } }
 @media (max-width:375px) { .topology-view-toolbar > button { flex:1 1 auto; }.topology-view-mode-status { flex:1 1 auto; align-self:center; } }
 @media (max-width:320px) { #topology-result:fullscreen,#geo-map-result:fullscreen { padding:10px; }.topology-geo-canvas { min-height:260px; }.topology-view-controls { display:grid; grid-template-columns:1fr; }.topology-canvas { min-height:220px; } }

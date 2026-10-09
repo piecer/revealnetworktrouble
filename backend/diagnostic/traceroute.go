@@ -40,14 +40,15 @@ var ErrTraceHopSequence = errors.New("traceroute hops are not strictly increasin
 var ErrTraceLatency = errors.New("invalid traceroute latency")
 
 type TopologyNode struct {
-	ID          string       `json:"id"`
-	Hop         int          `json:"hop"`
-	Address     string       `json:"address,omitempty"`
-	LatencyMS   float64      `json:"latency_ms,omitempty"`
-	Status      string       `json:"status"`
-	PublicIP    bool         `json:"public_ip,omitempty"`
-	Geolocation *GeoLocation `json:"geolocation,omitempty"`
-	ASN         *ASNInfo     `json:"asn,omitempty"`
+	ID          string            `json:"id"`
+	Hop         int               `json:"hop"`
+	Address     string            `json:"address,omitempty"`
+	LatencyMS   float64           `json:"latency_ms,omitempty"`
+	Status      string            `json:"status"`
+	PublicIP    bool              `json:"public_ip,omitempty"`
+	Geolocation *GeoLocation      `json:"geolocation,omitempty"`
+	ASN         *ASNInfo          `json:"asn,omitempty"`
+	GeoDetails  GeoDetailSnapshot `json:"-"`
 }
 
 type TopologyLink struct {
@@ -357,6 +358,12 @@ func enrichTopologiesWithCoverage(ctx context.Context, attempts []TraceAttempt, 
 					mu.Lock()
 					kind, _ := normalizedGeoIPFailure(err)
 					failureCounts[kind]++
+					// Supplemental text can be useful while legacy Geo/ASN remains
+					// unusable. Preserve the original failure and never copy legacy
+					// bundles from an unsuccessful lookup.
+					known := cache[ip.String()]
+					known.metadata.GeoDetails = metadata.GeoDetails
+					cache[ip.String()] = known
 					mu.Unlock()
 					continue
 				}
@@ -396,6 +403,7 @@ func enrichTopologiesWithCoverage(ctx context.Context, attempts []TraceAttempt, 
 			node.PublicIP = known.public
 			node.Geolocation = known.metadata.Geolocation
 			node.ASN = known.metadata.ASN
+			node.GeoDetails = known.metadata.GeoDetails
 		}
 	}
 	coverage.Source = enrichmentSource(coverage.CacheHits, coverage.UpstreamFetches)

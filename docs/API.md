@@ -27,6 +27,16 @@ readiness는 startup에서 trusted deployment `PATH`를 resolve하고 `127.0.0.1
 
 ## `POST /api/v1/reports`
 
+### 선택적 Geo 상세정보
+
+`POST /api/v1/reports?geo_details=1`은 기존 요청 JSON과 중첩 `geolocation`/`asn`을 바꾸지 않고 선택적 최상위 `geo_details` v1을 요청한다. 쿼리를 생략한 응답은 기존 직렬화를 유지한다. Web/Android는 이 쿼리를 한 번의 report POST에 포함하며, 구서버가 확장 없이 응답해도 진단을 재실행하지 않고 기존 정보를 표시한다. 쿼리가 있으면 디코딩된 값 `1` 하나만 허용한다. 빈 값·다른 값·중복 또는 잘못된 쿼리 인코딩은 기존 인증/rate-limit/draining 우선순위 뒤, 검사 실행 전에 `422 invalid_request`로 거부한다.
+
+`geo_details`는 `schema_version`, `total`, `omitted`, `entries`를 포함한다. 항목은 정규화된 공인 IP별로 도시·지역·국가, 대륙·지역 코드·우편번호·시간대, 별도 ISP·조직 도메인 및 공급자/조회 출처를 전달한다. 공급자가 제공하지 않은 선택 필드는 생략한다. 최대 500개 항목과 128 KiB의 독립 인코딩 한도를 적용하며, `total = entries.length + omitted`이다. 전체 응답 한도도 별도로 적용하고 기존 경로 관측을 추가로 제거해 확장을 끼워 넣지 않는다. 확장 전체가 생략될 수도 있다.
+
+`fetched_at`/`expires_at`은 로컬 조회 완료/캐시 만료 시각이며 공급자 DB 갱신 시각이 아니다. 캐시 적중 시 원래 시각을 유지하고 `source`만 `cache`가 된다. 좌표가 없는 주소의 텍스트 정보나 compact 지도에 남지 않은 raw 주소도 항목에 포함될 수 있으므로 `entries` 수는 지도 점 수가 아니다. 확장이 없으면 호환 응답이지만, 존재하는 확장의 잘못된 형식·버전·중복 키·수치는 전체 report 검증 실패다. 정확한 필드, 적격성, byte 계산과 생산자 fixture는 [Geo details v1 계약](GEO-DETAILS.md)을 따른다.
+
+### 요청 본문
+
 요청 예시:
 
 ```json

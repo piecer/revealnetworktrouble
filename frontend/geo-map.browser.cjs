@@ -11,14 +11,24 @@ const fs=require('node:fs'), path=require('node:path'), assert=require('node:ass
  page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>requests.push(r.url()));
  // Private source origin is not in the live API CORS allowlist. Forward the
  // unchanged browser POST to the actual API; do not alter the live deployment.
- if(process.env.GEO_LIVE) await page.route('http://localhost:8090/api/v1/reports',async r=>{const response=await r.fetch({timeout:90000});assert.equal(response.status(),200);await r.fulfill({response});});
+ if(process.env.GEO_LIVE) await page.route('http://localhost:8090/api/v1/reports?geo_details=1',async r=>{const response=await r.fetch({timeout:90000});assert.equal(response.status(),200);await r.fulfill({response});});
  if(source) await page.route(`${base}/**`,async route=>{const name=new URL(route.request().url()).pathname.slice(1)||'index.html'; if(!/^[a-z-]+\.(js|css|html)$/.test(name)) return route.continue();const file=path.join(source,name);if(fs.existsSync(file)) return route.fulfill({path:file,contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'});return route.continue();});
- if(!process.env.GEO_LIVE) await page.route('**/api/v1/reports',r=>r.fulfill({contentType:'application/json',body:fs.readFileSync(process.env.GEO_EMPTY ? path.join(__dirname,'../testdata/traceroute-command-failure-compact-report.json') : process.env.GEO_REPORT || '/tmp/geo-live-report.json','utf8')}));
- let body;page.on('response',async r=>{if(r.url().endsWith('/api/v1/reports')) body=await r.json();});
+ if(!process.env.GEO_LIVE) await page.route('**/api/v1/reports?geo_details=1',r=>r.fulfill({contentType:'application/json',body:fs.readFileSync(process.env.GEO_EMPTY ? path.join(__dirname,'../testdata/traceroute-command-failure-compact-report.json') : process.env.GEO_REPORT || '/tmp/geo-live-report.json','utf8')}));
+ let body;page.on('response',async r=>{if(r.url().endsWith('/api/v1/reports?geo_details=1')) body=await r.json();});
  await page.goto(`${base}/#topology`);await page.locator('#connection-settings summary').click();await page.locator('#api-base-url').fill('http://localhost:8090');await page.locator('#connection-settings summary').click();await page.locator('#topology-targets').fill('1.1.1.1');await page.locator('#topology-attempts').fill('1');await page.locator('#run-topology').click();
  await page.waitForFunction(()=>document.querySelector('#topology-workspace').dataset.state==='ready',{},{timeout:60000});
  await page.locator('[href="#geo-map"]').click(); const canvas=page.locator('.topology-geo-canvas');await canvas.waitFor();await canvas.scrollIntoViewIfNeeded();await page.waitForTimeout(300);
- const probe=()=>canvas.evaluate(c=>{const ctx=c.getContext('2d'),p=ctx.getImageData(0,0,c.width,c.height).data;let land=0,ocean=0,marker=0,route=0;for(let i=0;i<p.length;i+=4){if(p[i]===46&&p[i+1]===72&&p[i+2]===72)land++;if(p[i]===11&&p[i+1]===28&&p[i+2]===42)ocean++;if(p[i]===201&&p[i+1]===255&&p[i+2]===70)marker++;if(p[i]===103&&p[i+1]===213&&p[i+2]===255)route++;}return{land,ocean,marker,route,data:{...c.dataset},dom:document.querySelectorAll('*').length,overflow:document.documentElement.scrollWidth>innerWidth};});
+ const probe=()=>canvas.evaluate(async(c,body)=>{
+  const {normalizeReport}=await import('./state.js'),{topologyModelFromReport,planTopologyDOM}=await import('./topology-model.js'),{routeColor,edgeRouteMemberships}=await import('./topology-visualizer.js');
+  const model=topologyModelFromReport(normalizeReport(body)),plan=planTopologyDOM(model,{view:'geo'});
+  const members=edgeRouteMemberships({links:plan.geo.segments,routes:model.routes});
+  const colors=[...new Set([...members.values()].flat().map(routeColor))];if([...members.values()].some(m=>!m.length))colors.push('#67d5ff');
+  const palette=colors.map(c=>c.match(/\w\w/g).map(x=>parseInt(x,16)));
+  const ctx=c.getContext('2d'),p=ctx.getImageData(0,0,c.width,c.height).data,[lon,lat]=c.dataset.center.split(',').map(Number),scale=+c.dataset.scale,ratio=+c.dataset.dpr;
+  const points=plan.geo.markers.flatMap(m=>[-360,0,360].map(shift=>({x:c.width/2+(m.longitude+shift-lon)*scale*ratio,y:c.height/2+(lat-m.latitude)*scale*ratio})));
+  let land=0,ocean=0,marker=0,route=0;for(let i=0;i<p.length;i+=4){if(p[i]===46&&p[i+1]===72&&p[i+2]===72)land++;if(p[i]===11&&p[i+1]===28&&p[i+2]===42)ocean++;if(p[i]===201&&p[i+1]===255&&p[i+2]===70)marker++;if(palette.some(rgb=>rgb.every((v,k)=>p[i+k]===v))){const x=(i/4)%c.width,y=Math.floor(i/4/c.width);if(!points.some(q=>Math.hypot(x-q.x,y-q.y)<21*ratio))route++;}}
+  return{land,ocean,marker,route,routePalette:colors,data:{...c.dataset},dom:document.querySelectorAll('*').length,overflow:document.documentElement.scrollWidth>innerWidth};
+ },body);
  const before=await probe(); await canvas.screenshot({path:path.join(out,`${width}-map.png`)});
  const trace=await page.evaluate(async body=>{
    const {normalizeReport}=await import('./state.js');const {topologyModelFromReport,planTopologyDOM}=await import('./topology-model.js');

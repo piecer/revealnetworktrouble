@@ -29,7 +29,14 @@ public final class AnalysisPresentation {
     }
 
     private final List<Block> blocks;
-    private AnalysisPresentation(List<Block> blocks) { this.blocks = Collections.unmodifiableList(blocks); }
+    private final com.checknetwork.app.core.GeoDetails geoDetails;
+    private AnalysisPresentation(List<Block> blocks, com.checknetwork.app.core.GeoDetails geoDetails) {
+        this.blocks = Collections.unmodifiableList(blocks);
+        this.geoDetails = geoDetails;
+    }
+    public java.util.Optional<com.checknetwork.app.core.GeoDetails> geoDetails() {
+        return java.util.Optional.ofNullable(geoDetails);
+    }
     public List<Block> blocks() { return blocks; }
 
     public static AnalysisPresentation from(Report report) {
@@ -71,7 +78,7 @@ public final class AnalysisPresentation {
                 "Nodes: " + topology.nodeCount() + "\nLinks: " + topology.linkCount() + "\nRoutes: "
                         + topology.routeCount() + "\nTruncated: " + (topology.truncated() ? "yes" : "no")));
         out.add(new Block("raw_results", "Raw results", rawResults(report), true));
-        return new AnalysisPresentation(out);
+        return new AnalysisPresentation(out, report.geoDetails().orElse(null));
     }
 
     private static void addSafe(List<Block> out, SafeBudget budget, String key, String heading, String body) {

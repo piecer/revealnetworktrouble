@@ -79,6 +79,22 @@ func marshalClosedResponse(report diagnostic.Report, outputCap int, newline bool
 	return buffer.bytes(), nil
 }
 
+// The sidecar uses the same closed encoding as the report, including Go's
+// HTML/control/Unicode escaping, but its independent cap excludes a newline.
+func marshalGeoDetailsSidecar(sidecar diagnostic.GeoDetailsSidecar) ([]byte, error) {
+	validator := fullResponseValidator{active: make(map[fullResponseIdentity]struct{}), stringKeys: make(map[string]struct{})}
+	value := reflect.ValueOf(sidecar)
+	if err := validator.validate(value, 0, false); err != nil {
+		return nil, err
+	}
+	buffer := newLimitedJSONBuffer(diagnostic.GeoDetailsMaxBytes)
+	encoder := fullResponseEncoder{buffer: buffer}
+	if err := encoder.encode(value, false); err != nil {
+		return nil, err
+	}
+	return buffer.bytes(), nil
+}
+
 type fullResponseIdentity struct {
 	kind  reflect.Kind
 	type_ reflect.Type
@@ -354,6 +370,8 @@ func allowedStruct(valueType reflect.Type, dynamic bool) bool {
 		"TraceAttempt", "Topology", "TopologyNode", "TopologyLink", "GeoLocation", "ASNInfo", "IPMetadata",
 		"CompactTopology", "CompactTopologyLimits", "CompactTopologyNode", "CompactTopologyLink", "CompactTopologyRoute",
 		"CompactCountStats", "CompactRouteStats", "CompactTopologyStats", "CompactResultStats", "CompactGeoStats":
+		return true
+	case "GeoDetailsSidecar", "GeoDetailsEntry":
 		return true
 	default:
 		return false

@@ -44,14 +44,17 @@ public final class ReportParser {
 
     public static Report parse(String json) {
         if (json == null) throw error("report", "expected JSON object");
-        preflight(json);
+        if (json.getBytes(StandardCharsets.UTF_8).length > ContractLimits.MAX_TRANSPORT_BYTES)
+            throw error("report", "UTF-8 body exceeds byte limit");
+        String admitted = GeoDetailsNumbers.normalize(json);
+        GeoDetails geoDetails = preflight(admitted);
         try {
-            JSONTokener tokener = new JSONTokener(json);
+            JSONTokener tokener = new JSONTokener(admitted);
             Object value = tokener.nextValue();
             if (!(value instanceof JSONObject)) throw error("report", "expected one JSON object");
             if (tokener.nextClean() != 0) throw error("report", "must contain one JSON object");
             JSONObject source = (JSONObject) value;
-            return parseReport(source);
+            return parseReport(source, geoDetails);
         } catch (ReportParseException exception) {
             throw exception;
         } catch (JSONException exception) {
@@ -59,13 +62,17 @@ public final class ReportParser {
         }
     }
 
-    private static void preflight(String json) {
+    private static GeoDetails preflight(String json) {
         if (json.getBytes(StandardCharsets.UTF_8).length > ContractLimits.MAX_TRANSPORT_BYTES) {
             throw error("report", "UTF-8 body exceeds byte limit");
         }
         try (JsonReader reader = new JsonReader(new StringReader(json))) {
             reader.setLenient(false);
-            new StrictPrevalidator(reader).validate();
+            if (new StrictPrevalidator(reader).validate()) {
+                GeoDetailsParser.validateLexemes(json);
+                return GeoDetailsParser.parse(json);
+            }
+            return null;
         } catch (ReportParseException exception) {
             throw exception;
         } catch (IOException | RuntimeException exception) {
@@ -87,7 +94,8 @@ public final class ReportParser {
 
         StrictPrevalidator(JsonReader reader) { this.reader = reader; }
 
-        void validate() throws IOException {
+        boolean validate() throws IOException {
+            boolean hasGeoDetails = false;
             if (reader.peek() != JsonToken.BEGIN_OBJECT) {
                 throw error("report", "expected one JSON object");
             }
@@ -103,6 +111,7 @@ public final class ReportParser {
                 String owner = "";
                 if (frame.object) {
                     owner = reader.nextName();
+                    if (frames.size() == 1 && owner.equals("geo_details")) hasGeoDetails = true;
                     if (!wellFormedUtf16(owner)) throw error("report", "malformed UTF-16 field name");
                     if (!frame.names.add(owner)) throw error("report", "duplicate field");
                 } else {
@@ -118,6 +127,7 @@ public final class ReportParser {
             if (reader.peek() != JsonToken.END_DOCUMENT) {
                 throw error("report", "must contain one JSON object");
             }
+            return hasGeoDetails;
         }
 
         private void consumeValue(String owner) throws IOException {
@@ -175,7 +185,7 @@ public final class ReportParser {
         return true;
     }
 
-    private static Report parseReport(JSONObject source) throws JSONException {
+    private static Report parseReport(JSONObject source, GeoDetails geoDetails) throws JSONException {
         String id = text(source, "id", "report.id", true, ContractLimits.MAX_STRING_CHARS);
         Report.Status status = enumValue(text(source,"status","report.status",true,64), Report.Status.class, "report.status");
         Instant startedAt = timestamp(source, "started_at", "report.started_at");
@@ -197,7 +207,7 @@ public final class ReportParser {
         if(source.has("analysis")&&!source.isNull("analysis")) analysis=parseAnalysis(object(source.get("analysis"),"report.analysis"),results);
         Report.CompactTopology compact=null;
         if(source.has("compact_topology")) compact=parseCompact(object(source.get("compact_topology"),"report.compact_topology"),results);
-        return new Report(id,status,startedAt,duration,new Report.Summary(total,passed,failed),results,analysis,compact);
+        return new Report(id,status,startedAt,duration,new Report.Summary(total,passed,failed),results,analysis,compact,geoDetails);
     }
 
     private static Report.Result parseResult(JSONObject value,int index) throws JSONException {

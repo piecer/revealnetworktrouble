@@ -1,6 +1,82 @@
 # Offline Geo map: provenance, boundaries and verification
 
-This uncommitted Geo slice is ready for independent source review after its fresh gates; it is not a release or deployment claim. Historical Stage 8/9 counts and release acceptance remain separate. Current Node runner inventory is **328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), including ten Geo unit cases and the ASN-context slice. Geo inventories 308/304 and pre-Geo 298 remain historical. Browser scenarios are separate, not added to the Node count.
+## Current Stage3 behavior (isolated source candidate)
+
+This is offline geographic context, not a router-location measurement or a deployment claim. Stage1 identity/detail access and Stage2 supplemental metadata remain separate from context labels. Independent acceptance/integration is recorded by the campaign owner, not inferred from this document.
+
+The existing nine production assets are unchanged as a set. Only `geo-map.js` adds production behavior; it imports the existing topology route helpers and embeds data, so no runtime data asset, tiles, CDN, fonts, provider requests, or new dependency is needed. Raw reports, exports, public-IP eligibility, producer and Android contracts are unchanged.
+
+### Pinned geography
+
+Natural Earth v5.1.2 commit `f1890d9f152c896d250a77557a5751a93d494776` supplies:
+
+- Existing LAND: 127 polygons / 5143 vertices, preserved byte-for-byte.
+- `ne_110m_admin_0_boundary_lines_land.geojson`: 331 features, **333 separate line parts**, 3108 vertices. Multipart breaks and order are retained, with no simplification, rounding or invented joins.
+- `ne_110m_admin_0_countries.geojson`: 177 official `LABEL_X`/`LABEL_Y` points, names and `LABELRANK` values.
+- `ne_110m_populated_places.geojson`: 243 official point geometries, names and `POP_MAX` values.
+
+`docs/vendor/Natural-Earth-LICENSE.md` is the verbatim official public-domain notice (including original whitespace). Natural Earth attribution remains on the Canvas. Country/territory names and borders are source cartography, not a claim about network ownership or contested sovereignty.
+
+The development transformer pins all three full input SHA256 values in `scripts/geo_context_data.py`. Supply a directory containing those exact three filenames; it hashes every input before deriving anything. No download is performed and full source GeoJSON is not vendored by default.
+
+```sh
+python3 scripts/geo_context_data.py verify /explicit/local/natural-earth-directory
+python3 scripts/geo_context_data.py emit /explicit/local/natural-earth-directory
+```
+
+`emit` prints compact `BORDERS`, `COUNTRIES`, `CITIES` declarations, never rewrites a product file. `verify` compares every coordinate/name/priority and deterministic serialized byte against the embedded declarations. Country records use `[LABEL_X,LABEL_Y,NAME_KO or NAME_EN,LABELRANK]`; cities use `[point longitude,point latitude,NAME_KO or NAME_EN,POP_MAX]`. Borders flatten only the multipart container. Original order is retained, so equal-population ties use original city indices.
+
+Default offline `npm test` checks independently frozen generated-data SHA256 digests and structural limits. This establishes embedded artifact identity, **not** a fresh upstream download. The explicit-directory verification is a separate full input-to-output gate.
+
+### Labels, exact groups and routes
+
+World zoom considers countries with LABELRANK <=3; relative zoom >=2 considers all countries, and >=3 additionally considers cities in descending population/original-index order. Labels use Korean where supplied, otherwise English, with fixed 12/11 CSS-pixel typography. Full ink rectangles plus halo and four-pixel spacing are culled/collision-rejected deterministically; marker/group rings, attribution and the empty-data message are reserved. At most 64 context labels are painted. Empty data still paints recognizable land, ocean, borders and country context.
+
+Only exact positions group, after longitude wrapping and signed-zero equivalence. Already canonical tiny coordinate differences are preserved; there is no jitter, rounding or proximity clustering. A group badge shows its count. Repeated taps cycle original marker order; detail identifies member/count and explains that shared coordinates do not imply the same device. Per-node fact caching does not cache the currently selected group member. All original identities remain reachable through the existing fixed list (at most 100 buttons), pagination and previous/next controls, including 500 coincident members or no available list slots. Singletons keep their prior selection ring. Unlocated selected nodes remain unlocated.
+
+Colors use the existing `routeColor`, `edgeRouteMemberships` and four-lane cap, based on original `result_index`, not attempts or filtered positions. Only existing `geo.segments` are drawn; route facts never create new geometry across missing-coordinate gaps. A selected node emphasizes segments in its retained routes; unrelated segments stay visible at 0.35 alpha. Shared edges display at most four original-result colors; complete route/attempt membership remains available in detail. Line and arrow use the same shortest wrapped endpoints, copies and lane offsets. Fact-free legacy renderer mounts retain a neutral fallback rather than inventing route identity.
+
+### Hard work bounds and ownership
+
+Each actual scheduled draw publishes counters on its Canvas, incremented where work occurs:
+
+| Work | Ceiling |
+| --- | ---: |
+| Land + border vertex projections | 24753 |
+| Label candidate projections | 1260 (420 records × 3 copies) |
+| Painted geographic labels | 64 |
+| Exact groups / projected group copies | 500 / 1500 |
+| Segment-lane world copies | 12000 (1000 × 4 × 3) |
+| Canvas CSS extent / DPR | 2048 × 1024 / 2 |
+| Backing pixels | 8388608 |
+| Markers / segments | 500 / 1000 |
+| Document elements / insertion chunk / list buttons | 1200 / 100 / 100 |
+
+Resize, pan, zoom and selection coalesce scheduled work. There is no polling/animation loop. Abort, detached roots and stale detail owners cannot paint or mutate replacement controls; original Stage1 real-click visibility and Stage2 source/cache text remain retained gates.
+
+### Verification commands and evidence scope
+
+```sh
+make frontend-deps
+make test
+make build
+make vet
+make web-test-syntax
+python3 scripts/verify_api_archive_test.py
+python3 scripts/verify_web_archive_test.py
+# Installed external Playwright binding, no new production dependency:
+PLAYWRIGHT_PATH=/explicit/installed/playwright-core node frontend/geo-context.browser.cjs /owned/evidence/context
+PLAYWRIGHT_PATH=/explicit/installed/playwright-core node frontend/geo-details.browser.cjs /owned/evidence/details
+PLAYWRIGHT_PATH=/explicit/installed/playwright-core node frontend/geo-details-producer.browser.cjs /owned/evidence/producer-replay
+```
+
+The Stage3 browser gate checks all nine served asset bytes, actual border/country/city raster differences (not call counters alone), rectangle spacing, real mouse/touch group cycling, 500-member list access, four-lane palette/emphasis, both seam directions, empty geography, retained fullscreen/mobile immediate identity visibility, stale callbacks, overflow and external requests. `GEO_CONTEXT_LONG_PATH_MUTANT=1` is a test-only served-source negative control and must fail the no-long-route pixel assertion. Existing Geo/adversarial/graph/route/unknown browser assertions are also retained; the app Geo palette oracle now derives original-result colors and excludes marker pixels.
+
+Campaign receipts under sibling `stage3-evidence` bind command exits/logs to exact source manifests, source-directory verification, screenshots, owned-process cleanup, and seed-relative patch replay. Canonical counts come from those fresh logs, not the historical counts below. Browser inputs are controlled synthetic renderer cases or frozen producer replays, not external GeoIP, deployed-service or physical-device acceptance. Unchanged npm dependencies report two high-severity advisories; no migration is part of this slice.
+
+## Historical pre-Stage1 basemap evidence (not current readiness)
+
+The following records describe an earlier basemap-only slice. Its 328-test inventory, live API observations, temporary paths and open gates are historical, not current Stage3 acceptance. Older inventories 326/320/308/304/298 are likewise historical; browser cases were never added to Node collection counts.
 
 ## Geographic source and reproducibility
 

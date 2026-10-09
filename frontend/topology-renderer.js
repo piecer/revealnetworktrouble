@@ -134,6 +134,10 @@ function drawTopologyCanvas(context, topology, options = {}) {
       context.stroke();
       context.setLineDash?.([]);
       const icon = node.kind === 'local' ? '◉' : node.kind === 'unknown-group' ? '…' : node.kind === 'unknown' ? '?' : ['failure', 'unreachable', 'degraded'].includes(node.status) ? '!' : node.destination ? '◆' : '';
+      if (node.id === options.selectedNodeId) {
+        context.strokeStyle = '#ffffff'; context.lineWidth = 2.5;
+        context.beginPath(); context.arc(node.screen.x, node.screen.y, node.screen.radius + 4, 0, Math.PI * 2); context.stroke();
+      }
       if (icon && !projection.nodes.some(other => other !== node && other.visible && Math.hypot(other.screen.x - node.screen.x, other.screen.y - node.screen.y) < other.screen.radius + node.screen.radius + 2)) {
         context.fillStyle = '#10180f';
         context.textAlign = 'center'; context.textBaseline = 'middle';
@@ -344,15 +348,18 @@ function materializeTopologyItem(item, detachedDocument, memberships) {
       return canvas;
     }
     case 'geo-accessible-list': {
-      const list = detachedDocument.createElement('ul');
+      const list = detachedDocument.createElement('div');
       list.className = 'topology-geo-list';
+      list.setAttribute('role', 'group');
       list.setAttribute('aria-label', '지도 위치 목록');
       return list;
     }
     case 'geo-accessible-item': {
-      const itemElement = detachedDocument.createElement('li');
+      const itemElement = detachedDocument.createElement('button');
+      itemElement.type = 'button';
+      itemElement.disabled = true; // Activated only after all budgeted slots mount.
       setData(itemElement, 'node-id', value.node_id);
-      itemElement.textContent = `노드 ${elementText(value.node_id)}: 위도 ${elementText(value.latitude)}, 경도 ${elementText(value.longitude)}`;
+      itemElement.textContent = '위치 불러오는 중';
       return itemElement;
     }
     case 'label-shell': {
@@ -468,6 +475,7 @@ class TopologyRenderCoordinator {
       session.transform = createViewTransform(transform);
       const existingDOMElements = countElements(this.document);
       session.plan = planTopologyDOM(model, { view, existingDOMElements, maxDOMPerChunk: 100, labelRecords });
+      session.selectedNodeId = session.plan.topology.nodes.some(node => node.id === workspace?.selectedNodeId) ? workspace.selectedNodeId : null;
       if (view === 'topology' && session.plan.topology) session.edgeMemberships = edgeRouteMemberships(session.plan.topology);
     } catch (error) {
       this.#fail(session, error);
@@ -564,6 +572,15 @@ class TopologyRenderCoordinator {
       this.ownsRequest(session.ownerId, session.inputSignature, session.generation, session.abortController.signal) === true;
   }
 
+  #selectNode(session, id) {
+    if (!this.#active(session)) return;
+    const nodes = session.view === 'topology' ? session.plan.presentation.nodes : session.plan.topology.nodes;
+    if (id !== null && !nodes.some(node => node.id === id)) return;
+    session.selectedNodeId = id;
+    session.workspace?.onSelect?.(id);
+    if (session.view === 'topology') this.#drawTopology(session);
+  }
+
   #scheduleSafely(session, callback) {
     try { session.scheduled = this.schedule(callback); }
     catch (error) { this.#fail(session, error); }
@@ -589,7 +606,7 @@ class TopologyRenderCoordinator {
       if (!this.#active(session)) return;
       if (session.view === 'topology' && chunk.some(item => item.kind === 'topology-canvas')) {
         this.#scheduleTopologyDraw(session, index + 1);
-      } else if (session.view === 'geo' && chunk.some(item => item.kind === 'geo-canvas')) {
+      } else if (session.view === 'geo' && index + 1 === session.plan.chunks.length) {
         this.#scheduleGeoDraw(session, index + 1);
       } else if (index + 1 < session.plan.chunks.length) {
         this.#scheduleChunk(session, index + 1);
@@ -627,10 +644,11 @@ class TopologyRenderCoordinator {
       session.projection = drawTopologyCanvas(context, session.plan.topology, {
         mode: session.mode,
         transform: session.transform,
-        viewport, nodeOffsets: session.nodeOffsets, presentation: session.plan.presentation
+        viewport, nodeOffsets: session.nodeOffsets, presentation: session.plan.presentation, selectedNodeId: session.selectedNodeId
       });
       if (!this.#active(session)) return false;
       canvas.dataset.mode = session.mode;
+      canvas.dataset.selectedNodeId = session.selectedNodeId || '';
       canvas.dataset.dpr = String(viewport.dpr);
       canvas.setAttribute('aria-label', `${session.mode === '3d' ? '3D' : '2D'} 경로 토폴로지 그래프`);
       canvas.dataset.drawState = 'rendered';
@@ -652,7 +670,10 @@ class TopologyRenderCoordinator {
       try {
         const canvas = session.root.querySelector('canvas.topology-geo-canvas');
         const draw = typeof session.workspace?.drawGeo === 'function' ? session.workspace.drawGeo.bind(session.workspace) : null;
-        if (draw) addCleanups(session, draw({ canvas, geo: session.plan.geo, signal: session.abortController.signal }));
+        if (draw) addCleanups(session, draw({ canvas, geo: session.plan.geo, facts: session.plan.topology,
+          list: session.root.querySelector('.topology-geo-list'), isActive: () => this.#active(session),
+          selectedNodeId: session.selectedNodeId, onSelect: id => this.#selectNode(session, id),
+          signal: session.abortController.signal }));
         else if (canvas) {
           setData(canvas, 'markers', session.plan.geo.markers.length);
           setData(canvas, 'segments', session.plan.geo.segments.length);
@@ -670,8 +691,8 @@ class TopologyRenderCoordinator {
 
   #organizeCommittedDOM(session) {
     if (session.view === 'geo') {
-      const list = session.root.querySelector('ul.topology-geo-list');
-      if (list) for (const item of [...session.root.children]) if (item.tagName === 'LI') list.append(item);
+      const list = session.root.querySelector('.topology-geo-list');
+      if (list) for (const item of [...session.root.children]) if (item.tagName === 'BUTTON') list.append(item);
     } else if (session.view === 'labels') {
       const body = session.root.querySelector('table.topology-labels tbody');
       if (body) for (const item of [...session.root.children]) if (item.tagName === 'TR') body.append(item);
@@ -687,6 +708,12 @@ class TopologyRenderCoordinator {
 
   #installKeyboard(session) {
     if (session.view !== 'topology') return;
+    const select = event => {
+      const node = event.target.closest('button.topology-node');
+      if (node && session.root.contains(node)) this.#selectNode(session, node.dataset.nodeId);
+    };
+    session.root.addEventListener('click', select);
+    session.cleanups.push(() => session.root.removeEventListener('click', select));
     const listener = event => {
       if (!this.#active(session) || !['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(event.key)) return;
       const buttons = [...session.root.querySelectorAll('button.topology-node')];
@@ -727,7 +754,7 @@ class TopologyRenderCoordinator {
     const tooltip = session.workspace?.tooltip;
     const facts = new Map(session.plan.presentation.nodes.map(node => [node.id, node]));
     let drag = null;
-    let selected = session.projection.nodes[0]?.id;
+    const selectedNode = () => session.projection.nodes.find(node => node.id === session.selectedNodeId) || session.projection.nodes[0];
     let suppressClick = false;
     const point = event => {
       const rect = canvas.getBoundingClientRect(), viewport = session.projection.viewport;
@@ -749,7 +776,7 @@ class TopologyRenderCoordinator {
     const show = node => {
       if (!tooltip) return;
       if (!node) { hide(); return; }
-      selected = node.id;
+
       tooltip.textContent = nodeDetail(facts.get(node.id)).slice(0, 2048);
       tooltip.hidden = false;
       tooltip.showPopover?.();
@@ -768,18 +795,20 @@ class TopologyRenderCoordinator {
     };
     const edit = node => {
       if (!node) return;
+      this.#selectNode(session, node.id);
       const button = [...session.root.querySelectorAll('button.topology-node')].find(item => item.dataset.nodeId === node.id);
       button?.click(); // One canonical storage/editor path for graph and inspector.
     };
-    on('focus', () => show(session.projection.nodes.find(node => node.id === selected)));
+    on('focus', () => show(selectedNode()));
     on('blur', hide);
     on('keydown', event => {
       if (event.key === 'Escape') { hide(); event.preventDefault(); return; }
-      if (event.key === 'Enter') { edit(session.projection.nodes.find(node => node.id === selected)); event.preventDefault(); return; }
+      if (event.key === 'Enter') { edit(selectedNode()); event.preventDefault(); return; }
       if (!['[', ']'].includes(event.key)) return;
       const nodes = session.projection.nodes;
-      const index = nodes.findIndex(node => node.id === selected);
-      show(nodes[(index + (event.key === ']' ? 1 : -1) + nodes.length) % nodes.length]);
+      const index = nodes.findIndex(node => node.id === selectedNode()?.id);
+      const next = nodes[(index + (event.key === ']' ? 1 : -1) + nodes.length) % nodes.length];
+      this.#selectNode(session, next.id); show(next);
       event.preventDefault(); event.stopPropagation();
     });
     on('click', event => { if (suppressClick) { suppressClick = false; return; } edit(hit(point(event))); });
@@ -791,6 +820,7 @@ class TopologyRenderCoordinator {
       suppressClick = false;
       drag = { id: node.id, pointerId: event.pointerId, point: p };
       try { canvas.setPointerCapture?.(event.pointerId); } catch { /* optional capture */ }
+      this.#selectNode(session, node.id);
       show(node);
       event.preventDefault(); event.stopPropagation();
     });

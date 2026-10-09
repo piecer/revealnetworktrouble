@@ -45,6 +45,14 @@ function addressClass(address) {
   return 'public';
 }
 
+// The shared public-IP policy has no state/model imports (avoid consumer cycles).
+export function canonicalPublicIP(address) {
+  if (addressClass(address) !== 'public') return null;
+  const bits = addressBits(address);
+  if (bits.width === 32) return [24n, 16n, 8n, 0n].map(shift => Number((bits.value >> shift) & 255n)).join('.');
+  return new URL(`http://[${address}]/`).hostname.slice(1, -1);
+}
+
 function annotateASN(topology, retained, keptRoutes, keptPairs) {
   const byID = new Map(topology.nodes.map(n => [n.id, n]));
   const copies = new Map(retained.map(n => [n.id, { ...n }]));

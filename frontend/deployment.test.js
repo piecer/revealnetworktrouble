@@ -55,7 +55,7 @@ async function assertClientRequest(html, base) {
       } });
     await app.start('diagnostics');
     assert.equal(calls.length, 1, 'real app must reach its request path');
-    assert.equal(calls[0].url, `${base}/api/v1/reports`);
+    assert.equal(calls[0].url, `${base}/api/v1/reports?geo_details=1`);
     assert.equal(calls[0].method, 'POST');
   } finally {
     dom.window.close();

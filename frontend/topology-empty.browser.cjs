@@ -25,7 +25,7 @@ const server = http.createServer((req, res) => {
       const errors = []; let requests = 0;
       page.on('pageerror', error => errors.push(error.message));
       const body = fs.readFileSync(path.join(__dirname, '../testdata/topology-unavailable-http-report.json'));
-      await page.route('**/api/v1/reports', route => { requests++; return route.fulfill({ status: 200, contentType: 'application/json', body }); });
+      await page.route('**/api/v1/reports?geo_details=1', route => { requests++; return route.fulfill({ status: 200, contentType: 'application/json', body }); });
       await page.goto(base + '/#topology');
       await page.locator('#run-topology').click();
       await page.waitForFunction(() => document.querySelector('#topology-workspace').dataset.state === 'render-empty');

@@ -57,6 +57,8 @@ make ci                # 기존 Go/웹 테스트와 Android 게이트 전체
 - status/verdict, coverage, findings, evidence, actions, limitations/provider failures, raw result와 compact topology 요약을 순서대로 표시합니다.
 - 요청 교체·입력 변경·취소·Activity recreation에 owner/signature를 적용하고 stale completion을 게시하지 않습니다.
 - redacted human summary와 명시적으로 확인한 bounded raw JSON을 별도 공유합니다.
+- report POST 한 번에 `geo_details=1`을 요청하고, 확장이 없는 구서버 응답도 재시도 없이 수용합니다. 확장이 존재하면 중복 키·수치 정밀도·공인 IP·시각·byte 한도를 엄격히 검증하며 잘못된 확장을 기본 응답으로 조용히 바꾸지 않습니다.
+- Geo 상세 영역은 공인 IP별 추가 위치 텍스트·별도 ISP·조직 도메인·공급자와 조회/캐시 출처를 한 주소씩 표시합니다. 최대 500개 항목을 bounded 탐색으로 접근하며, 좌표 없는 항목도 남깁니다. 조회 시각은 공급자 DB 갱신이나 실제 장비 위치를 뜻하지 않습니다. 원본 JSON 공유는 확장을 포함한 수신 원문을 보존합니다. [Geo details v1](../docs/GEO-DETAILS.md)을 참고하세요.
 - 320dp, landscape, large-font reflow와 accessibility labels/live regions를 자동 계약으로 검사합니다.
 
 Interactive Android topology/Geo graph, 실제 TalkBack·Switch Access, OEM share sheet 및 물리 기기 네트워크 취소는 후속 device acceptance 범위입니다.

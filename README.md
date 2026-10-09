@@ -54,7 +54,9 @@ curl -X POST http://localhost:8080/api/v1/reports \
 
 Android 앱도 `/checks` capability와 13종 검사, HTTPS-only public credential, request owner/cancel/recreation, 설명 가능한 analysis와 compact topology 요약을 사용한다. discovery와 report는 하나의 315초 절대 deadline을 공유하고 각 단계의 더 짧은 local deadline과 교차한다. 유효하지만 축소된 capability와 선택값의 불일치는 typed `UNSUPPORTED_CAPABILITY` 이유와 고정 UI 문구로 표시하며 malformed 응답은 계속 invalid response다. 기본 공유는 redacted human summary이고 원본 JSON은 경고 확인 후 private cache의 bounded content URI로만 공유한다. Interactive Android graph와 실기기 TalkBack 검증은 아직 별도 acceptance 항목이다. raw-share 15분 lease는 앱 프로세스가 `observe()`한 시점에 revoke/cleanup하는 process-observed TTL이며, 프로세스가 죽은 뒤 stock `FileProvider` grant, 이미 열린 descriptor 또는 수신 앱의 복사를 강제로 만료시키는 보장은 아니다.
 
-공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. `Geo 경로 지도`는 같은 bounded selection을 외부 tile/credential 없는 Natural Earth 해안선 기반 오프라인 Canvas 지도(드래그/확대/경로 맞춤)와 접근 가능한 위치 목록으로 표시한다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치다.
+공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. `Geo 경로 지도`는 같은 bounded selection을 외부 tile/credential 없는 Natural Earth 해안선·국경·국가명·주요 도시 기반 오프라인 Canvas 지도(드래그/확대/경로 맞춤)와 접근 가능한 위치 목록으로 표시한다. 지명은 확대 수준에 맞춰 겹치지 않게 표시하고, 정확히 같은 좌표의 IP는 개수 배지와 반복 선택으로 구분한다. 경로는 토폴로지와 같은 색을 사용하며 선택한 노드의 경로를 강조한다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치이며, 같은 좌표도 같은 장비를 뜻하지 않는다.
+
+지도 점 또는 위치 목록을 선택하면 전체 IP/별칭, 위치·ASN·관측 RTT·홉 범위·경로/시도 소속을 지속 상세 패널에서 확인한다. 기존 공급자가 반환한 대륙·지역 코드·우편번호·시간대·별도 ISP·조직 도메인과 조회/캐시 출처도 Web/Android에 보존한다. 추가 정보는 `POST /api/v1/reports?geo_details=1`로 요청하며 구서버도 재진단 없이 호환된다. 좌표 없는 정보는 지도에 추측하여 배치하지 않고, 조회 시각은 공급자 DB 갱신 시각이 아니다. [확장 계약](docs/GEO-DETAILS.md)과 [지도 설명](docs/GEO-MAP.md)을 참고한다.
 
 웹 UI는 정적 파일 서버로 별도 실행합니다.
 

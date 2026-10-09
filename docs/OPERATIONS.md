@@ -24,6 +24,10 @@ Android release는 빈 API base로 시작해 운영 HTTPS origin을 명시적으
 
 traceroute의 공인 IP는 서버에서 GeoIP 제공자에 전달된다. 사내 정책상 외부 조회를 제한해야 한다면 호환되는 내부 프록시를 `CHECKNETWORK_GEOIP_URL`로 지정한다. 성공 조회는 프로세스 메모리에 최대 2048개, 24시간 TTL의 LRU 캐시로 보관되며 GeoIP 실패는 traceroute 상태에 영향을 주지 않는다.
 
+Geo 상세정보는 같은 공급자 응답의 추가 필드를 보존한다. 이를 위해 IP별 별도 조회나 새 공급자를 추가하지 않는다. `geo_details=1`은 report 응답 확장에 대한 선택이며 GeoIP 외부 조회를 끄는 설정이 아니다. Web/Android가 이 쿼리를 보내도 구서버의 기본 응답을 재시도 없이 사용할 수 있어 서버와 클라이언트를 순차 갱신할 수 있다. 기존 클라이언트의 쿼리 없는 응답 형식은 유지된다. 별도 DB·유료 플랜·새 환경변수는 필요 없다.
+
+화면의 공급자·`upstream`/`cache`·조회/만료 시각은 추가 텍스트 묶음의 출처다. 기존 좌표·ASN이 같은 조회에서 얻어졌다는 보증이나 공급자 DB 갱신 시각으로 해석하지 않는다. 좌표 없는 텍스트 정보는 지점을 만들지 않으며, Anycast/VPN/실제 장비 소재지·패킷 통과 위치를 판정하지 않는다. 기본 사람용 export의 기존 privacy 경계와 원본 JSON 경고를 유지한다. 세부 계약과 한도는 [GEO-DETAILS.md](GEO-DETAILS.md)를 참조한다. 오프라인 지도는 브라우저의 외부 tile 요청을 없애지만 서버의 GeoIP 조회와는 별개다.
+
 ## 실행 및 자원 envelope
 
 Compose의 `CHECKNETWORK_API_PORT`는 API host publish와 frontend `API_PORT` build argument의 단일 입력이며 unset/empty 기본값은 8090이다. 예를 들어 `CHECKNETWORK_API_PORT=18090 docker compose up --build --wait`는 API와 새 Web HTML 기본 주소를 함께 18090으로 바꾼다. 포트는 leading zero 없는 1..65535 decimal만 허용한다. 이 값은 build-time 설정이므로 기존 Web container의 환경 변수만 변경해서는 HTML이 바뀌지 않는다. Canonical release와 Compose 밖의 frontend Dockerfile 기본값은 9090이며, 그 경우 nine source assets의 bytes는 바뀌지 않는다. 이것은 설정 예시이며 이번 회귀 검증에서 실행 중인 배포를 재시작하지 않았다.
