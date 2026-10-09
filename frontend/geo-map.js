@@ -4,6 +4,8 @@
 // Offline equirectangular overview. No network, tiles, credentials or report transmission.
 import {routeColor, edgeRouteMemberships, MAX_ROUTE_LANES} from './topology-visualizer.js';
 export const GEO_LIMITS = Object.freeze({ vertices: 5143, copies: 3, markers: 500, segments: 1000, width: 2048, height: 1024, dpr: 2, zoom: 8 });
+const MAX_MARKER_COLORS = 4;
+const NEUTRAL_MARKER = '#94a3b8';
 const DETAIL_OWNERS = new WeakMap();
 export const wrapLongitude = value => {
   // Do not add 180 to already-canonical tiny coordinates: that would round
@@ -66,6 +68,11 @@ function locationText(node) {
 function identityText(node) {
   return [node.address || 'IP 미확인', node.display_label].filter(Boolean).join(' · ');
 }
+function targetText(members, targets, names = false) {
+  const ids = [...(members || [])].sort((a, b) => a - b);
+  const text = ids.length ? ids.map(id => `대상 ${id + 1}${names ? ` · ${targets.get(id) || '이름 미확인'}` : ''}`).join(' / ') : '대상 소속 미확인';
+  return text + (ids.length > MAX_MARKER_COLORS ? ` · ${ids.length - MAX_MARKER_COLORS}개 색 생략 (회색 부채꼴)` : '');
+}
 function supplementalText(details) {
   if (!details) return [];
   const fields = [
@@ -82,7 +89,7 @@ function supplementalText(details) {
     '조회 시각은 제공자 데이터베이스 갱신 시각이 아님. 기존 좌표·ASN의 출처나 정확도를 보장하지 않습니다.'
   ];
 }
-function geoDetail(node, marker, routes) {
+function geoDetail(node, marker, routes, targets) {
   const hop = Number.isFinite(node.hop_min) && Number.isFinite(node.hop_max)
     ? `HOP ${node.hop_min === node.hop_max ? node.hop_min : `${node.hop_min}–${node.hop_max}`}` : 'HOP 미확인';
   const memberships = routes.filter(route => route.node_ids.includes(node.id))
@@ -90,7 +97,7 @@ function geoDetail(node, marker, routes) {
   return [identityText(node), locationText(node),
     `${Number.isFinite(node.asn?.number) ? `AS${node.asn.number}` : 'ASN 미확인'} · 조직 ${node.asn?.organization || '미확인'}`,
     Number.isFinite(node.latency_ms_avg) ? `관측 평균 RTT ${node.latency_ms_avg} ms (링크 지연 아님)` : '관측 평균 RTT 미측정 (링크 지연 아님)',
-    hop, memberships.length ? memberships.join(' / ') : '경로 · 시도 소속 미확인',
+    hop, targets, memberships.length ? memberships.join(' / ') : '경로 · 시도 소속 미확인',
     'GeoIP는 추정 위치이며 실제 장비 소재지나 패킷 이동 경로를 보장하지 않습니다.',
     marker ? `좌표: 위도 ${marker.latitude}, 경도 ${marker.longitude}` : '좌표 미확인 · 지도에 추측하여 배치하지 않습니다.',
     ...supplementalText(node.geo_details)].join('\n');
@@ -103,9 +110,20 @@ export function mountGeoMap({canvas,geo,facts={nodes:[],routes:[]},list,selected
   const groups = groupGeoMarkers(markers), groupByID = new Map();
   const edgeMemberships = edgeRouteMemberships({links:segments, routes:facts.routes});
   const nodeMemberships = new Map();
+  const targets = new Map(facts.routes.map(route => [route.result_index, route.address]));
   for (const route of facts.routes) for (const id of route.node_ids) {
     if (!nodeMemberships.has(id)) nodeMemberships.set(id, new Set());
     nodeMemberships.get(id).add(route.result_index);
+  }
+  // Membership is a presentation index, never a mutation of marker/node facts.
+  // Keep the complete union even when only four colors can be painted.
+  for (const group of groups) {
+    const memberships = group.members.map(index => nodeMemberships.get(markers[index].node_id));
+    group.targets = [...new Set(memberships.flatMap(members => [...(members || [])]))].sort((a, b) => a - b);
+    group.unknown = memberships.some(members => !members?.size);
+    group.colors = group.targets.slice(0, MAX_MARKER_COLORS).map(routeColor);
+    if (group.unknown || group.targets.length > MAX_MARKER_COLORS) group.colors.push(NEUTRAL_MARKER);
+    group.targetText = targetText(group.targets, targets, true) + (group.unknown ? ' · 소속 미확인 구성원 포함' : '');
   }
   groups.forEach(group => group.members.forEach((index, member) => groupByID.set(markers[index].node_id, {group, member})));
   canvas.dataset.groups = String(groups.length);
@@ -125,7 +143,7 @@ export function mountGeoMap({canvas,geo,facts={nodes:[],routes:[]},list,selected
   // once, rather than scanning route membership again for every selection.
   const detailCache = new Map();
   const detailFor = (node, marker) => {
-    if (!detailCache.has(node.id)) detailCache.set(node.id, geoDetail(node, marker, facts.routes));
+    if (!detailCache.has(node.id)) detailCache.set(node.id, geoDetail(node, marker, facts.routes, targetText(nodeMemberships.get(node.id), targets, true)));
     const membership = groupByID.get(node.id);
     const detail = detailCache.get(node.id);
     if (!(membership?.group.members.length > 1)) return detail;
@@ -135,6 +153,7 @@ export function mountGeoMap({canvas,geo,facts={nodes:[],routes:[]},list,selected
       `동일 좌표 ${membership.member + 1} / ${membership.group.members.length}`,
       '같은 좌표라도 같은 장비 보장 아님.', node.display_label,
       detail.slice(identityText(node).length + 1),
+      `동일 좌표 전체 대상: ${membership.group.targetText}`,
       '반복 탭으로 구성원 선택. 같은 좌표는 같은 장비를 의미하지 않습니다.'
     ].filter(Boolean).join('\n');
   };
@@ -149,7 +168,7 @@ export function mountGeoMap({canvas,geo,facts={nodes:[],routes:[]},list,selected
       button.hidden = !marker; button.disabled = !marker;
       button.dataset.nodeId = marker?.node_id || '';
       const node = marker && (nodes.get(marker.node_id) || {id:marker.node_id});
-      button.textContent = marker ? `${identityText(node)} · ${locationText(node)}` : '';
+      button.textContent = marker ? `${identityText(node)} · ${targetText(nodeMemberships.get(node.id), targets)} · ${locationText(node)}` : '';
       // The complete fact text is available to assistive technology as well as
       // in the persistent panel; list ink prioritizes identity and place.
       button.setAttribute('aria-label', marker ? detailFor(node, marker) : '');
@@ -290,10 +309,18 @@ export function mountGeoMap({canvas,geo,facts={nodes:[],routes:[]},list,selected
     canvas.dataset.laneCopies=String(laneCopies);
     canvas.dataset.backingPixels=String(canvas.width*canvas.height);
     for (const p of groupCopies) {
-      const multiple = p.group.members.length > 1, radius = multiple ? 13 : 5;
+      const multiple = p.group.members.length > 1, colors = p.group.colors;
+      const radius = multiple ? 13 : colors.length > 1 ? 8 : 5;
       if (p.x < -21 || p.x > width+21 || p.y < -21 || p.y > height+21) continue;
-      ctx.fillStyle='#c9ff46';ctx.strokeStyle='#0b1c2a';ctx.lineWidth=1.5;
-      ctx.beginPath();ctx.arc(p.x,p.y,radius,0,Math.PI*2);ctx.fill();ctx.stroke();
+      ctx.strokeStyle='#0b1c2a';ctx.lineWidth=1.5;
+      for (const [sector, color] of colors.entries()) {
+        ctx.fillStyle=color;ctx.beginPath();
+        if (colors.length > 1) ctx.moveTo(p.x,p.y);
+        ctx.arc(p.x,p.y,radius,-Math.PI/2+sector*Math.PI*2/colors.length,-Math.PI/2+(sector+1)*Math.PI*2/colors.length);
+        ctx.closePath();ctx.fill();
+      }
+      if (colors.length > 1) {ctx.beginPath();ctx.arc(p.x,p.y,radius,0,Math.PI*2);}
+      ctx.stroke();
       if (multiple) {
         ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillStyle='#0b1c2a';
         ctx.fillText(String(p.group.members.length),p.x,p.y+4);ctx.textAlign='start';

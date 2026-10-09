@@ -473,6 +473,11 @@ test('future renderer plans charge only the active view and runtime commits stay
       details.append(document.createElement('summary'));
       return details;
     }
+    if (item.kind === 'geo-target-legend') {
+      const legend = document.createElement('section');
+      legend.append(document.createElement('p'));
+      return legend;
+    }
     return document.createElement(item.kind === 'geo-canvas' || item.kind === 'topology-canvas' ? 'canvas' : item.kind === 'geo-accessible-list' ? 'ul' : item.kind === 'geo-accessible-item' ? 'li' : 'div');
   };
 

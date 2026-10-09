@@ -493,6 +493,215 @@ test('label CRUD and view events remain owned by their app instance', async () =
   assert.equal(b.document.querySelector('#diagnostics-view').hidden, bView);
 });
 
+test('Geo target catalog is active-view-only and cleared on invalidation, replacement and destroy', async () => {
+  const queue = [];
+  const scheduler = { schedule(callback) { queue.push(callback); return queue.length; }, cancel() {} };
+  let next = report('geo-first', { results: [compactTraceResult('first.example')], compact_topology: compactTopology() });
+  let requests = 0;
+  const { app, document, dom } = setup(async () => { requests++; return response(JSON.stringify(next)); }, {
+    url: 'https://geo.example/#topology', scheduler, configureWindow(win) { win.HTMLCanvasElement.prototype.getContext = () => null; }
+  });
+  await flush(); await app.start('topology');
+  const old = document.querySelector('#topology-target-filter input');
+  document.querySelector('[data-view-link="geo-map"]').click();
+  assert.equal(document.querySelector('#topology-target-filter').childElementCount, 0, 'hidden catalog must not consume budget or accept stale actions');
+  assert.equal(document.querySelector('#topology-result-summary').childElementCount, 0);
+  assert.equal(document.querySelectorAll('#geo-target-filter input[data-target-index]').length, 1);
+  old.click(); drain(queue);
+  assert.equal(document.querySelector('#geo-target-filter input').checked, true);
+  assert.equal(document.querySelector('#topology-result').childElementCount, 0);
+  for (const view of ['diagnostics', 'ip-labels', 'common-prefix', 'geo-map', 'topology', 'geo-map']) {
+    document.querySelector(`[data-view-link="${view}"]`).click(); drain(queue);
+    assert.equal(document.querySelector('#geo-target-filter').childElementCount > 0, view === 'geo-map');
+    assert.equal(document.querySelector('#topology-target-filter').childElementCount > 0, view === 'topology');
+  }
+  app.invalidate('topology'); drain(queue);
+  assert.equal(document.querySelector('#geo-target-filter').childElementCount, 0);
+  next = report('geo-replacement', { results: [compactTraceResult('replacement.example')], compact_topology: compactTopology() });
+  await app.start('topology');
+  const stale = document.querySelector('#geo-target-filter input');
+  assert.match(document.querySelector('#geo-target-filter').textContent, /replacement.example/);
+  assert.doesNotMatch(document.querySelector('#geo-target-filter').textContent, /first.example/);
+  app.destroy(); drain(queue);
+  assert.equal(document.querySelector('#geo-target-filter').childElementCount, 0);
+  assert.equal(document.querySelector('#topology-target-filter').childElementCount, 0);
+  const successor = createApp({ document, window: dom.window, scheduler, fetchImpl: async () => response(JSON.stringify(next)) });
+  await flush(); await successor.start('topology'); drain(queue);
+  stale.click(); app.destroy(); drain(queue);
+  assert.equal(document.querySelector('#geo-target-filter input').checked, true, 'predecessor cannot influence successor');
+  assert.equal(requests, 2);
+  successor.destroy();
+});
+
+test('Geo target actions reject malformed indexes and unknown actions before mutating selection', async () => {
+  const queue = [];
+  const scheduler = { schedule(callback) { queue.push(callback); return queue.length; }, cancel() {} };
+  const next = report('geo-inputs', { results: [compactTraceResult('only.example')], compact_topology: compactTopology() });
+  const { app, document } = setup(async () => response(JSON.stringify(next)), {
+    url: 'https://geo.example/#geo-map', scheduler, configureWindow(win) { win.HTMLCanvasElement.prototype.getContext = () => null; }
+  });
+  await flush(); await app.start('topology'); drain(queue);
+  const root = document.querySelector('#geo-target-filter');
+  const before = app.getOwnedReport('topology');
+  for (const token of ['', '01', '1e0', '-1', '1', '1.5', 'NaN', '0"]']) {
+    const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.targetIndex = token; input.checked = true; root.append(input);
+    input.dispatchEvent(new document.defaultView.Event('change', { bubbles: true })); input.remove(); drain(queue);
+    assert.match(root.textContent, /1\/1개 표시/, `invalid index ${JSON.stringify(token)} is inert`);
+    assert.equal(root.querySelector('input').checked, true);
+  }
+  const invalid = document.createElement('button'); invalid.dataset.filterAction = 'erase'; root.append(invalid); invalid.click(); invalid.remove(); drain(queue);
+  assert.equal(root.querySelector('input').checked, true, 'unknown action must not become None');
+  assert.equal(app.getOwnedReport('topology'), before);
+  app.destroy();
+});
+
+test('Geo target controls retain focus, raw report and full error-only inventory through rapid redraws', async () => {
+  const queue = [];
+  const scheduler = { schedule(callback) { queue.push(callback); return queue.length; }, cancel() {} };
+  const hostile = '<img src=x onerror=alert(1)>-<svg/onload=alert(1)>';
+  const next = report('geo-errors', { status: 'unreachable', summary: { total: 2, passed: 0, failed: 2 }, results: ['failed.example', hostile].map(address => result({ kind: 'traceroute', address, status: 'unreachable', error_code: 'traceroute_unavailable', details: undefined })) });
+  let requests = 0;
+  const { app, document } = setup(async () => { requests++; return response(JSON.stringify(next)); }, {
+    url: 'https://geo.example/#geo-map', scheduler, configureWindow(win) { win.HTMLCanvasElement.prototype.getContext = () => null; }
+  });
+  await flush(); await app.start('topology'); drain(queue);
+  const owned = app.getOwnedReport('topology'), raw = JSON.stringify(owned), root = document.querySelector('#geo-target-filter');
+  assert.equal(root.querySelectorAll('input[data-target-index]').length, 2);
+  assert.ok(root.textContent.includes(hostile)); assert.equal(root.querySelectorAll('img,svg,[onerror],[onload]').length, 0);
+  assert.equal(root.querySelectorAll('[data-toggle-unresponsive]').length, 0);
+  for (const action of ['none', 'all', 'none']) {
+    const button = root.querySelector(`[data-filter-action="${action}"]`); button.focus(); button.click();
+    assert.equal(document.activeElement, root.querySelector(`[data-filter-action="${action}"]`));
+  }
+  for (const index of [1, 0, 1, 1]) {
+    const input = root.querySelector(`[data-target-index="${index}"]`); input.focus(); input.click();
+    assert.equal(document.activeElement, root.querySelector(`[data-target-index="${index}"]`));
+  }
+  drain(queue);
+  assert.deepEqual([...root.querySelectorAll('input')].map(e => e.checked), [true, true]);
+  assert.equal(root.querySelectorAll('input[data-target-index]').length, 2);
+  assert.equal(requests, 1); assert.equal(app.getOwnedReport('topology'), owned); assert.equal(JSON.stringify(owned), raw);
+  app.destroy();
+});
+
+test('Geo successor catalog rejects predecessor cleanup and event listeners on the same document', async () => {
+  const queue = [], scheduler = { schedule(callback) { queue.push(callback); return queue.length; }, cancel() {} };
+  const next = report('geo-successor', { results: [compactTraceResult('successor.example')], compact_topology: compactTopology() });
+  const { app: predecessor, dom, document } = setup(async () => response(JSON.stringify(next)), {
+    url: 'https://geo.example/#geo-map', scheduler, configureWindow(win) { win.HTMLCanvasElement.prototype.getContext = () => null; }
+  });
+  await flush(); await predecessor.start('topology');
+  const successor = createApp({ document, window: dom.window, scheduler, fetchImpl: async () => response(JSON.stringify(next)) });
+  await flush(); await successor.start('topology'); drain(queue);
+  const root = document.querySelector('#geo-target-filter');
+  const input = root.querySelector('input'); input.focus(); input.click(); drain(queue);
+  assert.equal(root.querySelector('input').checked, false, 'one native activation has one owner');
+  predecessor.destroy(); drain(queue);
+  assert.equal(root.querySelectorAll('input[data-target-index]').length, 1, 'old cleanup cannot erase a successor catalog');
+  assert.equal(root.querySelector('input').checked, false);
+  root.querySelector('[data-filter-action="all"]').click(); drain(queue);
+  assert.equal(root.querySelector('input').checked, true);
+  successor.destroy();
+});
+
+test('Geo selector is counted before planning and remains operable when only its full catalog fits', async () => {
+  const queue = [];
+  const scheduler = { schedule(callback) { queue.push(callback); return queue.length; }, cancel() {} };
+  const next = report('geo-budget', { results: [compactTraceResult('budget.example')], compact_topology: compactTopology() });
+  const { app, document } = setup(async () => response(JSON.stringify(next)), {
+    url: 'https://geo.example/#geo-map', scheduler, configureWindow(win) { win.HTMLCanvasElement.prototype.getContext = () => null; }
+  });
+  await flush(); await app.start('topology'); drain(queue);
+  const root = document.querySelector('#geo-target-filter'), catalogElements = root.querySelectorAll('*').length;
+  assert.equal(catalogElements, 11);
+  app.invalidate('topology');
+  const ballast = document.createElement('div'); document.body.append(ballast);
+  ballast.append(...Array.from({ length: MAX_DOCUMENT_ELEMENTS - document.querySelectorAll('*').length - catalogElements }, () => document.createElement('i')));
+  await app.start('topology'); drain(queue);
+  assert.equal(document.querySelectorAll('*').length, MAX_DOCUMENT_ELEMENTS);
+  assert.equal(document.querySelector('#topology-workspace').dataset.state, 'render-limited');
+  assert.equal(document.querySelector('#geo-map-result').childElementCount, 0);
+  assert.equal(root.querySelectorAll('input[data-target-index]').length, 1);
+  for (const action of ['none', 'all']) {
+    root.querySelector(`[data-filter-action="${action}"]`).click(); drain(queue);
+    assert.equal(document.querySelectorAll('*').length, MAX_DOCUMENT_ELEMENTS);
+    assert.equal(root.querySelector('input').checked, action === 'all');
+  }
+  ballast.remove(); root.querySelector('[data-filter-action="all"]').click(); drain(queue);
+  assert.equal(document.querySelector('#geo-map-result canvas').dataset.markers, '1');
+  app.destroy();
+});
+
+for (const view of ['geo-map', 'topology']) for (const capacity of ['one-slot-deficit', 'zero-remaining', 'exact-fit']) {
+  test(`${view} selector admission is atomic at ${capacity} and recovers without refetch`, async () => {
+    const queue = []; let requests = 0;
+    const next = report('selector-admission', { results: [compactTraceResult('budget.example')], compact_topology: compactTopology() });
+    const { app, dom, document } = setup(async () => { requests++; return response(JSON.stringify(next)); }, {
+      url: `https://budget.example/#${view}`,
+      scheduler: { schedule(callback) { queue.push(callback); return queue.length; }, cancel() {} },
+      configureWindow(win) { win.HTMLCanvasElement.prototype.getContext = () => null; }
+    });
+    try {
+      const navigate = async target => { document.querySelector(`[data-view-link="${target}"]`).click(); await flush(); drain(queue); };
+      await flush(); await app.start('topology'); drain(queue);
+      const filter = document.querySelector(view === 'geo-map' ? '#geo-target-filter' : '#topology-target-filter');
+      const root = document.querySelector(view === 'geo-map' ? '#geo-map-result' : '#topology-result');
+      const status = document.querySelector(view === 'geo-map' ? '#geo-render-status' : '#topology-render-status');
+      const catalogElements = filter.querySelectorAll('*').length;
+      assert.equal(catalogElements, view === 'geo-map' ? 11 : 14);
+      filter.querySelector('[data-filter-action="none"]').click(); drain(queue);
+      const owned = app.getOwnedReport('topology'), raw = JSON.stringify(owned);
+      await navigate('diagnostics');
+      const ballast = document.createElement('div'); document.body.append(ballast);
+      const before = capacity === 'zero-remaining' ? MAX_DOCUMENT_ELEMENTS : MAX_DOCUMENT_ELEMENTS - catalogElements + (capacity === 'one-slot-deficit' ? 1 : 0);
+      ballast.append(...Array.from({ length: before - document.querySelectorAll('*').length }, () => document.createElement('i')));
+      assert.equal(document.querySelectorAll('*').length, before);
+      const ballastElements = [...ballast.children];
+      let peak = before;
+      for (const method of ['append', 'replaceChildren']) {
+        const original = dom.window.Element.prototype[method];
+        dom.window.Element.prototype[method] = function (...items) {
+          const value = original.apply(this, items);
+          peak = Math.max(peak, document.querySelectorAll('*').length);
+          return value;
+        };
+      }
+      await navigate(view);
+      assert.ok(peak <= MAX_DOCUMENT_ELEMENTS, `publication peak ${peak} exceeds document ceiling`);
+      assert.deepEqual([...ballast.children], ballastElements, 'foreign capacity must not be reclaimed');
+      assert.equal(document.querySelector('#topology-workspace').dataset.state, 'render-limited');
+      assert.equal(root.childElementCount, 0, 'no map may masquerade as fully controllable');
+      assert.equal(root.getAttribute('aria-busy'), 'false');
+      assert.equal(document.querySelector('#download-topology').disabled, false);
+      assert.equal(app.getOwnedReport('topology'), owned);
+      if (capacity === 'exact-fit') {
+        assert.equal(document.querySelectorAll('*').length, MAX_DOCUMENT_ELEMENTS);
+        assert.equal(filter.querySelectorAll('*').length, catalogElements);
+        assert.equal(filter.querySelector('input[data-target-index]').checked, false);
+        for (const action of ['all', 'none']) {
+          const button = filter.querySelector(`[data-filter-action="${action}"]`); button.focus(); button.click(); drain(queue);
+          assert.equal(document.activeElement, filter.querySelector(`[data-filter-action="${action}"]`));
+          assert.equal(document.querySelectorAll('*').length, MAX_DOCUMENT_ELEMENTS);
+        }
+      } else {
+        assert.equal(document.querySelectorAll('*').length, before, 'refusal publishes zero elements');
+        assert.equal(filter.querySelectorAll('*').length, 0, 'never publish a partial catalog');
+        assert.match(filter.textContent, /문서 요소 한도.*선택/);
+        assert.match(status.textContent, /선택.*유지.*다시/);
+      }
+      ballast.remove(); await navigate('diagnostics'); await navigate(view);
+      assert.equal(filter.querySelectorAll('*').length, catalogElements);
+      assert.equal(filter.querySelector('input[data-target-index]').checked, false, 'all-off selection survives refusal');
+      assert.doesNotMatch(filter.textContent, /문서 요소 한도/);
+      filter.querySelector('[data-filter-action="all"]').click(); drain(queue);
+      assert.ok(root.querySelector('canvas'), 'normal action recovers full rendering');
+      assert.equal(filter.querySelector('input[data-target-index]').checked, true);
+      assert.equal(requests, 1); assert.equal(app.getOwnedReport('topology'), owned); assert.equal(JSON.stringify(owned), raw);
+      assert.ok(peak <= MAX_DOCUMENT_ELEMENTS);
+    } finally { app.destroy(); dom.window.close(); }
+  });
+}
+
 test('topology checkbox keeps focus across its synchronous filter rebuild', async () => {
   const jobs = []; let id = 0;
   const scheduler = { schedule(callback) { jobs.push({ id: ++id, callback }); return id; }, cancel() {} };
@@ -842,7 +1051,7 @@ test('maximum report navigation and budgeted label import stay within the docume
 
   await app.start('diagnostics'); observe();
   const initialElements = document.querySelectorAll('*').length;
-  assert.equal(initialElements, 760, 'maximum valid report baseline including Geo detail/navigation and shared-prefix controls');
+  assert.equal(initialElements, 761, 'maximum valid report baseline including the static Geo target-selector root');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -2026,7 +2235,8 @@ test('active topology and Geo views render lazily, unmount each other, and filte
   const firstCanvas = document.querySelector('#geo-map-result canvas');
   assert.equal(firstCanvas.dataset.markers, '2');
 
-  const target = document.querySelector('#topology-target-filter [data-target-index="1"]');
+  assert.equal(document.querySelector('#topology-target-filter').childElementCount, 0);
+  const target = document.querySelector('#geo-target-filter [data-target-index="1"]');
   target.checked = false;
   target.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   assert.equal(document.querySelector('#topology-result').childElementCount, 0);

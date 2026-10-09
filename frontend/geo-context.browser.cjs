@@ -46,6 +46,13 @@ const server=http.createServer((req,res)=>{const name=new URL(req.url,'http://lo
    window.flush=()=>{const batch=[...jobs.values()];jobs.clear();batch.forEach(f=>f());};
    window.redraw=()=>{window.calls=[];dispatchEvent(new Event('resize'));flush();};
    window.pixels=()=>ctx.getImageData(0,0,c.width,c.height).data;
+   // Line/arrow oracle only: target-colored marker disks and their rings are
+   // tested independently by geo-target-colors.browser.cjs. Exclude every
+   // bounded world copy, not the entire canvas or a broad route corridor.
+   window.markerMask=()=>{const ratio=+C.dataset.dpr,w=C.width/ratio,h=C.height/ratio,[lon,lat]=C.dataset.center.split(',').map(Number),s=+C.dataset.scale;
+    const centers=M.groupGeoMarkers(geo.markers).flatMap(g=>[-360,0,360].map(shift=>({x:w/2+(g.longitude+shift-lon)*s,y:h/2+(lat-g.latitude)*s})));
+    return (x,y)=>centers.some(p=>Math.hypot(x-p.x,y-p.y)<=22);
+   };
    window.ink=()=>{const original=pixels().slice();omit='borders';redraw();let border=0;const noBorder=pixels();for(let i=0;i<original.length;i+=4)if(original[i]!==noBorder[i]||original[i+1]!==noBorder[i+1]||original[i+2]!==noBorder[i+2])border++;omit='';redraw();const labels=calls.slice();omit='labels';redraw();const noLabel=pixels();const labelInk=labels.map(l=>{let count=0;const ratio=+C.dataset.dpr;for(let y=Math.max(0,Math.floor((l.y-l.ascent-2)*ratio));y<Math.min(C.height,(l.y+l.descent+2)*ratio);y++)for(let x=Math.max(0,Math.floor((l.x-l.width/2-2)*ratio));x<Math.min(C.width,(l.x+l.width/2+2)*ratio);x++){const i=(y*C.width+x)*4;if(original[i]!==noLabel[i]||original[i+1]!==noLabel[i+1]||original[i+2]!==noLabel[i+2])count++;}return {...l,ink:count};});omit='';redraw();return {border,labels:labelInk,data:{...C.dataset},overflow:document.documentElement.scrollWidth>innerWidth};};
    mount({markers:[],segments:[]});
   },width);
@@ -64,7 +71,8 @@ const server=http.createServer((req,res)=>{const name=new URL(req.url,'http://lo
    const markers=[['a',-30,-10],['b',-10,-10],['c',10,10],['d',30,10]].map(([node_id,longitude,latitude])=>({node_id,longitude,latitude}));
    const routes=[2,5,7,28,42].map(result_index=>({result_index,attempt:99,node_ids:['a','b']}));routes.push({result_index:1,attempt:2,node_ids:['c','d']});
    mount({markers,segments:[{from:'a',to:'b'},{from:'c',to:'d'}]},{nodes:markers.map(m=>({id:m.node_id})),routes});
-   const countColor=color=>{const rgb=color.match(/\w\w/g).map(x=>parseInt(x,16));const p=pixels();let n=0;for(let i=0;i<p.length;i+=4)if(rgb.every((v,k)=>p[i+k]===v))n++;return n;};
+   const masked=markerMask(),ratio=+C.dataset.dpr;
+   const countColor=color=>{const rgb=color.match(/\w\w/g).map(x=>parseInt(x,16));const p=pixels();let n=0;for(let i=0;i<p.length;i+=4)if(rgb.every((v,k)=>p[i+k]===v)&&!masked((i/4%C.width+.5)/ratio,(Math.floor(i/4/C.width)+.5)/ratio))n++;return n;};
    const colors=[2,5,7,28].map(V.routeColor),before=colors.map(countColor),unrelatedBefore=countColor(V.routeColor(1));
    list.children[3].click();flush();const after=colors.map(countColor),unrelatedAfter=countColor(V.routeColor(1));
    return {colors,before,after,unrelatedBefore,unrelatedAfter,lanes:C.dataset.laneCopies};
@@ -75,7 +83,8 @@ const server=http.createServer((req,res)=>{const name=new URL(req.url,'http://lo
     const geo={markers:[{node_id:'a',longitude:175*direction,latitude:0},{node_id:'b',longitude:-175*direction,latitude:0}],segments:[{from:'a',to:'b'}]};
     const f={nodes:[{id:'a'},{id:'b'}],routes:[{result_index:7,attempt:99,node_ids:['a','b']}]};mount(geo,f);
     const p=pixels(),s=+C.dataset.scale,half=C.width/2,ratio=+C.dataset.dpr,rgb=V.routeColor(7).match(/\w\w/g).map(x=>parseInt(x,16));let route=0,far=0,left=0,right=0;
-    for(let y=0;y<C.height;y++)for(let x=0;x<C.width;x++){const i=(y*C.width+x)*4;if(rgb.every((v,k)=>p[i+k]===v)){route++;if(Math.abs((x+.5)/ratio-half/ratio)>5*s+3||Math.abs((y+.5)/ratio-180)>8)far++;if(Math.abs((x+.5-half)/ratio)<7&&Math.abs((y+.5)/ratio-180)>1.25){if(x+.5<half)left++;else right++;}}}
+    const masked=markerMask();
+    for(let y=0;y<C.height;y++)for(let x=0;x<C.width;x++){const i=(y*C.width+x)*4;if(rgb.every((v,k)=>p[i+k]===v)&&!masked((x+.5)/ratio,(y+.5)/ratio)){route++;if(Math.abs((x+.5)/ratio-half/ratio)>5*s+3||Math.abs((y+.5)/ratio-180)>8)far++;if(Math.abs((x+.5-half)/ratio)<7&&Math.abs((y+.5)/ratio-180)>1.25){if(x+.5<half)left++;else right++;}}}
     return {route,far,left,right,data:{...C.dataset}};
    },direction);console.log('seam',width,direction,JSON.stringify(result));await page.locator('#probe').screenshot({path:path.join(out,`seam-${width}-${direction}.png`)});assert.ok(result.route>3);assert.equal(result.far,0);assert.ok(direction===1?result.left>result.right:result.right>result.left);seams.push({direction,...result});
   }

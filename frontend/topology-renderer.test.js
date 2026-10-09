@@ -34,6 +34,64 @@ function topologyModel(size = 220) {
   return { nodes, links: [], routes: [], serverTruncation: { truncated: false, reasons: [] }, adapterTruncation: { truncated: false, reasons: [] } };
 }
 
+test('Geo target legend admits twenty safe full names once per original result within actual DOM/chunk budgets', () => {
+  const model = topologyModel(500);
+  model.nodes.forEach((n,i) => Object.assign(n,{address:`8.1.${Math.floor(i/256)}.${i%256}`,public_ip:true,geolocation:{longitude:i/10,latitude:0}}));
+  const hostile = '<img src=x onerror=alert(1)> 긴대상'.repeat(8);
+  model.routes = Array.from({length:20},(_,i)=>({result_index:19-i,attempt:1,address:`${hostile}-${19-i}`,node_ids:model.nodes.slice(i*25,(i+1)*25).map(n=>n.id)}));
+  model.links=model.routes.flatMap(r=>r.node_ids.slice(1).map((to,i)=>({from:r.node_ids[i],to,status:'healthy'})));
+  model.routes.push({...model.routes[0],attempt:2,node_ids:[...model.routes[0].node_ids]});
+  const h=harness(),before=JSON.stringify(model);
+  h.coordinator.start({ownerId:1,inputSignature:'targets',view:'geo',model,root:h.root,status:h.status});h.runAll();
+  const entries=[...h.root.querySelectorAll('.geo-target-entry')],plan=h.states.at(-1).plan;
+  assert.equal(entries.length,20,'every admitted target, not only painted colors');
+  assert.equal(new Set(entries.map(e=>e.style.getPropertyValue('--route-color'))).size,20);
+  entries.forEach((entry,i)=>{assert.equal(entry.dataset.resultIndex,String(i));assert.equal(entry.textContent,`대상 ${i+1} · ${hostile}-${i}`);assert.equal(entry.children.length,0);});
+  const legend=h.root.querySelector('.geo-target-legend');
+  assert.equal(legend.getAttribute('role'),'region');assert.equal(legend.tabIndex,0);
+  assert.match(legend.getAttribute('aria-label'),/대상.*범례/);
+  assert.match(legend.textContent,/RTT.*상태.*아님/);assert.match(legend.textContent,/4.*회색/);
+  assert.equal(h.root.querySelectorAll('img,script').length,0);
+  assert.equal(h.root.querySelectorAll('.topology-geo-list button').length,100);
+  assert.equal(plan.geo.markers.length,500);
+  assert.equal(h.root.querySelectorAll('*').length,plan.plannedElements);
+  assert.ok(plan.chunks.every(c=>c.reduce((n,item)=>n+item.domCost,0)<=100));
+  assert.ok(h.document.querySelectorAll('*').length<=1200);assert.equal(JSON.stringify(model),before);
+  h.coordinator.dispose();h.dom.window.close();
+});
+
+test('Geo refuses partial legends and admits the complete legend before zero or partial location slots', () => {
+  const model=topologyModel(20);
+  model.nodes.forEach(n=>Object.assign(n,{public_ip:true,geolocation:{longitude:0,latitude:0}}));
+  model.routes=model.nodes.map((n,result_index)=>({result_index,attempt:1,address:`target-${result_index}`,node_ids:[n.id]}));
+  for(const dynamic of [0,1,2,22,23,24,25,44]){
+    const h=harness();
+    const existing=1200-300-dynamic;
+    while(h.document.querySelectorAll('*').length<existing)h.document.body.append(h.document.createElement('i'));
+    h.coordinator.start({ownerId:1,inputSignature:'budget',view:'geo',model,root:h.root,status:h.status});h.runAll();
+    if(dynamic<23){assert.equal(h.states.at(-1).renderable,false);assert.equal(h.root.children.length,0);assert.match(h.status.textContent,/문서 요소 한도/);}
+    else{assert.equal(h.root.querySelectorAll('.geo-target-entry').length,20);assert.equal(h.root.querySelectorAll('.topology-geo-list button').length,Math.min(20,Math.max(0,dynamic-24)));assert.equal(h.root.querySelectorAll('*').length,h.states.at(-1).plan.plannedElements);}
+    assert.ok(h.document.querySelectorAll('*').length<=1200);h.coordinator.dispose();h.dom.window.close();
+  }
+});
+
+test('Geo legend belongs to the current report/filter owner even after stale chunk and predecessor cleanup', () => {
+  const model=topologyModel(2);
+  model.routes=[{result_index:7,attempt:1,address:'old-name',node_ids:['n0']},{result_index:2,attempt:1,address:'other',node_ids:['n1']}];
+  const h=harness();
+  h.coordinator.start({ownerId:1,inputSignature:'old',view:'geo',model,root:h.root,status:h.status});
+  const stale=h.queue.map(j=>j.callback);h.runAll();
+  assert.equal(h.root.querySelectorAll('.geo-target-entry').length,2,'unlocated targets still have a legend');
+  const color=h.root.querySelector('[data-result-index="7"]').style.getPropertyValue('--route-color');
+  const successor=new TopologyRenderCoordinator({document:h.document,schedule:h.schedule,cancelScheduled:h.cancelScheduled,ownsRequest:()=>true});
+  const filtered={...model,routes:[{...model.routes[0],address:'new <name>'}]};
+  successor.start({ownerId:2,inputSignature:'new',view:'geo',model:filtered,root:h.root,status:h.status});h.runAll();
+  stale.forEach(fn=>fn());h.coordinator.dispose();
+  assert.equal(h.root.querySelectorAll('.geo-target-entry').length,1);assert.equal(h.root.querySelector('.geo-target-entry').textContent,'대상 8 · new <name>');assert.equal(h.root.querySelector('.geo-target-entry').style.getPropertyValue('--route-color'),color);
+  successor.start({ownerId:2,inputSignature:'none',view:'geo',model:{nodes:[],links:[],routes:[]},root:h.root,status:h.status});h.runAll();assert.equal(h.root.querySelectorAll('.geo-target-entry').length,0);
+  successor.dispose();h.dom.window.close();
+});
+
 function fakeContext() {
   const calls = [];
   const state = { textAlign: 'right', textBaseline: 'alphabetic' };

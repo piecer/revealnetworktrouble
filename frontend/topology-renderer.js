@@ -347,6 +347,25 @@ function materializeTopologyItem(item, detachedDocument, memberships) {
       canvas.height = 540;
       return canvas;
     }
+    case 'geo-target-legend': {
+      const legend = detachedDocument.createElement('section');
+      legend.className = 'geo-target-legend';
+      legend.tabIndex = 0;
+      legend.setAttribute('role', 'region');
+      legend.setAttribute('aria-label', '점검 대상 색상 범례 · 스크롤하여 전체 대상 확인');
+      const help = detachedDocument.createElement('p');
+      help.textContent = '점·선 색 = 점검 대상 (RTT·상태 아님). 같은 대상의 시도는 같은 색. 공유 점·동일 좌표는 최대 4색 부채꼴, 추가 대상·소속 미확인은 회색. 전체 소속은 위치 상세, 숫자는 동일 좌표 IP 수.';
+      legend.append(help);
+      return legend;
+    }
+    case 'geo-target-entry': {
+      const entry = detachedDocument.createElement('div');
+      entry.className = 'geo-target-entry';
+      setData(entry, 'result-index', value.result_index);
+      entry.style.setProperty('--route-color', routeColor(value.result_index));
+      entry.textContent = `대상 ${value.result_index + 1} · ${value.address || '이름 미확인'}`;
+      return entry;
+    }
     case 'geo-accessible-list': {
       const list = detachedDocument.createElement('div');
       list.className = 'topology-geo-list';
@@ -691,6 +710,8 @@ class TopologyRenderCoordinator {
 
   #organizeCommittedDOM(session) {
     if (session.view === 'geo') {
+      const legend = session.root.querySelector('.geo-target-legend');
+      if (legend) for (const item of [...session.root.children]) if (item.classList.contains('geo-target-entry')) legend.append(item);
       const list = session.root.querySelector('.topology-geo-list');
       if (list) for (const item of [...session.root.children]) if (item.tagName === 'BUTTON') list.append(item);
     } else if (session.view === 'labels') {

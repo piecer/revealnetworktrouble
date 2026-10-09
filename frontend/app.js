@@ -146,6 +146,7 @@ export const SERVER_GREETING_SCOPE = 'Expected server-first greeting observed; c
 export const MAX_DOCUMENT_ELEMENTS = 1200;
 const FINDING_ACCORDIONS = new WeakMap();
 const LABEL_ROOT_OWNERS = new WeakMap();
+const TARGET_FILTER_OWNERS = new WeakMap();
 
 function findingPresentation(code, cause, expectation, limitation, action, signals = ['error_code']) {
   const key = `finding.${code}`;
@@ -576,6 +577,7 @@ function activateView(doc, requestedView) {
 export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.bind(win), clock = () => Date.now(), setTimer = win.setTimeout.bind(win), clearTimer = win.clearTimeout.bind(win), scheduler, scheduleLabelRender = callback => win.queueMicrotask(callback), cancelLabelRender = () => {} } = {}) {
   let activeInstance = true;
   const labelInstance = {};
+  const targetFilterInstance = {};
   const lifecycle = new win.AbortController();
   const listeners = new Set();
   const listen = (target, type, handler, options) => {
@@ -948,10 +950,18 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     const p = owned ? finalTopologyPlan.plan.presentation : null;
     const screen = p ? ` · 화면 노드 ${p.nodes.length} · 관측 링크 ${p.links.length} · 점선 구간 ${p.connectors.length}` : '';
     line.textContent = `${serverText} · 검증 원본 ${viewText}${screen}${limited}`;
-    root.append(line);
+    // The complete selector has priority; summary text needs no new element.
+    if (doc.querySelectorAll('*').length < MAX_DOCUMENT_ELEMENTS) root.append(line);
+    else root.textContent = line.textContent;
+  }
+  function clearTargetFilter(selector) {
+    const filter = doc.querySelector(selector);
+    if (TARGET_FILTER_OWNERS.get(filter) === targetFilterInstance) filter.replaceChildren();
   }
   function renderTopologyTargetFilter(results, restore = null) {
-    const filter = doc.querySelector('#topology-target-filter');
+    const geo = activeView === 'geo-map';
+    const filter = doc.querySelector(geo ? '#geo-target-filter' : '#topology-target-filter');
+    if (TARGET_FILTER_OWNERS.get(filter) !== targetFilterInstance) return false;
     const active = restore || (() => {
       const element = doc.activeElement;
       if (!filter.contains(element)) return null;
@@ -961,14 +971,25 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       return null;
     })();
     filter.replaceChildren();
-    const heading = makeNode(doc, 'div'); heading.append(makeNode(doc, 'strong', 'TRACE 경로 선택'), makeNode(doc, 'span', `${selectedTopologyTargets.size}/${results.length}개 표시`));
+    const heading = makeNode(doc, 'div'); heading.append(makeNode(doc, 'strong', geo ? '지도 점검대상 선택' : 'TRACE 경로 선택'), makeNode(doc, 'span', `${selectedTopologyTargets.size}/${results.length}개 표시`));
     const actions = makeNode(doc, 'div', undefined, 'target-filter-actions');
     for (const [action, text] of [['all', '전체 선택'], ['none', '전체 해제']]) { const button = makeNode(doc, 'button', text); button.type = 'button'; button.dataset.filterAction = action; actions.append(button); }
-    const unknown = makeNode(doc, 'label', undefined, 'unknown-node-toggle'); const unknownInput = makeNode(doc, 'input'); unknownInput.type = 'checkbox'; unknownInput.dataset.toggleUnresponsive = ''; unknownInput.checked = showUnresponsiveTopologyNodes; unknown.append(unknownInput, makeNode(doc, 'span', '응답없음 노드')); actions.append(unknown);
+    if (!geo) {
+      const unknown = makeNode(doc, 'label', undefined, 'unknown-node-toggle'); const unknownInput = makeNode(doc, 'input'); unknownInput.type = 'checkbox'; unknownInput.dataset.toggleUnresponsive = ''; unknownInput.checked = showUnresponsiveTopologyNodes; unknown.append(unknownInput, makeNode(doc, 'span', '응답없음 노드')); actions.append(unknown);
+    }
     const toggles = makeNode(doc, 'div', undefined, 'target-toggles');
     results.forEach((result, index) => { const label = makeNode(doc, 'label'); label.style.setProperty('--route-color', routeColor(index)); const input = makeNode(doc, 'input'); input.type = 'checkbox'; input.dataset.targetIndex = String(index); input.checked = selectedTopologyTargets.has(index); label.append(input, makeNode(doc, 'i'), makeNode(doc, 'span', `R${index + 1} · ${result.address}`)); toggles.append(label); });
-    filter.append(heading, actions, toggles);
+    const catalog = doc.createDocumentFragment();
+    catalog.append(heading, actions, toggles);
+    // Recount after removing only our predecessor catalog and view content.
+    // Admit every control together; never publish a partial target inventory.
+    if (doc.querySelectorAll('*').length + catalog.querySelectorAll('*').length > MAX_DOCUMENT_ELEMENTS) {
+      filter.textContent = '문서 요소 한도로 점검대상 선택과 경로 화면을 표시할 수 없습니다. 보고서와 선택은 유지됩니다. 공간을 확보한 후 다른 화면으로 이동했다가 다시 돌아오세요.';
+      return false;
+    }
+    filter.append(catalog);
     if (active?.selector) filter.querySelector(active.selector)?.focus();
+    return true;
   }
   function resetGeoDetail() {
     doc.querySelector('#geo-node-detail').textContent = '위치가 있는 경로를 불러오세요.';
@@ -984,6 +1005,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
         message: doc.querySelector('#geo-map-message'), zoomIn: doc.querySelector('#geo-zoom-in'), zoomOut: doc.querySelector('#geo-zoom-out'), fit: doc.querySelector('#geo-fit') } });
   }
   function startActiveTopologyRender() {
+    if (TARGET_FILTER_OWNERS.get(doc.querySelector(activeView === 'geo-map' ? '#geo-target-filter' : '#topology-target-filter')) !== targetFilterInstance) return;
     unmountDiagnosticsPresentation();
     unmountIPLabelTable();
     renderCoordinator.cancel('view-change');
@@ -997,11 +1019,21 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     }
     const geo = activeView === 'geo-map';
     if (geo) stopTopologyResizeObservation(); else ensureTopologyResizeObservation();
+    clearTargetFilter(geo ? '#topology-target-filter' : '#geo-target-filter');
+    doc.querySelector('#topology-result-summary').replaceChildren();
     const root = doc.querySelector(geo ? '#geo-map-result' : '#topology-result');
     const status = doc.querySelector(geo ? '#geo-render-status' : '#topology-render-status');
     renderPhase = 'rendering';
     finalTopologyPlan = undefined;
-    if (!geo) { renderTopologySummary(); renderTopologyTargetFilter(currentTopologyReport.results || []); }
+    if (!renderTopologyTargetFilter(currentTopologyReport.results || [])) {
+      root.replaceChildren();
+      root.setAttribute('aria-busy', 'false');
+      status.textContent = doc.querySelector(geo ? '#geo-target-filter' : '#topology-target-filter').textContent;
+      renderPhase = 'render-limited';
+      renderState('topology');
+      return;
+    }
+    if (!geo) renderTopologySummary();
     const model = filteredTopologyModel();
     if (!model.nodes.some(node => node.id === selectedNodeId)) selectedNodeId = null;
     renderCoordinator.start({
@@ -1105,7 +1137,8 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   function unmountInactiveTopologyPresentation() {
     disposeTopologyRender('view-change');
     doc.querySelector('#topology-result-summary').replaceChildren();
-    doc.querySelector('#topology-target-filter').replaceChildren();
+    clearTargetFilter('#topology-target-filter');
+    clearTargetFilter('#geo-target-filter');
   }
   function readInput(purpose) {
     const common = { apiBaseURL: doc.querySelector('#api-base-url').value, authEnabled: doc.querySelector('#public-auth-enabled').checked };
@@ -1126,7 +1159,8 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       doc.querySelector('#analysis-report').replaceChildren(); doc.querySelector('#analysis-report').hidden = true; doc.querySelector('#summary').replaceChildren(); doc.querySelector('#results').replaceChildren(); currentReport = undefined;
     } else {
       disposeTopologyRender('clear', true);
-      doc.querySelector('#topology-result-summary').replaceChildren(); doc.querySelector('#topology-target-filter').replaceChildren();
+      doc.querySelector('#topology-result-summary').replaceChildren();
+      clearTargetFilter('#topology-target-filter'); clearTargetFilter('#geo-target-filter');
       currentTopologyReport = undefined; currentTopologyModel = undefined; selectedTopologyTargets = new Set();
       selectedNodeId = null;
       resetGeoDetail();
@@ -1375,17 +1409,30 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     const target = event.key === 'Home' ? toggles[0] : event.key === 'End' ? toggles.at(-1) : event.key === 'ArrowDown' ? toggles[(index + 1) % toggles.length] : event.key === 'ArrowUp' ? toggles[(index - 1 + toggles.length) % toggles.length] : null;
     if (target) { event.preventDefault(); target.focus(); }
   });
-  const topologyFilter = doc.querySelector('#topology-target-filter');
-  listen(topologyFilter, 'change', event => {
-    if (!currentTopologyReport || lanes.topology.phase !== 'ready') return;
-    if (event.target.matches('[data-toggle-unresponsive]')) showUnresponsiveTopologyNodes = event.target.checked;
-    else { const index = Number(event.target.dataset.targetIndex); if (!Number.isInteger(index)) return; if (event.target.checked) selectedTopologyTargets.add(index); else selectedTopologyTargets.delete(index); }
-    startActiveTopologyRender();
-  });
-  listen(topologyFilter, 'click', event => {
-    if (!currentTopologyReport || lanes.topology.phase !== 'ready' || !event.target.dataset.filterAction) return;
-    selectedTopologyTargets = event.target.dataset.filterAction === 'all' ? new Set(currentTopologyReport.results.map((_, index) => index)) : new Set(); startActiveTopologyRender();
-  });
+  for (const [view, selector] of [['topology', '#topology-target-filter'], ['geo-map', '#geo-target-filter']]) {
+    const filter = doc.querySelector(selector);
+    TARGET_FILTER_OWNERS.set(filter, targetFilterInstance);
+    filter.replaceChildren();
+    listen(filter, 'change', event => {
+      if (TARGET_FILTER_OWNERS.get(filter) !== targetFilterInstance || activeView !== view || !currentTopologyReport || lanes.topology.phase !== 'ready') return;
+      if (view === 'topology' && event.target.matches('input[type="checkbox"][data-toggle-unresponsive]')) showUnresponsiveTopologyNodes = event.target.checked;
+      else {
+        if (!event.target.matches('input[type="checkbox"][data-target-index]')) return;
+        const token = event.target.dataset.targetIndex;
+        const index = Number(token);
+        if (!Number.isInteger(index) || String(index) !== token || index < 0 || index >= currentTopologyReport.results.length) return;
+        if (event.target.checked) selectedTopologyTargets.add(index); else selectedTopologyTargets.delete(index);
+      }
+      startActiveTopologyRender();
+    });
+    listen(filter, 'click', event => {
+      if (TARGET_FILTER_OWNERS.get(filter) !== targetFilterInstance || activeView !== view || !currentTopologyReport || lanes.topology.phase !== 'ready' || !event.target.matches('button[data-filter-action]')) return;
+      const action = event.target.dataset.filterAction;
+      if (action !== 'all' && action !== 'none') return;
+      selectedTopologyTargets = action === 'all' ? new Set(currentTopologyReport.results.map((_, index) => index)) : new Set();
+      startActiveTopologyRender();
+    });
+  }
   const topologyRoot = doc.querySelector('#topology-result');
   const topologyViewControls = doc.querySelector('#topology-view-controls');
   listen(topologyViewControls, 'change', event => {
@@ -1655,6 +1702,8 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     active.clear();
     unmountIPLabelTable();
     try { renderCoordinator?.dispose(); } catch { /* scheduler cleanup must not break destruction */ }
+    clearTargetFilter('#topology-target-filter');
+    clearTargetFilter('#geo-target-filter');
     renderSource = undefined; currentReport = undefined; currentTopologyReport = undefined; currentTopologyModel = undefined;
     return true;
   }

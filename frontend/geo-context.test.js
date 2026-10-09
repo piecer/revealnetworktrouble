@@ -65,6 +65,54 @@ test('labels fully cull text rectangles, reserve markers/message/attribution and
 });
 
 const point=(id,longitude=0,latitude=0)=>({node_id:id,longitude,latitude});
+test('target marker fill follows original result identity, not attempt or current slot',()=>{
+ const markers=[point('a',-20),point('b',20),point('orphan',50)];
+ const routes=[{result_index:7,attempt:1,address:'alpha.example',node_ids:['a']},{result_index:7,attempt:9,address:'alpha.example',node_ids:['a']},{result_index:2,attempt:1,address:'beta.example',node_ids:['b']}];
+ const h=harness({markers,routes});
+ const circles=h.calls.filter(c=>c.kind==='arc'&&c.args[2]===5);
+ assert.deepEqual(circles.map(c=>c.fill),[routeColor(7),routeColor(2),'#94a3b8']);
+ assert.match(h.controls.list.children[0].textContent,/대상 8/);
+ assert.match(h.controls.detail.textContent,/대상 8 · alpha\.example/);
+ assert.match(h.controls.detail.textContent,/경로 8 · 시도 9/);
+ h.controls.list.children[2].click();assert.match(h.controls.detail.textContent,/대상 소속 미확인/);
+ h.close();
+ const filtered=harness({markers:[markers[0]],routes:routes.slice(0,2)});
+ assert.equal(filtered.calls.find(c=>c.kind==='arc'&&c.args[2]===5).fill,routeColor(7));filtered.close();
+});
+test('shared IP and coincident different IPs paint all bounded target sectors without false ownership',()=>{
+ for(const grouped of [false,true]) {
+  const markers=grouped?[point('a'),point('b')]:[point('a')];
+  const routes=[{result_index:7,attempt:1,address:'alpha',node_ids:['a']},{result_index:2,attempt:1,address:'beta',node_ids:[grouped?'b':'a']},{result_index:7,attempt:2,address:'alpha',node_ids:['a']}];
+  const h=harness({markers,routes});
+  const sectors=h.calls.filter(c=>c.kind==='arc'&&c.args[4]-c.args[3]<Math.PI*2);
+  assert.deepEqual(sectors.map(c=>c.fill),[routeColor(2),routeColor(7)]);
+  assert.ok(sectors.every(c=>c.args[2]===(grouped?13:8)&&c.args[4]-c.args[3]===Math.PI));
+  assert.match(h.controls.detail.textContent,/대상 3 · beta/);assert.match(h.controls.detail.textContent,/대상 8 · alpha/);
+  if(grouped){assert.match(h.controls.detail.textContent,/동일 좌표 전체 대상/);assert.ok(h.calls.some(c=>c.kind==='fillText'&&c.args[0]==='2'));}
+  assert.ok(h.calls.some(c=>c.kind==='stroke'&&c.stroke==='#ffffff'),'selection ring retained');h.close();
+ }
+});
+test('twenty memberships retain all names but paint four colors plus an explicit neutral overflow sector',()=>{
+ const routes=Array.from({length:20},(_,result_index)=>({result_index,attempt:1,address:`target-${result_index}`,node_ids:['a']}));
+ for(const mixed of [false,true]){
+  const h=harness({markers:mixed?[point('a'),point('unknown')]:[point('a')],routes});
+  const sectors=h.calls.filter(c=>c.kind==='arc'&&c.args[4]-c.args[3]<Math.PI*2);
+  assert.deepEqual(sectors.map(c=>c.fill),[0,1,2,3].map(routeColor).concat('#94a3b8'));
+  for(const route of routes)assert.ok(h.controls.detail.textContent.includes(`대상 ${route.result_index+1} · ${route.address}`));
+  assert.match(h.controls.detail.textContent,/16개 색 생략/);assert.match(h.controls.list.children[0].getAttribute('aria-label'),/16개 색 생략/);
+  if(mixed)assert.match(h.controls.detail.textContent,/소속 미확인 구성원/);
+  h.close();
+ }
+ const h=harness({markers:[point('a'),point('unknown')],routes:[routes[0]]});
+ assert.deepEqual(h.calls.filter(c=>c.kind==='arc'&&c.args[4]-c.args[3]<Math.PI*2).map(c=>c.fill),[routeColor(0),'#94a3b8']);h.close();
+});
+test('target memberships survive unlocated selection and stale map owners cannot recolor a replacement',()=>{
+ const h=harness({markers:[point('a')],nodes:[{id:'a'},{id:'unlocated'}],routes:[{result_index:19,attempt:1,address:'old-target',node_ids:['a','unlocated']}],selectedNodeId:'unlocated'});
+ assert.match(h.controls.detail.textContent,/대상 20 · old-target/);assert.match(h.controls.detail.textContent,/좌표 미확인/);
+ h.controls.next.click();const stale=[...h.jobs.values()];
+ const replacement=map.mountGeoMap({canvas:h.canvas,geo:h.geo,facts:{nodes:[{id:'a'}],routes:[{result_index:7,attempt:1,address:'new-target',node_ids:['a']}]},controls:h.controls,list:h.controls.list,win:h.win,scheduler:h.scheduler,signal:new AbortController().signal});
+ const text=h.controls.detail.textContent;h.calls.length=0;stale.forEach(fn=>fn());h.dispose();assert.equal(h.calls.length,0);assert.equal(h.controls.detail.textContent,text);assert.match(text,/대상 8 · new-target/);assert.doesNotMatch(text,/old-target/);replacement();h.win.close();
+});
 test('exact groups canonicalize seam/signed zero only, retaining order and tiny coordinate differences',()=>{
  assert.equal(typeof map.groupGeoMarkers,'function');
  const markers=[point('a',180,-0),point('b',-180,0),point('c',540),point('d',0),point('e',1e-14),point('f',0,1e-14)];

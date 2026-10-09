@@ -22,6 +22,8 @@ const DOM_COSTS = Object.freeze({
     canvas: 1,
     accessibleList: 1,
     accessibleItem: 1,
+    targetLegend: 2,
+    targetEntry: 1,
     maxAccessibleItems: 100,
     marker: 0,
     segment: 0,
@@ -520,7 +522,7 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
     ? DOM_COSTS.topology.chromeReserve
     : DOM_COSTS[view].fixedReserve;
   const reserve = requestedReserve;
-  const renderable = documentRemaining >= requestedReserve;
+  let renderable = documentRemaining >= requestedReserve;
   const dynamicBudget = Math.max(0, availableElements - requestedReserve);
 
   const rawNodes = Array.isArray(model.nodes) ? model.nodes : [];
@@ -697,7 +699,19 @@ function planTopologyDOM(inputModel, inputOptions = {}) {
     for (const value of presentation.connectors) mount('topology-connector', value, DOM_COSTS.topology.link);
     for (const value of presentation.routes) mount('topology-route', value, DOM_COSTS.topology.route);
   } else if (view === 'geo') {
+    const targets = [...new Map(selectedRoutes.map(route => [route.result_index, route])).values()]
+      .sort((a, b) => a.result_index - b.result_index);
+    // Never show target-colored markers with a partially admitted identity key.
+    // List slots may shrink; the full legend and canvas are an atomic minimum.
+    const minimum = DOM_COSTS.geo.canvas + DOM_COSTS.geo.targetLegend + targets.length * DOM_COSTS.geo.targetEntry;
+    if (targets.length && dynamicBudget < minimum) {
+      renderable = false;
+      if (!reasons.includes('dom_budget')) reasons.push('dom_budget');
+    }
     mount('geo-canvas', null, DOM_COSTS.geo.canvas);
+    if (targets.length && mount('geo-target-legend', null, DOM_COSTS.geo.targetLegend)) {
+      for (const target of targets) mount('geo-target-entry', target, DOM_COSTS.geo.targetEntry);
+    }
     if (mount('geo-accessible-list', null, DOM_COSTS.geo.accessibleList)) {
       for (const value of markers.slice(0, DOM_COSTS.geo.maxAccessibleItems)) {
         if (!mount('geo-accessible-item', value, DOM_COSTS.geo.accessibleItem)) break;
