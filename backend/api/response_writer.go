@@ -19,9 +19,11 @@ type responder interface {
 	setSecurityHeaders()
 	setCORSHeaders(string)
 	limitRequestBody(*http.Request, int64)
+	setIPContextDeadlines(*http.Request)
 	setReportWriteDeadline()
 	writeHealth(HealthResponse)
 	writeChecks(checksResponse)
+	writeIPContext(ipContextJSON)
 	writeReport(reportJSON)
 	writeNoContent()
 	writeAPIError(apiErrorKey, apiErrorMetadata)
@@ -30,6 +32,8 @@ type responder interface {
 
 // reportJSON is the closed, pre-validated report serialization accepted by the
 // sole report success capability. It is not an arbitrary response body API.
+type ipContextJSON struct{ payload []byte }
+
 type reportJSON struct {
 	payload []byte
 }
@@ -111,6 +115,22 @@ func (writer *responseWriter) limitRequestBody(request *http.Request, limit int6
 	request.Body = http.MaxBytesReader(writer, request.Body, limit)
 }
 
+func (writer *responseWriter) setIPContextDeadlines(request *http.Request) {
+	start := writer.observation.started
+	read, write := start.Add(time.Second), start.Add(8*time.Second)
+	if deadline, ok := request.Context().Deadline(); ok {
+		if deadline.Before(read) {
+			read = deadline
+		}
+		if deadline.Before(write) {
+			write = deadline
+		}
+	}
+	controller := http.NewResponseController(writer)
+	_ = controller.SetReadDeadline(read)
+	_ = controller.SetWriteDeadline(write)
+}
+
 func (writer *responseWriter) setReportWriteDeadline() {
 	defer func() { _ = recover() }()
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(reportWriteTimeout))
@@ -122,6 +142,10 @@ func (writer *responseWriter) writeHealth(response HealthResponse) {
 
 func (writer *responseWriter) writeChecks(response checksResponse) {
 	writer.writeTypedOK(response)
+}
+
+func (writer *responseWriter) writeIPContext(response ipContextJSON) {
+	writer.writeJSONPayload(http.StatusOK, TelemetryOutcomeOK, response.payload)
 }
 
 func (writer *responseWriter) writeReport(response reportJSON) {

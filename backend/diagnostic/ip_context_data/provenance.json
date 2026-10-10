@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "snapshots": [
+    {
+      "file": "iana-v4.json",
+      "source_url": "https://data.iana.org/rdap/ipv4.json",
+      "publication": "2019-06-07T19:00:02Z",
+      "retrieved_on": "2026-10-10",
+      "original_fetched_sha256": "f6ad30d1ebbd16fed6121e1eb54ae7db86edbf5e425345a040aa7893b0447d78",
+      "vendored_sha256": "30e683e3063602adf8fd0e214b2c256c8179cf46540c112a3d96ce492cb1492c",
+      "representation": "JSON-reserialized research artifact; original fetched-byte hash is not its hash"
+    },
+    {
+      "file": "iana-v6.json",
+      "source_url": "https://data.iana.org/rdap/ipv6.json",
+      "publication": "2024-11-01T22:00:01Z",
+      "retrieved_on": "2026-10-10",
+      "original_fetched_sha256": "3292eb71787b903f7a6798ff31f7f2239fb61ce346be142a3719ffa26deaf080",
+      "vendored_sha256": "40e4c2819a27f22e3e5093ab00475e7785238c72bb0dbe14997487ce78d7fb89",
+      "representation": "JSON-reserialized research artifact; original fetched-byte hash is not its hash"
+    }
+  ]
+}

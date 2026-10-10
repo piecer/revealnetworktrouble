@@ -33,7 +33,7 @@ final class GeoAddressPolicy {
         return true;
     }
 
-    private static byte[] parse(String address) {
+    static byte[] parse(String address) {
         if (address.indexOf(':') < 0) {
             String[] parts = address.split("\\.", -1);
             if (parts.length != 4) return null;
@@ -67,7 +67,7 @@ final class GeoAddressPolicy {
         return bytes;
     }
 
-    private static String canonicalV6(byte[] bytes) {
+    static String canonicalV6(byte[] bytes) {
         int[] words = new int[8];
         for (int i = 0; i < 8; i++) words[i] = (bytes[2 * i] & 255) * 256 + (bytes[2 * i + 1] & 255);
         int best = -1, longest = 1;

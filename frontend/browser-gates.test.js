@@ -63,8 +63,8 @@ test('browser wrapper rejects timeout even when SIGTERM cleanup exits zero', asy
 test('browser wrapper accepts normal zero exits before deadline', async () => {
   const result = await runWrapper('success');
   assert.equal(result.code, 0);
-  assert.equal(result.children.length, 4);
-  assert.equal(result.logs.filter(line => line.includes(': PASS;')).length, 4);
+  assert.equal(result.children.length, 5, 'required context two-surface gate must run');
+  assert.equal(result.logs.filter(line => line.includes(': PASS;')).length, 5);
   assert.ok(result.children.every(child => child.signals.length === 0));
   assert.deepEqual(result.errors, []);
 });

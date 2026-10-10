@@ -25,6 +25,17 @@ readiness는 startup에서 trusted deployment `PATH`를 resolve하고 `127.0.0.1
 
 지원하는 검사 종류와 제한을 반환한다.
 
+## `POST /api/v1/ip-context`
+
+Explicit, independent lookup for one canonical public IP: `{"address":"1.1.1.1"}`.
+The closed v1 response contains system-resolver reverse/forward naming,
+registration from pinned IANA/RDAP routing, and RIPE RIS origins with per-origin
+RPKI. It never changes a diagnostic report, Geo result, or export. See
+[IP context v1](IP-CONTEXT.md) for exact fields, status/identity validation,
+privacy, work/byte/deadline limits, cache and shutdown ownership, and the
+producer-generated cross-client corpus. Existing error catalog bytes are reused.
+Web and Android context controls are separate follow-on stages.
+
 ## `POST /api/v1/reports`
 
 ### 선택적 Geo 상세정보

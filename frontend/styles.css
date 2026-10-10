@@ -288,6 +288,20 @@ dt { color:var(--muted); font-size:11px; } dd { margin:3px 0 0; font:600 17px ui
 /* Bounded compact topology/Geo renderer. Each semantic item is one DOM element. */
 .render-status { min-height:1.5em; margin:12px 0; color:#aeb6aa; font:600 10px ui-monospace,monospace; }
 .topology-view-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; padding:14px 0; border-bottom:1px solid var(--line); }
+.ip-context-panel { position:static; flex:1 0 100%; min-width:0; max-width:100%; box-sizing:border-box; margin:14px 0 0; padding:12px; border:1px solid #566e66; border-radius:8px; background:#101510; color:#d9e5d9; }
+.ip-context-panel > strong { display:block; margin-bottom:10px; overflow-wrap:anywhere; font:700 15px/1.6 ui-monospace,monospace; }
+.ip-context-controls { display:flex; flex-wrap:wrap; align-items:end; gap:8px; min-width:0; }
+.ip-context-controls label { display:block; flex:1 1 220px; min-width:0; font-size:12px; }
+.ip-context-controls select { display:block; width:100%; min-width:0; min-height:44px; margin-top:4px; font:14px ui-monospace,monospace; }
+.ip-context-controls button { min-height:44px; padding:8px 10px; border:1px solid #677960; border-radius:4px; background:#1b251b; color:#edf7e9; font-size:12px; }
+.ip-context-controls button[data-ip-context-query] { background:#c9ff46; color:#152000; font-weight:700; }
+.ip-context-controls button:disabled { opacity:.55; }
+.ip-context-controls span { align-self:center; font:11px/1.5 ui-monospace,monospace; }
+.ip-context-panel > p { margin:10px 0; overflow-wrap:anywhere; font:12px/1.7 ui-monospace,monospace; }
+.ip-context-facts { max-height:min(24rem,45dvh); min-width:0; overflow:auto; overscroll-behavior:contain; border-top:1px solid #566e66; }
+.ip-context-facts p { margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; font:13px/1.7 ui-monospace,monospace; }
+.ip-context-panel :focus-visible { outline:2px solid var(--lime); outline-offset:2px; }
+#topology-report-section:fullscreen { width:100%; margin:0; padding:16px; overflow:auto; background:#090c0a; }
 .topology-view-controls { display:flex; flex-wrap:wrap; gap:6px; min-width:0; margin:0; padding:0; border:0; }
 .topology-view-controls legend { width:100%; margin-bottom:4px; color:#dce3d7; font:700 10px ui-monospace,monospace; letter-spacing:.08em; }
 .topology-view-controls label { position:relative; display:flex; min-height:40px; align-items:center; cursor:pointer; }

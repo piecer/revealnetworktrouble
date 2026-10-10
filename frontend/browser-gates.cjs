@@ -43,6 +43,7 @@ async function run(name, args) {
     await run('route-visual', [path.join(output, 'route-visual')]);
     await run('label-integrity', [path.join(output, 'label-integrity')]);
     await run('topology-empty', [path.join(output, 'topology-empty')]);
+    await run('ip-context', [path.join(output, 'ip-context')]);
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

@@ -83,11 +83,26 @@ public final class ApiConnectionConfig {
 
     public URI reportsEndpoint() { return baseUri.resolve("/api/v1/reports"); }
     public URI checksEndpoint() { return baseUri.resolve("/api/v1/checks"); }
+    public URI contextEndpoint() { return baseUri.resolve("/api/v1/ip-context"); }
 
     /** Authorization is deliberately unavailable for cleartext debug origins. */
     public Optional<String> authorizationHeader() {
         return baseUri.getScheme().equals("https") && bearer != null
                 ? Optional.of("Bearer " + bearer) : Optional.empty();
+    }
+
+    /** Fail closed on current credential echoes; do not rewrite the closed metadata model. */
+    public boolean reflectsCredential(com.checknetwork.app.core.IPContext context) {
+        return bearer != null && containsSecret(context.projection());
+    }
+    private boolean containsSecret(Object value) {
+        if (value instanceof String text) return text.contains(bearer);
+        if (value instanceof java.util.Map<?,?> map) {
+            for (Object child : map.values()) if (containsSecret(child)) return true;
+        } else if (value instanceof java.util.List<?> list) {
+            for (Object child : list) if (containsSecret(child)) return true;
+        }
+        return false;
     }
 
     /** Stable origin identity. Credential rotation never changes ordinary request identity. */

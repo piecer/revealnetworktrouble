@@ -80,8 +80,11 @@ public final class MainActivity extends Activity {
     static PresentationRenderer defaultPresentationRendererForTests(){return DEFAULT_PRESENTATION_RENDERER;}
     static void setPresentationCommitterForTests(PresentationCommitter committer){presentationCommitter=Objects.requireNonNull(committer,"committer");}
     static PresentationCommitter defaultPresentationCommitterForTests(){return DEFAULT_PRESENTATION_COMMITTER;}
-    static void resetSessionFactoryForTests(){sessionFactory=DEFAULT_SESSION_FACTORY;rawRuntimeFactory=DEFAULT_RAW_RUNTIME_FACTORY;chooserLauncher=DEFAULT_CHOOSER_LAUNCHER;connectionConfigFactory=DEFAULT_CONNECTION_CONFIG_FACTORY;presentationRenderer=DEFAULT_PRESENTATION_RENDERER;presentationCommitter=DEFAULT_PRESENTATION_COMMITTER;}
+    static void resetSessionFactoryForTests(){contextSessionFactory=IPContextSession::create;sessionFactory=DEFAULT_SESSION_FACTORY;rawRuntimeFactory=DEFAULT_RAW_RUNTIME_FACTORY;chooserLauncher=DEFAULT_CHOOSER_LAUNCHER;connectionConfigFactory=DEFAULT_CONNECTION_CONFIG_FACTORY;presentationRenderer=DEFAULT_PRESENTATION_RENDERER;presentationCommitter=DEFAULT_PRESENTATION_COMMITTER;}
 
+    interface ContextSessionFactory { IPContextSession create(DiagnosticsSession.Dispatcher dispatcher); }
+    private static ContextSessionFactory contextSessionFactory = IPContextSession::create;
+    static void setContextSessionFactoryForTests(ContextSessionFactory factory) { contextSessionFactory = factory; }
     private DiagnosticsSession session;
     private final Object owner=new Object();
     private Retained retained;
@@ -121,6 +124,10 @@ public final class MainActivity extends Activity {
         restoreForm(savedInstanceState);
         suppressInput=false;
         wireActions();session.attach(owner,this::renderState);attachRawRuntime();
+        retained.context.attach(owner, snapshot -> {
+            IPContextView view = results.findViewWithTag("ip_context_view");
+            if (view != null && !isDestroyed() && !isFinishing()) view.render(snapshot);
+        });
     }
 
     @Override protected void onResume(){
@@ -171,8 +178,10 @@ public final class MainActivity extends Activity {
         ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,kindLabels());adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);kind.setAdapter(adapter);kind.setSaveEnabled(false);kind.setSelection(kindIndex(initial));
         address.setSaveEnabled(false);expected.setSaveEnabled(false);attempts.setSaveEnabled(false);address.setText(addressText);expected.setText(expectedText);attempts.setText(attemptsText);
         TextWatcher addressWatcher=addressWatcher(),watcher=watcher();address.addTextChangedListener(addressWatcher);expected.addTextChangedListener(watcher);attempts.addTextChangedListener(watcher);
-        boolean[] initialSelection={true};
-        AdapterView.OnItemSelectedListener kindListener=new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int position,long id){updateRow(row,CheckKind.values()[position]);if(initialSelection[0]){initialSelection[0]=false;return;}inputMutated();}};
+        // Spinner may deliver multiple deferred restoration notifications. Compare the
+        // semantic selection, not the number of callbacks, and reject retired views.
+        CheckKind[] selectedKind={initial};
+        AdapterView.OnItemSelectedListener kindListener=new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int position,long id){if(isDestroyed()||isFinishing()||retainingSession||row.getParent()!=targets||position!=kind.getSelectedItemPosition())return;CheckKind selected=CheckKind.values()[position];updateRow(row,selected);if(selectedKind[0]==selected)return;selectedKind[0]=selected;inputMutated();}};
         kind.setOnItemSelectedListener(kindListener);
         Button remove=row.findViewById(R.id.remove);row.setTag(new TargetRowListeners(addressWatcher,watcher));
         remove.setOnClickListener(v->{if(targets.getChildCount()>1){detachTargetRowListeners(row);targets.removeView(row);refreshRemoveDescriptions();inputMutated();}});
@@ -235,7 +244,7 @@ public final class MainActivity extends Activity {
     }
     private void startDiagnostics(){
         hideError();clearReady();
-        try{FormState form=collectForm();ReportRequest request=form.toRequest();String credential=authEnabled.isChecked()?bearer.getText().toString():null;ApiConnectionConfig config=connectionConfigFactory.create(form.apiBase(),(getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0,credential);session.start(config,request);}catch(IllegalArgumentException e){showError(humanInputError(e));}
+        try{FormState form=collectForm();ReportRequest request=form.toRequest();String credential=authEnabled.isChecked()?bearer.getText().toString():null;ApiConnectionConfig config=connectionConfigFactory.create(form.apiBase(),(getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0,credential);retained.contextConfig=config;session.start(config,request);}catch(IllegalArgumentException e){showError(humanInputError(e));}
     }
     private String humanInputError(IllegalArgumentException e){String message=e.getMessage();if(message!=null&&(message.contains("Timeout")||message.contains("timeout")))return getString(R.string.error_timeout);if(message!=null&&(message.contains("origin")||message.contains("URL")))return getString(R.string.error_api_base);return message==null?getString(R.string.error_target,1,"Invalid input"):message;}
 
@@ -282,7 +291,7 @@ public final class MainActivity extends Activity {
     }
     private void showError(String message){error.setText(message);ViewCompat.setStateDescription(error,getString(R.string.accessibility_error_state));error.setVisibility(View.VISIBLE);error.requestFocus();}
     private void hideError(){error.setVisibility(View.GONE);ViewCompat.setStateDescription(error,null);}
-    private void clearReady(){presentationGeneration++;presentationPhase=PresentationPhase.EMPTY;forgetInstalledCandidate();readyReport=null;readyRaw=null;pendingRawShare=null;if(rawWarningDialog!=null){rawWarningDialog.dismiss();rawWarningDialog=null;}retireRawShareAndCancelPreparation();results.removeAllViews();report.setVisibility(View.GONE);share.setEnabled(false);shareRaw.setEnabled(false);}
+    private void clearReady(){if(retained!=null)retained.context.bind(null,null);presentationGeneration++;presentationPhase=PresentationPhase.EMPTY;forgetInstalledCandidate();readyReport=null;readyRaw=null;pendingRawShare=null;if(rawWarningDialog!=null){rawWarningDialog.dismiss();rawWarningDialog=null;}retireRawShareAndCancelPreparation();results.removeAllViews();report.setVisibility(View.GONE);share.setEnabled(false);shareRaw.setEnabled(false);}
     private void renderReady(RequestState state){
         final long generation=++presentationGeneration;
         final PresentationOwner expected=new PresentationOwner(state.ownerId(),state.signature(),state.rawJson().orElseThrow(),state.report().orElseThrow());
@@ -308,6 +317,7 @@ public final class MainActivity extends Activity {
             publishStep(generation,expected,CommitPoint.LIVE_ANNOUNCEMENT,()->status.announceForAccessibility(getString(R.string.state_ready)));
             publishStep(generation,expected,CommitPoint.SHARE_ELIGIBILITY,()->{
                 readyReport=expected.report();
+                retained.context.bind(readyReport,retained.contextConfig);
                 readyRaw=new ReadyRaw(expected.ownerId(),expected.signature(),expected.raw());
                 share.setEnabled(true);
             });
@@ -330,6 +340,13 @@ public final class MainActivity extends Activity {
             }
             TextView heading=new TextView(activity);heading.setText(block.heading());heading.setTextColor(activity.getColor(R.color.lime));heading.setTextSize(18);heading.setTypeface(null,android.graphics.Typeface.BOLD);ViewCompat.setAccessibilityHeading(heading,true);heading.setPadding(0,12,0,4);candidate.addView(heading);
             TextView body=new TextView(activity);body.setText(block.body());body.setTextColor(activity.getColor(R.color.ink));body.setTextSize(15);body.setPadding(0,0,0,12);candidate.addView(body);
+        }
+        Report contextReport = activity.session.state().report().orElse(null);
+        if (contextReport != null) {
+            final long generation = activity.presentationGeneration;
+            candidate.addView(new IPContextView(activity, contextReport, activity.retained.context,
+                    () -> generation == activity.presentationGeneration && candidate.getParent() == activity.results
+                            && !activity.isDestroyed() && !activity.isFinishing()));
         }
         return candidate;
     }
@@ -450,9 +467,9 @@ public final class MainActivity extends Activity {
     @Override public Object onRetainNonConfigurationInstance(){retainingSession=true;retained.bearer=bearer.getText().toString();retained.authEnabled=authEnabled.isChecked();return retained;}
     @Override protected void onDestroy(){
         for(int i=0;i<targets.getChildCount();i++)detachTargetRowListeners(targets.getChildAt(i));
-        session.detach(owner);
+        session.detach(owner);retained.context.detach(owner);
         boolean finalDestroy=!retainingSession&&!isChangingConfigurations();
-        if(finalDestroy){pendingRawShare=null;rawRuntime.retire(retained.rawOwner);session.destroy();}
+        if(finalDestroy){pendingRawShare=null;rawRuntime.retire(retained.rawOwner);session.destroy();retained.context.destroy();}
         detachRawRuntime();
         pendingRawShare=null;readyRaw=null;
         if(rawWarningDialog!=null){rawWarningDialog.dismiss();rawWarningDialog=null;}
@@ -463,5 +480,5 @@ public final class MainActivity extends Activity {
     private record PresentationOwner(long ownerId,String signature,String raw,Report report){}
     private record TargetRowListeners(TextWatcher address,TextWatcher fields){}
     private static final class StalePresentationException extends RuntimeException {}
-    private static final class Retained {final DiagnosticsSession session;final Object rawOwner=new Object();String bearer="";boolean authEnabled;Retained(DiagnosticsSession session){this.session=session;}}
+    private static final class Retained {final DiagnosticsSession session;final IPContextSession context;ApiConnectionConfig contextConfig;final Object rawOwner=new Object();String bearer="";boolean authEnabled;Retained(DiagnosticsSession session){this.session=session;this.context=contextSessionFactory.create(r -> new Handler(Looper.getMainLooper()).post(r));}}
 }

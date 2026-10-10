@@ -75,6 +75,9 @@ func runMain() int {
 	}
 	runner := newProductionRunner(supervisor, checkers...)
 	config.server.DrainingProvider = operational
+	ipContext := diagnostic.NewIPContextService(diagnostic.IPContextOptions{})
+	defer ipContext.BeginDrain()
+	config.server.IPContext = ipContext
 	businessHandler, err := api.NewServerWithConfig(runner, logger, version, config.server)
 	if err != nil {
 		logger.Error("invalid server configuration", "error", err)
@@ -116,7 +119,7 @@ func runMain() int {
 			exitCode = 1
 		}
 	}
-	shutdownErr := shutdownService(context.Background(), config.shutdownTimeout, operational, server, supervisor, logger)
+	shutdownErr := shutdownService(context.Background(), config.shutdownTimeout, operational, server, supervisor, logger, ipContext)
 	return finishRun(exitCode, shutdownErr, logger)
 }
 
@@ -159,8 +162,13 @@ const shutdownFailureReason = "shutdown_incomplete"
 // shutdownService drains HTTP first, then always stops checker admission. Both
 // phases share one end-to-end deadline so the process drain stays within the
 // container stop grace period even when HTTP consumes the entire budget.
-func shutdownService(parent context.Context, timeout time.Duration, operational *operationalState, server shutdownHTTPServer, supervisor *diagnostic.CheckerSupervisor, logger *slog.Logger) error {
+func shutdownService(parent context.Context, timeout time.Duration, operational *operationalState, server shutdownHTTPServer, supervisor *diagnostic.CheckerSupervisor, logger *slog.Logger, contexts ...*diagnostic.IPContextService) error {
 	operational.BeginDrain()
+	for _, service := range contexts {
+		if service != nil {
+			service.BeginDrain()
+		}
+	}
 	drainCtx, cancelDrain := context.WithTimeout(parent, timeout)
 	defer cancelDrain()
 	httpErr := server.Shutdown(drainCtx)
@@ -171,7 +179,13 @@ func shutdownService(parent context.Context, timeout time.Duration, operational 
 	if remaining != 0 || snapshot.Active != 0 || snapshot.Stuck != 0 {
 		checkerErr = errCheckerDrainIncomplete
 	}
-	shutdownErr := errors.Join(httpErr, checkerErr)
+	var contextErr error
+	for _, service := range contexts {
+		if service != nil {
+			contextErr = errors.Join(contextErr, service.Close(drainCtx))
+		}
+	}
+	shutdownErr := errors.Join(httpErr, checkerErr, contextErr)
 	if shutdownErr != nil {
 		logger.Error("service shutdown failed", append([]any{"reason", shutdownFailureReason}, fields...)...)
 	} else {

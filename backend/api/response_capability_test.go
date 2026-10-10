@@ -22,9 +22,11 @@ var allowedResponderCalls = map[string]bool{
 	"setSecurityHeaders":     true,
 	"setCORSHeaders":         true,
 	"limitRequestBody":       true,
+	"setIPContextDeadlines":  true,
 	"setReportWriteDeadline": true,
 	"writeHealth":            true,
 	"writeChecks":            true,
+	"writeIPContext":         true,
 	"writeReport":            true,
 	"writeNoContent":         true,
 	"writeAPIError":          true,
@@ -291,8 +293,8 @@ func TestResponseBoundaryExposesOnlyFixedCapabilities(t *testing.T) {
 	}
 	wantWriterMethods := []string{
 		"Header", "Unwrap", "Write", "WriteHeader", "bindObservation", "limitRequestBody",
-		"responseState", "setCORSHeaders", "setReportWriteDeadline", "setSecurityHeaders",
-		"writeAPIError", "writeChecks", "writeEmpty", "writeHealth", "writeJSONPayload",
+		"responseState", "setCORSHeaders", "setIPContextDeadlines", "setReportWriteDeadline", "setSecurityHeaders",
+		"writeAPIError", "writeChecks", "writeEmpty", "writeHealth", "writeIPContext", "writeJSONPayload",
 		"writeNoContent", "writePayload", "writeReport", "writeTypedOK",
 	}
 	sort.Strings(writerMethods)
@@ -353,6 +355,7 @@ func (probe *panicProbeResponder) setSecurityHeaders() {
 }
 func (*panicProbeResponder) setCORSHeaders(string)                 {}
 func (*panicProbeResponder) limitRequestBody(*http.Request, int64) {}
+func (*panicProbeResponder) setIPContextDeadlines(*http.Request)   {}
 func (*panicProbeResponder) setReportWriteDeadline()               {}
 func (probe *panicProbeResponder) writeHealth(HealthResponse) {
 	probe.attempted, probe.committed, probe.status = true, true, http.StatusOK
@@ -360,9 +363,10 @@ func (probe *panicProbeResponder) writeHealth(HealthResponse) {
 		panic("AFTER_CANARY")
 	}
 }
-func (*panicProbeResponder) writeChecks(checksResponse) {}
-func (*panicProbeResponder) writeReport(reportJSON)     {}
-func (*panicProbeResponder) writeNoContent()            {}
+func (*panicProbeResponder) writeChecks(checksResponse)   {}
+func (*panicProbeResponder) writeIPContext(ipContextJSON) {}
+func (*panicProbeResponder) writeReport(reportJSON)       {}
+func (*panicProbeResponder) writeNoContent()              {}
 func (probe *panicProbeResponder) writeAPIError(key apiErrorKey, _ apiErrorMetadata) {
 	probe.errorCalls++
 	probe.attempted, probe.committed, probe.status = true, true, apiErrorDefinitionFor(key).Status

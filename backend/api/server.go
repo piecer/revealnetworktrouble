@@ -58,6 +58,7 @@ type DrainingProvider interface {
 }
 
 type ServerConfig struct {
+	IPContext                   *diagnostic.IPContextService
 	AllowedOrigins              []string
 	MaxConcurrentReports        int
 	MaxConcurrentBodyDecodes    int
@@ -128,6 +129,7 @@ type requestObservation struct {
 	marshalDuration   time.Duration
 	writeDuration     time.Duration
 	reportTerminal    bool
+	contextAdmitted   bool
 }
 
 func observationFromRequest(request *http.Request) *requestObservation {
@@ -136,22 +138,24 @@ func observationFromRequest(request *http.Request) *requestObservation {
 }
 
 type Server struct {
-	runner         *diagnostic.Runner
-	logger         *slog.Logger
-	allowedOrigins map[string]struct{}
-	version        string
-	revision       string
-	admission      chan struct{}
-	bodyDecodes    chan struct{}
-	responseWrites chan struct{}
-	busyRetryAfter time.Duration
-	mode           DeploymentMode
-	apiKeyHash     [sha256.Size]byte
-	rateLimit      int
-	maxRateClients int
-	rateMu         sync.Mutex
-	clients        map[string]clientWindow
-	draining       DrainingProvider
+	ipContext       *diagnostic.IPContextService
+	contextHandlers chan struct{}
+	runner          *diagnostic.Runner
+	logger          *slog.Logger
+	allowedOrigins  map[string]struct{}
+	version         string
+	revision        string
+	admission       chan struct{}
+	bodyDecodes     chan struct{}
+	responseWrites  chan struct{}
+	busyRetryAfter  time.Duration
+	mode            DeploymentMode
+	apiKeyHash      [sha256.Size]byte
+	rateLimit       int
+	maxRateClients  int
+	rateMu          sync.Mutex
+	clients         map[string]clientWindow
+	draining        DrainingProvider
 }
 
 func NewServer(runner *diagnostic.Runner, logger *slog.Logger, version string, allowedOrigins []string) http.Handler {
@@ -222,7 +226,9 @@ func newServer(runner *diagnostic.Runner, logger *slog.Logger, version string, c
 		config.Revision = "dev"
 	}
 	server := &Server{
-		runner: runner, logger: logger, version: version, revision: config.Revision,
+		ipContext:       config.IPContext,
+		contextHandlers: make(chan struct{}, 4),
+		runner:          runner, logger: logger, version: version, revision: config.Revision,
 		allowedOrigins: make(map[string]struct{}),
 		admission:      make(chan struct{}, config.MaxConcurrentReports),
 		bodyDecodes:    make(chan struct{}, config.MaxConcurrentBodyDecodes),
@@ -429,6 +435,11 @@ func classifyRequest(request *http.Request) (TelemetryRoute, int) {
 			return TelemetryRouteChecks, 0
 		}
 		return TelemetryRouteUnmatched, http.StatusMethodNotAllowed
+	case "/api/v1/ip-context":
+		if request.Method == http.MethodPost {
+			return TelemetryRouteIPContext, 0
+		}
+		return TelemetryRouteUnmatched, http.StatusMethodNotAllowed
 	case "/api/v1/reports":
 		if request.Method == http.MethodPost {
 			return TelemetryRouteReports, 0
@@ -466,8 +477,17 @@ func (s *Server) serveHTTP(response responder, request *http.Request) {
 			}
 		}
 		s.emit(request, TelemetryEventHTTPTerminal, observation.outcome, observation.status)
+		if observation.contextAdmitted {
+			<-s.contextHandlers
+		}
 	}()
 
+	if route == TelemetryRouteIPContext {
+		ctx, cancel := context.WithDeadline(request.Context(), observation.started.Add(8*time.Second))
+		defer cancel()
+		request = request.WithContext(ctx)
+		response.setIPContextDeadlines(request)
+	}
 	response.setSecurityHeaders()
 	origin := request.Header.Get("Origin")
 	if origin != "" && s.originAllowed(origin) {
@@ -515,6 +535,8 @@ func (s *Server) serveHTTP(response responder, request *http.Request) {
 		s.health(response, request)
 	case TelemetryRouteChecks:
 		s.checks(response, request)
+	case TelemetryRouteIPContext:
+		s.createIPContext(response, request)
 	case TelemetryRouteReports:
 		s.createReport(response, request)
 	case TelemetryRouteOptions:
@@ -526,7 +548,7 @@ func apiAllowForPath(path string) apiAllowMethods {
 	switch path {
 	case "/api/v1/health", "/api/v1/checks":
 		return apiAllowGet
-	case "/api/v1/reports":
+	case "/api/v1/reports", "/api/v1/ip-context":
 		return apiAllowPost
 	default:
 		return apiAllowOptions
@@ -605,10 +627,14 @@ func (s *Server) telemetryRecord(request *http.Request, event TelemetryEvent, ou
 	if observation.requestBody != nil {
 		requestBytes = observation.requestBody.bytes
 	}
+	admission := s.admission
+	if observation.route == TelemetryRouteIPContext {
+		admission = s.contextHandlers
+	}
 	return TelemetryRecord{
 		Event: event, Outcome: outcome, RequestID: observation.requestID, ReportID: observation.reportID,
 		Method: observation.method, Route: observation.route, Status: status,
-		Active: int64(len(s.admission)), Capacity: int64(cap(s.admission)), RequestBytes: requestBytes,
+		Active: int64(len(admission)), Capacity: int64(cap(admission)), RequestBytes: requestBytes,
 		ResponseAttemptedBytes: observation.responseAttempted, ResponseBytes: observation.responseActual,
 		Duration: time.Since(observation.started), RunnerDuration: observation.runnerDuration,
 		MarshalDuration: observation.marshalDuration, WriteDuration: observation.writeDuration,

@@ -1,12 +1,13 @@
 import {
   createRequestLane, canonicalDiagnosticsInput, canonicalTopologyInput, inputSignature,
-  transitionRequest, ownsRequest, clientTimeoutMS, normalizeRequestError, parseResponse, SCHEMA_LIMITS
+  transitionRequest, ownsRequest, clientTimeoutMS, normalizeRequestError, parseResponse, SCHEMA_LIMITS, createIPContextController
 } from './state.js';
 import { canonicalIP, topologyModelFromReport, filterTopologyModel } from './topology-model.js';
 import { mountGeoMap } from './geo-map.js';
 import { TopologyRenderCoordinator } from './topology-renderer.js';
 import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport, routeColor } from './topology-visualizer.js';
 import { commonPrefix, COMMON_MAX_ADDRESSES, COMMON_MAX_INPUT_CHARS } from './common-prefix.js';
+import { canonicalPublicIP } from './topology-presentation.js';
 
 const IP_LABEL_STORAGE_KEY = 'checknetwork.ip-labels.v1';
 export const LABEL_FILE = 1024 * 1024;
@@ -147,6 +148,127 @@ export const MAX_DOCUMENT_ELEMENTS = 1200;
 const FINDING_ACCORDIONS = new WeakMap();
 const LABEL_ROOT_OWNERS = new WeakMap();
 const TARGET_FILTER_OWNERS = new WeakMap();
+const CONTEXT_VIEW_OWNERS = new WeakMap();
+
+// Input is the current parseResponse-validated report, not Geo success records
+// or the presentation graph (which may contain synthetic/folded nodes).
+export function eligibleIPContextAddresses(report, selected = new Set(report.results.map((_, i) => i))) {
+  const addresses = new Set();
+  const admit = address => { const ip = canonicalPublicIP(address); if (ip) addresses.add(ip); };
+  if (report.compact_topology) {
+    const topology = report.compact_topology;
+    const ids = new Set(topology.routes.filter(r => selected.has(r.result_index)).flatMap(r => r.node_ids));
+    for (const node of topology.nodes) {
+      // A present average proves at least one responsive positive-hop sample,
+      // even if a merged occurrence has a worse status. Synthetic failures have
+      // no average; explicit zero is a genuine sample, not missing evidence.
+      if (ids.has(node.id) && node.kind === 'ip' && node.hop_max > 0 && node.observations > 0 &&
+          (['healthy','degraded'].includes(node.status) || Number.isFinite(node.latency_ms_avg) && node.latency_ms_avg >= 0)) admit(node.address);
+    }
+  } else report.results.forEach((result, index) => {
+    if (!selected.has(index) || result.kind !== 'traceroute') return;
+    const attempts = result.details?.attempts;
+    const sources = Array.isArray(attempts) ? attempts : [{status:result.status,error_code:result.error_code,topology:result.details?.topology}];
+    for (const attempt of sources) {
+      const topology = attempt.topology;
+      if (!topology || attempt.error_code) continue;
+      const status = !topology.reached ? 'unreachable' : topology.nodes.some(n => ['unknown','degraded'].includes(n.status)) ? 'degraded' : 'healthy';
+      if (attempt.status !== status) continue;
+      for (const node of topology.nodes) if (node.hop > 0 && ['healthy','degraded'].includes(node.status)) admit(node.address);
+    }
+  });
+  const all = [...addresses].sort();
+  return { addresses: all.slice(0, 500), total: all.length, omitted: Math.max(0, all.length - 500) };
+}
+
+const CONTEXT_MESSAGES = Object.freeze({
+  idle: '버튼을 눌러 선택한 IP만 조회합니다. 선택·보기 전환만으로는 외부 조회하지 않습니다.',
+  loading: '선택한 IP 추가 정보 조회 중 · 최대 10초', ready: '추가 정보 수신 완료', cancelled: '추가 정보 조회 취소됨',
+  timeout: '추가 정보 조회 시간이 초과되었습니다. 보고서와 지도는 그대로 사용할 수 있습니다.',
+  unsupported: '이 API는 IP 추가 정보 조회를 지원하지 않습니다 (404). 보고서·지도·공유는 사용할 수 있습니다.',
+  unauthorized: 'IP 추가 정보 인증을 확인해 주세요.', 'rate-limited': '추가 정보 요청 한도에 도달했습니다. 자동 재시도하지 않습니다.',
+  busy: '추가 정보 서비스가 사용 중이거나 비활성 상태입니다. 자동 재시도하지 않습니다.',
+  unavailable: '추가 정보를 조회할 수 없습니다. 기존 보고서에는 영향이 없습니다.',
+  'invalid-response': '추가 정보 응답을 검증할 수 없습니다. 기존 보고서는 변경하지 않았습니다.',
+  'insecure-auth': 'Bearer credential은 HTTPS API 또는 로컬 API에만 전송할 수 있습니다.',
+  ineligible: '조회할 수 있는 공인 IP 관측을 선택해 주세요.'
+});
+const contextStatus = value => ({ok:'확인',limited:'일부 확인 · 생략 있음',not_found:'정보 없음',timeout:'시간 초과',unavailable:'사용 불가',rate_limited:'요청 제한',invalid_response:'응답 검증 실패',confirmed:'정방향 일치',mismatch:'정방향 불일치',valid:'origin 허가',invalid_asn:'ASN 불일치',invalid_length:'길이 불일치',unknown:'적용 가능한 ROA 없음'}[value] || value);
+function contextFactText(value, appCache) {
+  const r = value.reverse_dns, reg = value.registration, route = value.routing;
+  const provenance = v => `출처 ${v.source} · 조회 완료 ${v.fetched_at}`;
+  return [
+    `${appCache ? '앱 메모리 캐시 재사용 · ' : ''}API 출처 ${value.source} · 스냅샷 완료 ${value.fetched_at} · 만료 ${value.expires_at}\n앱 조회/만료 시각이며 DNS TTL이나 공급자 데이터베이스 갱신 시각이 아닙니다.`,
+    `PTR / 정방향 확인: ${contextStatus(r.status)} · ${provenance(r)}\n${r.names.length ? r.names.map(n => `${n.name} · ${contextStatus(n.forward_status)} (${n.forward_status})`).join('\n') : 'PTR 이름 미확인'} · 생략 ${r.omitted}\n시스템 resolver에는 hosts/캐시가 포함될 수 있습니다. 이름 일치는 신원·신뢰·물리적 위치나 DNSSEC 검증이 아닙니다.`,
+    `RDAP 등록 정보: ${contextStatus(reg.status)} · ${provenance(reg)} · 레지스트리 ${reg.registry || '미확인'}\n등록 범위 ${reg.start_address || '미확인'} ~ ${reg.end_address || '미확인'}\n조직 ${reg.organization || '미확인'} · 등록 국가 ${reg.country || '미확인'}\n핸들 ${reg.handle || '미확인'} · 이름 ${reg.name || '미확인'} · 유형 ${reg.type || '미확인'}\n등록 ${reg.registered_at || '미확인'} · 변경 ${reg.updated_at || '미확인'}\n등록 조직·국가는 실제 운영자·장비 소재지·물리적 위치를 보장하지 않습니다.`,
+    `BGP: ${contextStatus(route.status)} · ${provenance(route)}\n접두 ${route.prefix || '미확인'} · origin ${route.origins.length ? route.origins.map(o => 'AS'+o.asn).join(', ') : '미확인'} · 생략 ${route.omitted}\n외부 RIPE RIS 관측이며 측정한 traceroute 경로가 아닙니다. RIS 8시간(8h) 덤프 기반으로 실시간 발표를 보장하지 않습니다.`,
+    `RPKI origin 검증\n${route.origins.length ? route.origins.map(o => `AS${o.asn} · ${route.prefix} · ${contextStatus(o.rpki.status)} / ${o.rpki.validity ? contextStatus(o.rpki.validity)+' ('+o.rpki.validity+')' : '판정 미확인'} · 출처 ${o.rpki.source} · 확인 ${o.rpki.checked_at}`).join('\n') : '검증할 BGP 접두/origin 없음'}\nOrigin 권한 확인이며 공격·보안·서비스 정상 여부 판정이 아닙니다.`
+  ];
+}
+
+// One detached, fixed-cost fragment: pagination and results reuse admitted slots.
+// Even the empty/idle controls count towards the whole-document 1200 ceiling.
+export function mountIPContextView({ document: doc, parent, catalog, selectedAddress, isActive = () => true,
+  onSelect = () => {}, onQuery = () => {}, onCancel = () => {}, redact = text => text, onLimited = () => {} }) {
+  if (!isActive() || !parent?.isConnected) return null;
+  CONTEXT_VIEW_OWNERS.get(parent)?.destroy();
+  const detached = doc.implementation.createHTMLDocument('');
+  const element = (tag, text, attr) => { const n = detached.createElement(tag); if (text) n.textContent = text; if (attr) n.setAttribute(attr, ''); return n; };
+  const root = element('section', '', 'data-ip-context-panel'); root.className = 'ip-context-panel'; root.setAttribute('aria-label','선택한 IP 추가 정보');
+  const address = element('strong', '', 'data-ip-context-address');
+  const controls = element('div'); controls.className = 'ip-context-controls';
+  const label = element('label', '공인 IP 선택'); const select = element('select', '', 'data-ip-context-select'); select.setAttribute('aria-label','추가 정보를 조회할 공인 IP'); label.append(select);
+  const previous = element('button','이전 IP 페이지','data-ip-context-previous'), next = element('button','다음 IP 페이지','data-ip-context-next'), pageStatus = element('span','','data-ip-context-page');
+  const query = element('button','IP 추가 정보 조회','data-ip-context-query'), cancel = element('button','조회 취소','data-ip-context-cancel');
+  for (const button of [previous,next,query,cancel]) button.type = 'button';
+  const warning = element('p','명시적으로 조회하면 선택한 IP를 API의 시스템 resolver·RIR RDAP·RIPE RIS/RPKI 서비스에 전달합니다. 보고서를 다시 실행하지 않습니다.');
+  const status = element('p','','data-ip-context-status'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
+  const facts = element('div','','data-ip-context-facts'); facts.className='ip-context-facts'; facts.tabIndex=0; facts.setAttribute('role','region'); facts.setAttribute('aria-label','IP 추가 정보 결과와 출처');
+  const rows = Array.from({length:5},()=>element('p')); rows.forEach(row=>facts.append(row));
+  const slots = Array.from({length:Math.min(64,catalog.addresses.length)},()=>element('option')); slots.forEach(slot=>select.append(slot));
+  controls.append(label,previous,pageStatus,next,query,cancel);root.append(address,controls,warning,status,facts);
+  const cost = 1 + root.querySelectorAll('*').length;
+  if (!isActive() || !parent.isConnected) return null;
+  if (cost > 100 || doc.querySelectorAll('*').length + cost > MAX_DOCUMENT_ELEMENTS) { onLimited(); return null; }
+  doc.adoptNode(root); parent.append(root);
+  let disposed=false, page=0, selected=selectedAddress, current={phase:'idle'};
+  const token = { destroy, isActive:live, select:choose, update };
+  CONTEXT_VIEW_OWNERS.set(parent,token);
+  function live() { return !disposed && root.isConnected && CONTEXT_VIEW_OWNERS.get(parent)===token && isActive(); }
+  function renderPage() {
+    if (!live()) return;
+    const size=Math.max(1,slots.length), pages=Math.max(1,Math.ceil(catalog.addresses.length/size));
+    page=Math.max(0,Math.min(page,pages-1));
+    slots.forEach((slot,i)=>{const ip=catalog.addresses[page*size+i];slot.value=ip||'';slot.textContent=redact(ip||'');slot.hidden=!ip;slot.disabled=!ip;});
+    select.value=selected||'';select.disabled=!catalog.addresses.length;
+    previous.disabled=page===0;next.disabled=page>=pages-1;
+    pageStatus.textContent=`${page+1}/${pages} · 후보 ${catalog.addresses.length}/${catalog.total} · 생략 ${catalog.omitted}`;
+    address.textContent=redact(selected||'선택한 공인 IP 없음');
+  }
+  function choose(ip) {
+    if (!live()) return;
+    selected=catalog.addresses.includes(ip)?ip:null;
+    if(selected)page=Math.floor(catalog.addresses.indexOf(selected)/Math.max(1,slots.length));
+    renderPage(); update(current);
+  }
+  function update(state) {
+    if (!live()) return; current=state;
+    root.dataset.state=state.phase;root.setAttribute('aria-busy',String(state.phase==='loading'));
+    query.disabled=!selected||state.phase==='loading';cancel.hidden=state.phase!=='loading';
+    status.textContent=CONTEXT_MESSAGES[state.phase]||CONTEXT_MESSAGES.unavailable;
+    const ready=state.phase==='ready'&&state.value.address===selected;
+    facts.hidden=!ready;
+    const text=ready?contextFactText(state.value,state.appCache):[];
+    rows.forEach((row,i)=>{row.textContent=redact(text[i]||'');});
+  }
+  select.addEventListener('change',()=>{if(live()&&catalog.addresses.includes(select.value)){choose(select.value);facts.scrollTop=0;onSelect(selected);}});
+  previous.addEventListener('click',()=>{if(live()){page--;renderPage();}});
+  next.addEventListener('click',()=>{if(live()){page++;renderPage();}});
+  query.addEventListener('click',()=>{if(live()&&selected&&!query.disabled)onQuery(selected);});
+  cancel.addEventListener('click',()=>{if(live())onCancel();});
+  function destroy() { if(disposed)return;disposed=true;root.remove();if(CONTEXT_VIEW_OWNERS.get(parent)===token)CONTEXT_VIEW_OWNERS.delete(parent); }
+  choose(selected);return token;
+}
 
 function findingPresentation(code, cause, expectation, limitation, action, signals = ['error_code']) {
   const key = `finding.${code}`;
@@ -863,6 +985,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   let activeView = viewFromHash(win.location.hash);
   let currentTopologyModel;
   let selectedNodeId = null;
+  let contextView = null, selectedContextIP = null, contextLimited = false;
   let renderSource;
   let renderPhase = 'idle';
   let renderEmptyMessage = '';
@@ -907,11 +1030,66 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
           : state.empty === true ? 'render-empty' : state.phase;
       if (activeView === 'topology') renderTopologySummary();
       renderState('topology');
+      if (contextLimited) announceContextLimit();
     }
   });
   const authKey = base => AUTH_PREFIX + encodeURIComponent(base);
   const authRevision = base => revisions.get(base) || 0;
   const tokenFor = base => { try { return win.sessionStorage.getItem(authKey(base)) || ''; } catch { return ''; } };
+  const contextController = createIPContextController({ fetchImpl, clock, setTimer, clearTimer,
+    onChange: state => contextView?.update(state),
+    isCurrentOwner: captured => {
+      if (!activeInstance || !contextView?.isActive() || !['topology','geo-map'].includes(activeView)) return false;
+      const now = contextOwner();
+      return now && now.report === captured.report && now.address === captured.address && now.apiBaseURL === captured.apiBaseURL && now.authRevision === captured.authRevision && now.token === captured.token;
+    }
+  });
+  function contextOwner() {
+    if (!currentTopologyReport || !selectedContextIP || lanes.topology.phase !== 'ready') return null;
+    try {
+      const input = readInput('topology');
+      if (input.authEnabled && credentialIndeterminate.has(input.apiBaseURL)) return null;
+      return { report: currentTopologyReport, address: selectedContextIP, apiBaseURL: input.apiBaseURL,
+        authRevision: `${authRevision(input.apiBaseURL)}:${input.authEnabled}`, token: input.authEnabled ? tokenFor(input.apiBaseURL) : '' };
+    } catch { return null; }
+  }
+  function announceContextLimit() {
+    const status = doc.querySelector(activeView === 'geo-map' ? '#geo-render-status' : '#topology-view-status');
+    status.textContent = '문서 요소 한도로 IP 추가 정보 컨트롤을 표시할 수 없습니다. 보고서는 유지됩니다. 공간을 확보한 후 다른 화면으로 이동했다가 돌아오세요.';
+  }
+  function unmountContext(clear = false) {
+    contextController.cancel(); contextView?.destroy(); contextView = null; contextLimited = false;
+    if (clear) { selectedContextIP = null; contextController.setOwner(null); }
+  }
+  function selectContextIP(address) {
+    selectedContextIP = address;
+    contextController.setOwner(contextOwner());
+    contextView?.select(address); contextView?.update(contextController.getState());
+  }
+  function mountContext(model) {
+    const geo = activeView === 'geo-map';
+    const catalog = eligibleIPContextAddresses(currentTopologyReport, selectedTopologyTargets);
+    const selectedNode = model.nodes.find(n => n.id === selectedNodeId);
+    selectedContextIP = catalog.addresses.includes(selectedNode?.address) ? selectedNode.address
+      : catalog.addresses.includes(selectedContextIP) ? selectedContextIP : catalog.addresses[0] || null;
+    contextController.setOwner(contextOwner());
+    contextView = mountIPContextView({ document: doc,
+      parent: doc.querySelector(geo ? '#geo-map-view .report-panel' : '.topology-view-toolbar'), catalog, selectedAddress: selectedContextIP,
+      isActive: () => activeInstance && activeView === (geo ? 'geo-map' : 'topology') && lanes.topology.phase === 'ready',
+      redact: text => sanitizeCredentialReflection(text, contextOwner()?.token || ''),
+      onSelect: address => {
+        selectContextIP(address);
+        selectedNodeId = model.nodes.find(n => canonicalIP(n.address) === address)?.id || null;
+        // Use the existing Geo selected-node callback/detail path. No network,
+        // no changes to immutable detailCache or the Canvas pointer gestures.
+        if (geo) startActiveTopologyRender();
+      },
+      onQuery: address => { if (address === selectedContextIP) { contextController.setOwner(contextOwner()); void contextController.query(); } },
+      onCancel: () => contextController.cancel(),
+      onLimited: () => { contextLimited = true; announceContextLimit(); }
+    });
+    contextView?.update(contextController.getState());
+  }
   function safeClearTimer(handle) {
     try { clearTimer(handle); return null; } catch (error) { return error; }
   }
@@ -1006,6 +1184,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   }
   function startActiveTopologyRender() {
     if (TARGET_FILTER_OWNERS.get(doc.querySelector(activeView === 'geo-map' ? '#geo-target-filter' : '#topology-target-filter')) !== targetFilterInstance) return;
+    unmountContext();
     unmountDiagnosticsPresentation();
     unmountIPLabelTable();
     renderCoordinator.cancel('view-change');
@@ -1036,6 +1215,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     if (!geo) renderTopologySummary();
     const model = filteredTopologyModel();
     if (!model.nodes.some(node => node.id === selectedNodeId)) selectedNodeId = null;
+    mountContext(model);
     renderCoordinator.start({
       ownerId: renderSource.renderOwnerId, inputSignature: renderSource.signature,
       view: geo ? 'geo' : 'topology', model, root, status,
@@ -1045,7 +1225,12 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       },
       mode: topologyViewState.mode, transform: topologyViewState.transform,
       workspace: {
-        selectedNodeId, onSelect: id => { selectedNodeId = id; },
+        selectedNodeId, onSelect: id => {
+          selectedNodeId = id;
+          const address = model.nodes.find(n => n.id === id)?.address;
+          const eligible = eligibleIPContextAddresses(currentTopologyReport, selectedTopologyTargets).addresses;
+          selectContextIP(eligible.includes(address) ? address : null);
+        },
         tooltip: doc.querySelector('#topology-node-tooltip'),
         disposeHiddenViews() { doc.querySelector(geo ? '#topology-result' : '#geo-map-result').replaceChildren(); },
         drawGeo
@@ -1153,6 +1338,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     alert.hidden = true; alert.textContent = ''; delete alert.dataset.purpose;
   }
   function clearPurpose(purpose) {
+    if (purpose === 'topology') unmountContext(true);
     clearRequestAlert(purpose);
     const elements = ui(purpose); elements.report.hidden = true; elements.download.disabled = true; elements.error.hidden = true;
     if (purpose === 'diagnostics') {
@@ -1209,6 +1395,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   }
   function cancel(purpose, reason = 'user') {
     if (!activeInstance) return false;
+    if (purpose === 'topology') contextController.cancel();
     const request = active.get(purpose); if (!request) return;
     request.reason = reason; safeClearTimer(request.timer);
     try { request.controller.abort(reason); }
@@ -1353,7 +1540,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   listen(doc.querySelector('#apply-bearer'), 'click', () => applyCredential(false)); listen(doc.querySelector('#clear-bearer'), 'click', () => applyCredential(true));
   const fullscreenStatus = doc.querySelector('#fullscreen-status');
   const fullscreenEntries = [
-    { button: doc.querySelector('#topology-fullscreen'), target: doc.querySelector('#topology-result') },
+    { button: doc.querySelector('#topology-fullscreen'), target: doc.querySelector('#topology-report-section') },
     { button: doc.querySelector('#geo-map-fullscreen'), target: doc.querySelector('#geo-map-view') }
   ];
   let fullscreenInvoker = null; let fullscreenTarget = null; let fullscreenGeneration = 0;
@@ -1651,6 +1838,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
 
   const switchView = (target, { focus = false } = {}) => {
     const previousView = activeView;
+    if (previousView !== target) unmountContext();
     if (previousView === 'diagnostics' && target !== 'diagnostics') cancel('diagnostics', 'navigation');
     if (previousView === 'topology' && target !== 'topology') cancel('topology', 'navigation');
     activeView = activateView(doc, target);
@@ -1672,6 +1860,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   }));
   listen(win, 'hashchange', () => switchView(viewFromHash(win.location.hash), { focus: true }));
   listen(win, 'beforeunload', () => {
+    unmountContext(true);
     for (const [purpose, request] of [...active.entries()]) {
       request.reason = 'beforeunload'; safeClearTimer(request.timer);
       try { request.controller.abort('beforeunload'); } finally { if (active.get(purpose) === request) active.delete(purpose); }
@@ -1688,6 +1877,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   const getState = () => ({ diagnostics: lanes.diagnostics, topology: lanes.topology });
   function destroy() {
     if (!activeInstance) return false;
+    contextController.destroy(); contextView?.destroy(); contextView = null;
     activeInstance = false;
     ipLabelImportGeneration++;
     lifecycle.abort('destroy');

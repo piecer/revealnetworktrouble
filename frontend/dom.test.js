@@ -2578,7 +2578,7 @@ test('credential reflection in a report property name is rejected without disclo
 test('shared fullscreen controller reports failures, tracks exit, and restores invoker focus', async () => {
   const { dom, document } = setup();
   const topologyButton = document.querySelector('#topology-fullscreen');
-  const topologyTarget = document.querySelector('#topology-result');
+  const topologyTarget = document.querySelector('#topology-report-section');
   assert.equal(topologyButton.getAttribute('aria-pressed'), 'false');
   topologyTarget.requestFullscreen = async () => { throw new Error('denied'); };
   topologyButton.click(); await flush();
@@ -2613,13 +2613,13 @@ test('deferred fullscreen rejection from destroyed app cannot alter recreated ap
   const document = dom.window.document;
   let rejectFullscreen;
   const oldApp = createApp({ document, window: dom.window, fetchImpl: async () => response(JSON.stringify(report('old'))) });
-  document.querySelector('#topology-result').requestFullscreen = () => new Promise((_, reject) => { rejectFullscreen = reject; });
+  document.querySelector('#topology-report-section').requestFullscreen = () => new Promise((_, reject) => { rejectFullscreen = reject; });
   document.querySelector('#topology-fullscreen').click();
   await flush();
   oldApp.destroy();
 
   const newApp = createApp({ document, window: dom.window, fetchImpl: async () => response(JSON.stringify(report('new'))) });
-  document.querySelector('#topology-result').requestFullscreen = undefined;
+  document.querySelector('#topology-report-section').requestFullscreen = undefined;
   const newButton = document.querySelector('#topology-fullscreen');
   newButton.click(); await flush();
   newButton.focus();

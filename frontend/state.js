@@ -1,6 +1,323 @@
 'use strict';
 import { canonicalPublicIP } from './topology-presentation.js';
 
+const IP_CONTEXT_BYTES = 16384;
+const contextInvalid = () => { throw new TypeError('invalid IP context'); };
+const contextRequire = value => { if (!value) contextInvalid(); };
+const contextMember = (value, members) => typeof value === 'string' && members.split(' ').includes(value);
+const contextScalar = value => typeof value === 'string' && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
+
+// Do not feed numeric tokens to JSON.parse/Number before checking their exact
+// decimal value: rounding and underflow can turn a fractional token into an int.
+function contextNumber(token) {
+  const parts = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token);
+  contextRequire(parts);
+  let digits = (parts[2] + (parts[3] || '')).replace(/^0+/, '');
+  if (!digits) return 0; // zero is exact even with a 16K-digit exponent
+  contextRequire(parts[1] !== '-');
+  const rawExponent = (parts[4] || '0').replace(/^([+-]?)0+/, '$1') || '0';
+  contextRequire(rawExponent.length <= 6);
+  const scale = Number(rawExponent === '+' || rawExponent === '-' ? '0' : rawExponent) - (parts[3]?.length || 0);
+  if (scale < 0) {
+    contextRequire(-scale < digits.length && /^0*$/.test(digits.slice(scale)));
+    digits = digits.slice(0, scale);
+  } else {
+    contextRequire(digits.length + scale <= 10);
+    digits += '0'.repeat(scale);
+  }
+  contextRequire(digits.length <= 10);
+  const value = Number(digits);
+  contextRequire(value <= 4294967295);
+  return value;
+}
+
+function contextJSON(text) {
+  let at = 0, tokens = 0;
+  const token = () => contextRequire(++tokens <= 16384);
+  const ws = () => { while (/[\x20\t\r\n]/.test(text[at] || '\0')) at++; };
+  const string = () => {
+    token(); const start = at++;
+    while (at < text.length) {
+      const c = text[at++];
+      if (c === '\\') { at++; continue; }
+      if (c === '"') {
+        const value = JSON.parse(text.slice(start, at));
+        contextRequire(contextScalar(value)); return value;
+      }
+    }
+    contextInvalid();
+  };
+  const read = depth => {
+    contextRequire(depth <= 16); ws();
+    if (text[at] === '"') return string();
+    token();
+    if (text[at] === '{') {
+      at++; const result = {}; ws();
+      if (text[at] !== '}') for (;;) {
+        ws(); contextRequire(text[at] === '"'); const key = string();
+        contextRequire(!Object.hasOwn(result, key)); ws(); contextRequire(text[at++] === ':');
+        Object.defineProperty(result, key, { value: read(depth + 1), enumerable: true, writable: true, configurable: true });
+        ws(); if (text[at] === '}') break; contextRequire(text[at++] === ',');
+      }
+      at++; token(); return result;
+    }
+    if (text[at] === '[') {
+      at++; const result = []; ws();
+      if (text[at] !== ']') for (;;) {
+        result.push(read(depth + 1)); ws(); if (text[at] === ']') break; contextRequire(text[at++] === ',');
+      }
+      at++; token(); return result;
+    }
+    for (const [literal, value] of [['true', true], ['false', false], ['null', null]]) {
+      if (text.startsWith(literal, at)) { at += literal.length; return value; }
+    }
+    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(text.slice(at));
+    contextRequire(number); at += number[0].length; return contextNumber(number[0]);
+  };
+  const value = read(1); ws(); contextRequire(at === text.length); return value;
+}
+
+function contextObject(value, required, optional = '') {
+  contextRequire(value && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const allowed = (required + ' ' + optional).split(' ').filter(Boolean);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const d = descriptors[key];
+    contextRequire(typeof key === 'string' && allowed.includes(key) && d.enumerable && Object.hasOwn(d, 'value') && d.value !== null);
+  }
+  for (const key of required.split(' ').filter(Boolean)) contextRequire(Object.hasOwn(descriptors, key));
+  return value;
+}
+function contextArray(value, max) {
+  contextRequire(Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype);
+  const ds = Object.getOwnPropertyDescriptors(value), length = ds.length?.value;
+  contextRequire(Number.isInteger(length) && length <= max && Reflect.ownKeys(ds).length === length + 1);
+  for (let i = 0; i < length; i++) contextRequire(ds[i]?.enumerable && Object.hasOwn(ds[i], 'value'));
+  return value;
+}
+function contextInt(value, max) { contextRequire(Number.isInteger(value) && value >= 0 && value <= max); return value; }
+function contextStamp(value) {
+  contextRequire(typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && !value.startsWith('0000'));
+  const time = Date.parse(value);
+  contextRequire(Number.isFinite(time) && new Date(time).toISOString() === value); return time;
+}
+function contextIP(value) {
+  contextRequire(typeof value === 'string' && value.length <= 39);
+  if (!value.includes(':')) {
+    const parts = value.split('.');
+    contextRequire(parts.length === 4 && parts.every(p => /^(0|[1-9]\d{0,2})$/.test(p) && +p <= 255));
+    return { width: 32, bits: parts.reduce((n, p) => (n << 8n) | BigInt(p), 0n) };
+  }
+  contextRequire(/^[a-f0-9:]+$/.test(value));
+  const canonical = new URL(`http://[${value}]/`).hostname.slice(1, -1);
+  contextRequire(canonical === value);
+  const [a, b] = value.split('::'), left = a ? a.split(':') : [], right = b ? b.split(':') : [];
+  const words = value.includes('::') ? [...left, ...Array(8-left.length-right.length).fill('0'), ...right] : left;
+  const bits = words.reduce((n, word) => (n << 16n) | BigInt('0x'+word), 0n);
+  contextRequire(bits >> 32n !== 65535n); return { width: 128, bits };
+}
+function contextCount(value, count, max) {
+  contextRequire(value.status === 'ok' ? count >= 1 && count <= max && value.omitted === 0
+    : value.status === 'limited' ? count === max && value.omitted > 0 : count === 0 && value.omitted === 0);
+}
+
+// Validate original closed descriptors before reading or copying any field.
+// This direct-object seam rejects accessors/hidden keys/symbols/holes without hooks.
+export function normalizeIPContext(value, requestedAddress) {
+  const query = contextIP(requestedAddress);
+  contextRequire(canonicalPublicIP(requestedAddress) === requestedAddress);
+  const root = contextObject(value, 'schema_version address source fetched_at expires_at reverse_dns registration routing');
+  contextRequire(contextInt(root.schema_version, 1) === 1 && root.address === requestedAddress && contextMember(root.source, 'upstream cache'));
+  const fetched = contextStamp(root.fetched_at), expires = contextStamp(root.expires_at);
+  const timed = (v, source, key = 'fetched_at') => contextRequire(v.source === source && contextStamp(v[key]) <= fetched);
+  const rev = contextObject(root.reverse_dns, 'status source fetched_at names omitted');
+  timed(rev, 'system_resolver');
+  contextRequire(contextMember(rev.status, 'ok limited not_found timeout unavailable invalid_response'));
+  const names = contextArray(rev.names, 8); contextInt(rev.omitted, 56); contextCount(rev, names.length, 8);
+  let previous = '', transient = !contextMember(rev.status, 'ok limited not_found');
+  for (const v of names) {
+    const n = contextObject(v, 'name forward_status');
+    contextRequire(typeof n.name === 'string' && n.name.length <= 253 && n.name > previous && n.name.split('.').every(label => label.length >= 1 && label.length <= 63 && /^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$/.test(label)));
+    contextRequire(contextMember(n.forward_status, 'confirmed mismatch not_found timeout unavailable invalid_response limited'));
+    transient ||= !contextMember(n.forward_status, 'confirmed mismatch not_found limited'); previous = n.name;
+  }
+  const facts = 'start_address end_address handle name type country organization registered_at updated_at';
+  const reg = contextObject(root.registration, 'status source fetched_at', 'registry '+facts);
+  timed(reg, 'rdap'); contextRequire(contextMember(reg.status, 'ok not_found timeout unavailable rate_limited invalid_response'));
+  if (Object.hasOwn(reg, 'registry')) contextRequire(contextMember(reg.registry, 'arin apnic ripe lacnic afrinic'));
+  if (reg.status === 'ok') {
+    const start = contextIP(reg.start_address), end = contextIP(reg.end_address);
+    contextRequire(start.width === query.width && end.width === query.width && start.bits <= query.bits && end.bits >= query.bits);
+    let textBytes = 0;
+    for (const key of ['handle', 'name', 'type', 'country', 'organization']) if (Object.hasOwn(reg, key)) {
+      const text = reg[key]; contextRequire(contextScalar(text) && text.length > 0);
+      const size = new TextEncoder().encode(text).length; contextRequire(size <= 256); textBytes += size;
+      if (key === 'country') contextRequire(/^[A-Z]{2}$/.test(text));
+    }
+    contextRequire(textBytes <= 1536);
+    for (const key of ['registered_at', 'updated_at']) if (Object.hasOwn(reg, key)) contextStamp(reg[key]);
+  } else for (const key of facts.split(' ')) contextRequire(!Object.hasOwn(reg, key));
+  transient ||= !contextMember(reg.status, 'ok not_found');
+  const routing = contextObject(root.routing, 'status source fetched_at origins omitted', 'prefix');
+  timed(routing, 'ripe_ris'); contextRequire(contextMember(routing.status, 'ok limited not_found timeout unavailable rate_limited invalid_response'));
+  const origins = contextArray(routing.origins, 4); contextInt(routing.omitted, 60); contextCount(routing, origins.length, 4);
+  if (contextMember(routing.status, 'ok limited')) {
+    contextRequire(typeof routing.prefix === 'string');
+    const [ip, mask, ...extra] = routing.prefix.split('/'), network = contextIP(ip);
+    contextRequire(!extra.length && /^(0|[1-9]\d{0,2})$/.test(mask) && +mask <= query.width && network.width === query.width);
+    const shift = BigInt(query.width - Number(mask));
+    contextRequire(network.bits >> shift << shift === network.bits && query.bits >> shift === network.bits >> shift);
+  } else contextRequire(!Object.hasOwn(routing, 'prefix'));
+  transient ||= !contextMember(routing.status, 'ok limited not_found');
+  let previousASN = 0;
+  for (const v of origins) {
+    const origin = contextObject(v, 'asn rpki'); contextInt(origin.asn, 4294967295); contextRequire(origin.asn > previousASN); previousASN = origin.asn;
+    const rpki = contextObject(origin.rpki, 'status source checked_at', 'validity'); timed(rpki, 'ripe_rpki', 'checked_at');
+    contextRequire(contextMember(rpki.status, 'ok timeout unavailable rate_limited invalid_response'));
+    if (rpki.status === 'ok') contextRequire(contextMember(rpki.validity, 'valid invalid_asn invalid_length unknown'));
+    else { contextRequire(!Object.hasOwn(rpki, 'validity')); transient = true; }
+  }
+  contextRequire(expires - fetched === (transient ? 30000 : 300000));
+  // Go encoding/json escapes HTML and U+2028/U+2029; its newline counts too.
+  const canonical = JSON.stringify(root).replace(/[<>&\u2028\u2029]/g, c => '\\u'+c.charCodeAt(0).toString(16).padStart(4, '0')) + '\n';
+  contextRequire(new TextEncoder().encode(canonical).length <= IP_CONTEXT_BYTES);
+  return JSON.parse(canonical);
+}
+
+// Supplemental snapshots never enter the diagnostic report model. Accept bytes,
+// not already-decoded strings: replacement UTF-8 would erase malformed input.
+export function parseIPContext(bytes, requestedAddress) {
+  contextRequire(bytes instanceof Uint8Array && bytes.byteLength <= IP_CONTEXT_BYTES);
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  return normalizeIPContext(contextJSON(text), requestedAddress);
+}
+
+export function createIPContextController({ fetchImpl = globalThis.fetch, clock = () => Date.now(),
+  monotonicClock = () => performance.now(),
+  setTimer = setTimeout, clearTimer = clearTimeout, onChange = () => {}, isCurrentOwner = () => true } = {}) {
+  let owner = null, generation = 0, alive = true, flight = null, state = Object.freeze({ phase: 'idle' });
+  const cache = new Map();
+  const publish = next => { state = Object.freeze(next); onChange(state); };
+  const freeze = value => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
+  const stopBody = request => {
+    const body = request.reader || request.body;
+    if (!body || request.bodyCancelled) return;
+    request.bodyCancelled = true;
+    // A pending read can settle before the source's cancel callback. Retain one
+    // cleanup promise under this flight, never a detached cancellation queue.
+    try { request.cleanup = Promise.resolve(body.cancel()).catch(() => {}); } catch { /* no raw transport errors in UI */ }
+  };
+  const clearDeadline = request => { try { clearTimer(request.timer); } catch { /* authority remains revoked */ } };
+  const revoke = () => {
+    generation++;
+    if (flight) {
+      clearDeadline(flight); flight.controller.abort(); stopBody(flight); flight.settle(false);
+    }
+  };
+  const sameScope = (a, b) => a && b && a.report === b.report && a.apiBaseURL === b.apiBaseURL && a.authRevision === b.authRevision && a.token === b.token;
+  const cached = address => {
+    const value = cache.get(address);
+    if (!value || Date.parse(value.expires_at) <= clock()) { cache.delete(address); return null; }
+    cache.delete(address); cache.set(address, value); return value;
+  };
+  const owns = request => alive && generation === request.generation && owner === request.owner && isCurrentOwner(request.owner);
+  const live = request => owns(request) && !request.controller.signal.aborted && monotonicClock() < request.deadline;
+  return {
+    setOwner(next) {
+      if (!alive) return;
+      if (sameScope(owner, next) && owner.address === next.address) return;
+      if (!sameScope(owner, next)) cache.clear();
+      revoke(); owner = next ? { ...next } : null;
+      const value = owner && cached(owner.address);
+      publish(value ? { phase: 'ready', value, appCache: true } : { phase: 'idle' });
+    },
+    getState: () => state,
+    cancel() { if (!alive) return; revoke(); publish({ phase: 'cancelled' }); },
+    async query() {
+      if (!alive || !owner || !isCurrentOwner(owner)) return false;
+      try { contextIP(owner.address); contextRequire(canonicalPublicIP(owner.address) === owner.address); }
+      catch { publish({ phase: 'ineligible' }); return false; }
+      // Keep the actual underlying operation charged even after UI cancellation.
+      if (flight) return false;
+      const saved = cached(owner.address);
+      if (saved) { publish({ phase: 'ready', value: saved, appCache: true }); return true; }
+      let url;
+      try { url = new URL(owner.apiBaseURL); contextRequire(['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash); }
+      catch { publish({ phase: 'unavailable' }); return false; }
+      if (owner.token && url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
+        publish({ phase: 'insecure-auth' }); return false;
+      }
+      const request = { owner, generation, controller: new AbortController(), deadline: monotonicClock() + 10000, reader: null, bodyCancelled: false };
+      let settled = false;
+      const result = new Promise(resolve => { request.settle = value => { if (!settled) { settled = true; resolve(value); } }; });
+      flight = request;
+      const timeout = () => {
+        if (flight !== request || settled) return;
+        // Wake pending operations; monotonic admission also fences delayed timers.
+        if (owns(request) && !request.controller.signal.aborted) publish({ phase: 'timeout' });
+        request.controller.abort(); stopBody(request); clearDeadline(request); request.settle(false);
+      };
+      try { request.timer = setTimer(timeout, 10000); }
+      catch { flight = null; request.settle(false); publish({ phase: 'unavailable' }); return result; }
+      publish({ phase: 'loading' });
+      void (async () => {
+        try {
+          if (!live(request)) return;
+          const headers = { 'Content-Type': 'application/json' };
+          if (request.owner.token) headers.Authorization = `Bearer ${request.owner.token}`;
+          if (!live(request)) return;
+          const response = await fetchImpl(`${request.owner.apiBaseURL}/api/v1/ip-context`, {
+            method: 'POST', headers, body: JSON.stringify({ address: request.owner.address }),
+            redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', signal: request.controller.signal
+          });
+          request.body = response.body;
+          const discard = () => stopBody(request);
+          if (!live(request)) { discard(); return; }
+          if (response.redirected || response.status !== 200) {
+            discard();
+            if (live(request)) publish({ phase: response.status === 404 ? 'unsupported' : response.status === 401 ? 'unauthorized' : response.status === 429 ? 'rate-limited' : response.status === 503 ? 'busy' : 'unavailable' }); return;
+          }
+          const declared = response.headers?.get?.('Content-Length');
+          if (declared !== null && declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > IP_CONTEXT_BYTES)) { discard(); contextInvalid(); }
+          contextRequire(response.body?.getReader);
+          if (!live(request)) { discard(); return; }
+          request.reader = response.body.getReader();
+          const bytes = new Uint8Array(IP_CONTEXT_BYTES); let length = 0;
+          for (;;) {
+            if (!live(request)) { stopBody(request); return; }
+            const { done, value } = await request.reader.read();
+            if (!live(request)) { stopBody(request); return; }
+            if (done) break;
+            contextRequire(value instanceof Uint8Array && length + value.byteLength <= IP_CONTEXT_BYTES);
+            bytes.set(value, length); length += value.byteLength;
+          }
+          if (!live(request)) return;
+          const value = freeze(parseIPContext(bytes.subarray(0, length), request.owner.address));
+          const unexpired = Date.parse(value.expires_at) > clock();
+          if (!live(request)) return;
+          if (unexpired) {
+            cache.delete(value.address); cache.set(value.address, value);
+            while (cache.size > 64) cache.delete(cache.keys().next().value);
+          }
+          publish({ phase: 'ready', value, appCache: false }); request.settle(true);
+        } catch (error) {
+          stopBody(request);
+          if (live(request)) publish({ phase: error instanceof TypeError || error instanceof SyntaxError ? 'invalid-response' : 'unavailable' });
+        } finally {
+          if (owns(request) && !request.controller.signal.aborted && monotonicClock() >= request.deadline) timeout();
+          clearDeadline(request);
+          request.settle(false);
+          if (request.cleanup) await request.cleanup;
+          if (request.reader) { try { request.reader.releaseLock(); } catch { /* a cancelled stream may retain a pending read */ } }
+          if (flight === request) flight = null;
+        }
+      })();
+      return result;
+    },
+    destroy() { if (!alive) return; revoke(); alive = false; owner = null; cache.clear(); state = Object.freeze({ phase: 'idle' }); }
+  };
+}
+
 const REQUEST_PHASES = Object.freeze(['idle', 'loading', 'ready', 'error', 'cancelled']);
 const ERROR_KINDS = Object.freeze(['http', 'network', 'timeout', 'invalid-response', 'cancelled']);
 const SCHEMA_LIMITS = Object.freeze({

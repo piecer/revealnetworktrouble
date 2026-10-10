@@ -66,6 +66,7 @@ type TelemetryRoute string
 const (
 	TelemetryRouteHealth    TelemetryRoute = "GET /api/v1/health"
 	TelemetryRouteChecks    TelemetryRoute = "GET /api/v1/checks"
+	TelemetryRouteIPContext TelemetryRoute = "POST /api/v1/ip-context"
 	TelemetryRouteReports   TelemetryRoute = "POST /api/v1/reports"
 	TelemetryRouteOptions   TelemetryRoute = "OPTIONS /api/v1/"
 	TelemetryRouteUnmatched TelemetryRoute = "unmatched"
@@ -313,7 +314,7 @@ func validTelemetryMethod(method string) bool {
 
 func validTelemetryRoute(route TelemetryRoute) bool {
 	switch route {
-	case TelemetryRouteHealth, TelemetryRouteChecks, TelemetryRouteReports, TelemetryRouteOptions, TelemetryRouteUnmatched:
+	case TelemetryRouteIPContext, TelemetryRouteHealth, TelemetryRouteChecks, TelemetryRouteReports, TelemetryRouteOptions, TelemetryRouteUnmatched:
 		return true
 	default:
 		return false
@@ -374,7 +375,7 @@ func validTelemetrySemantics(record TelemetryRecord) bool {
 	case TelemetryOutcomeServerCapacity, TelemetryOutcomeServerDraining, TelemetryOutcomeBodyCapacity, TelemetryOutcomeWriteCapacity:
 		return record.Status == 503
 	case TelemetryOutcomeCancel:
-		return record.Route == TelemetryRouteReports && record.Status == 499
+		return (record.Route == TelemetryRouteReports || record.Route == TelemetryRouteIPContext) && record.Status == 499
 	case TelemetryOutcomeWriteFailedZero, TelemetryOutcomeWriteFailedPartial:
 		return true
 	default:
@@ -420,7 +421,7 @@ func validTerminalRouteMethod(route TelemetryRoute, method string) bool {
 	switch route {
 	case TelemetryRouteHealth, TelemetryRouteChecks:
 		return method == "GET"
-	case TelemetryRouteReports:
+	case TelemetryRouteReports, TelemetryRouteIPContext:
 		return method == "POST"
 	case TelemetryRouteOptions:
 		return method == "OPTIONS"
