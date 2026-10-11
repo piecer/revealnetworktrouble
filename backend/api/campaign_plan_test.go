@@ -2,15 +2,15 @@ package api
 
 import (
 	"os"
-	"regexp"
 	"reflect"
+	"regexp"
 	"testing"
 )
 
-func TestContinuousImprovementPlanKeepsStageOrder(t *testing.T) {
-	content, err := os.ReadFile("../../.hermes/plans/2026-09-01_201624-checknetwork-continuous-improvement.md")
+func TestImplementationHistoryKeepsStageOrder(t *testing.T) {
+	content, err := os.ReadFile("../../docs/IMPLEMENTATION-HISTORY.md")
 	if err != nil {
-		t.Fatalf("read campaign plan: %v", err)
+		t.Fatalf("read implementation history: %v", err)
 	}
 
 	matches := regexp.MustCompile(`(?m)^## Stage [1-7]: (.+)$`).FindAllStringSubmatch(string(content), -1)
@@ -28,6 +28,6 @@ func TestContinuousImprovementPlanKeepsStageOrder(t *testing.T) {
 		"교차 플랫폼 재감사와 다음 루프 계획",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("campaign stage order changed\n got: %#v\nwant: %#v", got, want)
+		t.Fatalf("historical stage order changed\n got: %#v\nwant: %#v", got, want)
 	}
 }

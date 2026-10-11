@@ -14,7 +14,7 @@ Inspected actual 04e3521 frontend/app.js (map renderer lines 399–465): luminou
 
 ## Historical pre-density evidence (superseded by correction below)
 
-- Chromium verifier: `PLAYWRIGHT_PATH=/tmp/canvasprobe/node_modules/playwright node frontend/route-visual.browser.cjs /tmp/route-visual-evidence /home/piecer/.hermes/cache/terminal-output/out-1788758982-6755-4d50.log`. Own ephemeral loopback server closes on completion; nine served assets compared byte-for-byte. Eight producer/captured × 375/1440 × 2D/3D cases, plus four existing interaction cases, passed before final canonical rerun. These are intercepted report replays, NOT new live diagnostic evidence.
+- Chromium verifier interface: `node frontend/route-visual.browser.cjs OUTPUT [REPORT_LOG]`. The historical run supplied an external captured REPORT log. Own ephemeral loopback server closes on completion; nine served assets compared byte-for-byte. Eight producer/captured × 375/1440 × 2D/3D cases, plus four existing interaction cases, passed before final canonical rerun. These are intercepted report replays, NOT new live diagnostic evidence.
 - Producer fixture now requires six completed attempts across all three results. Initial fixture incorrectly exhausted a one-slot supervisor and mislabeled unknown-hop attempts healthy, silently losing routes. Three slots and truthful degraded status fix that; exact producer-byte freshness remains mandatory.
 - Observed RED/GREEN: labels previously crossed node circles; reserve full ring bounds in label placement. Aliases get at most 25 candidates (ordinary labels nine). Overlapping node role glyphs are suppressed, not stacked; full roles remain in hover/focus/inspector. The unchanged browser glyph-overlap and saved-alias assertions pass.
 - Current source inventory: **Web 326 tests**, plus application contract script. Maximum report DOM measured 729 initial / 762 expanded; report/label navigation peak 1169, guard 1200. Earlier 699/732 and ASN 320 are historical records, not current readings.
@@ -72,8 +72,12 @@ to make a failing freshness check pass.
 
 ### Final-source reproduction
 
-Run from `/home/piecer/dev/src/revealnetworktroble-route-visual` after the last
-repository edit, preserving separate command exit statuses:
+Run from the repository root after the last edit, preserving separate command exit statuses.
+Set `PLAYWRIGHT_PATH` to an installed Playwright module, `BROWSER_OUTPUT_DIR` to a new
+evidence directory, and `CAPTURED_REPORT_LOG` to your separately retained captured REPORT log.
+That log is not distributed with the repository; the captured-report comparisons require the
+exact report SHA-256 above. Omitting the optional log runs producer-fixture cases only and does
+not reproduce the captured-report acceptance.
 
 ```sh
 make test
@@ -82,7 +86,10 @@ make vet
 make web-test-syntax
 git diff --check
 env -u UPDATE_REPORT_FIXTURES go test ./backend/api -run '^TestRouteVisualFixtureMatchesExactProducerBytes$' -count=1 -v
-PLAYWRIGHT_PATH=/tmp/canvasprobe/node_modules/playwright node frontend/route-visual.browser.cjs /tmp/route-visual-closeout-20260907 /home/piecer/.hermes/cache/terminal-output/out-1788758982-6755-4d50.log
+: "${PLAYWRIGHT_PATH:?Set the installed Playwright module path}"
+: "${BROWSER_OUTPUT_DIR:?Set a new evidence directory}"
+: "${CAPTURED_REPORT_LOG:?Set the retained captured REPORT log path}"
+PLAYWRIGHT_PATH="$PLAYWRIGHT_PATH" node frontend/route-visual.browser.cjs "$BROWSER_OUTPUT_DIR" "$CAPTURED_REPORT_LOG"
 ```
 
 The fresh browser evidence directory contains `results.json` (eight visual cases

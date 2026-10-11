@@ -12,10 +12,34 @@ import (
 )
 
 const (
-	stage8BaseParent = "36dc1dca9838337a5b5d1cf6ebc76bb35f5a4243"
-	stage8PlanPath   = ".hermes/plans/2026-09-03_100000-stage8-truthful-diagnostics-and-client-reliability.md"
-	stage9PlanPath   = ".hermes/plans/2026-09-07_090438-topology-2d-3d-restoration.md"
+	stage8BaseParent          = "36dc1dca9838337a5b5d1cf6ebc76bb35f5a4243"
+	implementationHistoryPath = "docs/IMPLEMENTATION-HISTORY.md"
+	readmeContractPath        = "docs/README-TECHNICAL-NOTES.md"
 )
+
+func TestReadmeKeepsQuickStartAndTechnicalReferenceDiscoverable(t *testing.T) {
+	root := documentationRepositoryRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, required := range []string{
+		"go run ./cmd/checknetwork-api",
+		"python3 -m http.server 3000 --bind 127.0.0.1 --directory frontend",
+		"docker compose up --build --wait",
+		"http://localhost:8080", "http://localhost:8090", "http://localhost:3000",
+		"make test", "make build", "make vet",
+		"(android/README.md)", "(docs/API.md)", "(docs/OPERATIONS.md)",
+		"(docs/IP-CONTEXT-WEB.md)", "(docs/IP-CONTEXT-ANDROID.md)",
+		"(" + readmeContractPath + ")",
+		"(" + implementationHistoryPath + ")",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("README is missing an entry-point command or reference: %q", required)
+		}
+	}
+}
 
 func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 	root := documentationRepositoryRoot(t)
@@ -28,8 +52,10 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 		return string(data)
 	}
 
-	currentDocPaths := []string{"README.md", "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", stage9PlanPath}
-	docPaths := append(append([]string(nil), currentDocPaths...), stage8PlanPath)
+	// Keep exact technical/history assertions in the linked reference, not the
+	// reader-facing quick start. No existing contract assertion is discarded.
+	currentDocPaths := []string{readmeContractPath, "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", implementationHistoryPath}
+	docPaths := currentDocPaths
 	var joined strings.Builder
 	for _, path := range docPaths {
 		joined.WriteString("\n--- " + path + " ---\n")
@@ -362,7 +388,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 	}
 
 	requiredByDoc := map[string][]string{
-		"README.md": {
+		readmeContractPath: {
 			"두 archive bytes", "load, tag, import, delete 또는 execute하지 않는다",
 			"API network **정확히 두 개**", "derived API archive 실행을 증명하지 않는다",
 			"daemon-success/CLI-response-loss", "HUP/INT/TERM",
@@ -433,7 +459,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"default 2D/optional 3D Canvas", "같은 validated facts", "report/analysis/diagnosis는 바꾸지 않는다", "no continuous animation",
 			"nodes 500, links 1,000, routes 1,000, DOM 1,200(현재 최대 1,152), DPR 4", "physical browser 및 screen-reader manual acceptance",
 		},
-		stage8PlanPath: {
+		implementationHistoryPath: {
 			"exact local code `invalid_server_response`", "exact `binary/` companion", "297 direct-child XML tests + 2 variant-contract tests",
 			"API hard limits are archive 512 MiB", "caller-owned empty real directory", "never daemon-loaded, daemon-tagged, imported, deleted, or executed",
 			"API owns one smoke container and one API network", "Success output is exactly six API fields",
@@ -441,8 +467,6 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"Final post-doc `env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci` remains pending",
 			"No final manifest, commit, release, five-way review, exact-SHA, or main-integration claim is made here.",
 			"`MAX_TARGETS=20`", "`MAX_DOCUMENT_ELEMENTS=1200`", "fake cases 12", "three umasks 077/027/000", "canonical Docker inventory",
-		},
-		stage9PlanPath: {
 			"Stage 9 implementation is pending final gates/review, not complete", "기본 선택은 `2D 그래프`", "`3D 그래프`를 선택하면 동일한 node/link set",
 			"데이터나 분석 결과를 바꾸지 않는 순수 view projection", "진단 결과를 변경하지 않는다", "interaction event와 resize에서만 redraw",
 			"Canvas 하나와 고정 control 수만 추가", "document-wide 1,200 element 한도", "nodes 500/links 1,000/routes bounded", "DPR을 bounded finite 값으로 clamp",
@@ -522,7 +546,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 
 func TestDocumentationContractHasNoStaleStageOrBrokenRelativeLinks(t *testing.T) {
 	root := documentationRepositoryRoot(t)
-	paths := []string{"README.md", "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", stage8PlanPath, stage9PlanPath}
+	paths := []string{"README.md", readmeContractPath, "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", implementationHistoryPath}
 	stale := []string{
 		"현재 단계: Stage 7",
 		"현재 uncommitted Stage 7",

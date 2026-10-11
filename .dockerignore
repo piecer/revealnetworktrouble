@@ -1,6 +1,6 @@
 .git
 .gitignore
-.hermes
+
 bin
 frontend
 android
