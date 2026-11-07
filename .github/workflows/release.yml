@@ -1,0 +1,78 @@
+# Verification only: uploading candidate artifacts does not publish a release/tag.
+name: Release candidate
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Exact 40-character lowercase commit SHA to verify
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.revision || github.sha }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  verify:
+    name: Release exact SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      REQUESTED_SHA: ${{ inputs.revision || github.sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          android: 'true'
+      - name: Validate revision, clean checkout, and tag identity
+        run: python3 scripts/ci-release-ref.py 2>&1 | tee "$CI_EVIDENCE_DIR/identity.log"
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: v0.31.1
+          driver-opts: image=moby/buildkit@sha256:054d632d0d7e94b11cdc6048674773499a5170cf7d8ce0c326daaff6be43c8e0 # v0.27.0
+      - name: Security gates
+        run: make ci-security 2>&1 | tee "$CI_EVIDENCE_DIR/security.log"
+      - name: Prepare and verify exact borrowed bases before inventory capture
+        run: make release-bases 2>&1 | tee "$CI_EVIDENCE_DIR/release-bases.log"
+      - name: Canonical clean archive, full CI, and reproducible image verification
+        run: make ci-clean-archive 2>&1 | tee "$CI_EVIDENCE_DIR/clean-archive.log"
+      - name: Exact production verifier under three umasks
+        run: make verify-release-real REVISION="$REQUESTED_SHA" 2>&1 | tee "$CI_EVIDENCE_DIR/release-real.log"
+      - name: Extract verified binary and create checksum
+        run: |
+          make release 2>&1 | tee "$CI_EVIDENCE_DIR/release.log"
+          make release-vuln 2>&1 | tee "$CI_EVIDENCE_DIR/release-vuln.log"
+          cp bin/checknetwork-api "$CI_EVIDENCE_DIR/checknetwork-api-linux-amd64"
+          git rev-parse HEAD > "$CI_EVIDENCE_DIR/REVISION"
+          cp VERSION "$CI_EVIDENCE_DIR/VERSION"
+          cd "$CI_EVIDENCE_DIR"
+          sha256sum checknetwork-api-linux-amd64 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Preserve verification logs even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-${{ github.run_id }}
+          path: ${{ env.CI_EVIDENCE_DIR }}/*.log
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload verified candidate only after every gate succeeded
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-${{ inputs.revision || github.sha }}
+          path: |
+            ${{ env.CI_EVIDENCE_DIR }}/checknetwork-api-linux-amd64
+            ${{ env.CI_EVIDENCE_DIR }}/SHA256SUMS
+            ${{ env.CI_EVIDENCE_DIR }}/REVISION
+            ${{ env.CI_EVIDENCE_DIR }}/VERSION
+          if-no-files-found: error
+          retention-days: 30

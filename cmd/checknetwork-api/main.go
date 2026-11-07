@@ -40,6 +40,7 @@ const (
 
 type runtimeConfig struct {
 	addr                string
+	exposedTrustedLocal bool
 	geoIPURL            string
 	server              api.ServerConfig
 	maxConcurrentChecks int
@@ -84,6 +85,9 @@ func runMain() int {
 		return 1
 	}
 	handler := newOperationalHandler(operational, businessHandler)
+	if config.exposedTrustedLocal {
+		warnExposedTrustedLocal(logger, config.addr)
+	}
 	server := newHTTPServer(config.addr, handler)
 	rawListener, err := net.Listen("tcp", config.addr)
 	if err != nil {
@@ -133,6 +137,13 @@ func finishRun(exitCode int, shutdownErr error, logger *slog.Logger) int {
 
 func logServerStarted(logger *slog.Logger, address, buildVersion, buildRevision string) {
 	logger.Info("server started", "address", address, "version", buildVersion, "revision", buildRevision)
+}
+
+// warnExposedTrustedLocal records one stable warning that trusted-local mode serves on a
+// non-loopback bind without authentication. It intentionally carries only the configured address —
+// no target, credential, or client data.
+func warnExposedTrustedLocal(logger *slog.Logger, addr string) {
+	logger.Warn("trusted-local mode serves without authentication on a non-loopback bind", "address", addr)
 }
 
 func newProductionRunner(supervisor *diagnostic.CheckerSupervisor, checkers ...diagnostic.Checker) *diagnostic.Runner {
@@ -260,8 +271,34 @@ func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
 		if config.server.RateLimitPerMinute <= 0 {
 			return runtimeConfig{}, fmt.Errorf("public mode requires CHECKNETWORK_RATE_LIMIT_PER_MINUTE")
 		}
+	} else if !bindingIsLoopback(bindingHost(config.addr)) {
+		// trusted-local mode has no authentication: a non-loopback bind exposes an unauthenticated
+		// network diagnostic oracle. Require explicit operator acknowledgement before allowing it;
+		// shared or public networks should run public mode (API key + rate limit + SSRF policy).
+		if lookup("CHECKNETWORK_EXPOSE_TRUSTED_LOCAL") != "yes" {
+			return runtimeConfig{}, fmt.Errorf(
+				"trusted-local mode binds %q outside loopback; set CHECKNETWORK_EXPOSE_TRUSTED_LOCAL=yes to accept unauthenticated access, or run public mode with CHECKNETWORK_API_KEY and CHECKNETWORK_RATE_LIMIT_PER_MINUTE", config.addr)
+		}
+		config.exposedTrustedLocal = true
 	}
 	return config, nil
+}
+
+func bindingHost(addr string) string {
+	addr = strings.TrimSpace(addr)
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
+}
+
+// bindingIsLoopback reports whether the bind host is a loopback IP literal. Hostnames such as
+// "localhost" are deliberately rejected: they may resolve to non-loopback addresses at runtime,
+// which would silently bypass this check.
+func bindingIsLoopback(host string) bool {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
 }
 
 func buildCheckers(mode api.DeploymentMode, policy *diagnostic.NetworkPolicy, geoIP diagnostic.GeoIPLookup, tracerouteCapability *diagnostic.TracerouteCapability) []diagnostic.Checker {

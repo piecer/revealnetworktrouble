@@ -1,0 +1,106 @@
+# No paths filter: the required check must be emitted for every PR/merge group.
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  quick:
+    name: Quick
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      - name: Quick gates and workflow lint
+        run: |
+          mkdir -p "$CI_EVIDENCE_DIR"
+          make ci-quick ci-workflows 2>&1 | tee "$CI_EVIDENCE_DIR/quick.log"
+      - name: Preserve Quick evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: quick-${{ github.sha }}
+          path: ${{ env.CI_EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+  full:
+    name: Full
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          android: 'true'
+      - name: Full gates including race and Android variants
+        run: |
+          mkdir -p "$CI_EVIDENCE_DIR"
+          make ci 2>&1 | tee "$CI_EVIDENCE_DIR/full.log"
+      - name: Preserve Full evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: full-${{ github.sha }}
+          path: |
+            ${{ env.CI_EVIDENCE_DIR }}
+            android/app/build/test-results/
+            android/app/build/reports/
+          if-no-files-found: error
+          retention-days: 14
+  security:
+    name: Security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # Secret scanning covers the complete checked-out history.
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      - name: Security gates (scanner errors also fail)
+        run: |
+          mkdir -p "$CI_EVIDENCE_DIR"
+          make ci-security 2>&1 | tee "$CI_EVIDENCE_DIR/security.log"
+      - name: Preserve redacted Security evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-${{ github.sha }}
+          path: ${{ env.CI_EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+  required:
+    name: CI required
+    if: always()
+    needs: [quick, full, security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      QUICK_RESULT: ${{ needs.quick.result }}
+      SECURITY_RESULT: ${{ needs.security.result }}
+      FULL_RESULT: ${{ needs.full.result }}
+      FULL_REQUIRED: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Fail closed on missing, cancelled, failed or unexpectedly skipped jobs
+        run: python3 scripts/ci-status.py

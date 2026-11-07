@@ -4,6 +4,7 @@
 
 - `CHECKNETWORK_ADDR`: API listen 주소, 기본값 `127.0.0.1:8080`
 - `CHECKNETWORK_MODE`: `trusted-local`(기본) 또는 `public`
+- `CHECKNETWORK_EXPOSE_TRUSTED_LOCAL`: trusted-local mode가 loopback 밖 bind를 허용하는 명시적 승인. 값은 정확히 `yes`만 허용한다(기본값 없음, Compose 기본은 yes). 승인 없이는 비loopback bind 시작을 거부한다.
 - `CHECKNETWORK_MAX_CONNECTIONS`: handler 생성 전 active accepted connection 상한, 기본 128, 허용 범위 1~256
 - `CHECKNETWORK_MAX_CONCURRENT_REPORTS`: 동시에 실행할 report 상한, 기본 4, 허용 범위 1~16. 17 이상은 `loadRuntimeConfig` 단계에서 시작을 거부한다.
 - `CHECKNETWORK_MAX_CONCURRENT_BODY_DECODES`: 인증된 report JSON 동시 decode 상한, 미설정 시 effective report 상한과 동일, 허용 범위 1~64
@@ -14,7 +15,7 @@
 - `CHECKNETWORK_GEOIP_URL`: traceroute 공인 IP의 위치/ASN 조회 API base URL, 기본값 `https://ipwho.is/`
 
 
-`trusted-local`은 사설망 진단을 허용하므로 loopback에만 bind하는 것이 기본이다. `public`은 API key와 rate limit 없이는 시작하지 않으며 DNS, TCP, HTTP(S) redirect, 서비스, traceroute의 모든 실제 dial 주소를 재검사해 사설·loopback·link-local·metadata·특수 목적 대역을 차단한다. CORS 허용은 인증이 아니다. reverse proxy 뒤에서는 현재 직접 연결 source IP가 rate-limit key이므로 프록시 자체의 인증/rate limit도 함께 사용한다.
+`trusted-local`은 사설망 진단을 허용하므로 loopback에만 bind하는 것이 기본이다. `public`은 API key와 rate limit 없이는 시작하지 않으며 DNS, TCP, HTTP(S) redirect, 서비스, traceroute의 모든 실제 dial 주소를 재검사해 사설·loopback·link-local·metadata·특수 목적 대역을 차단한다. CORS 허용은 인증이 아니다. reverse proxy 뒤에서는 현재 직접 연결 source IP가 rate-limit key이므로 프록시 자체의 인증/rate limit도 함께 사용한다. `trusted-local`을 loopback 밖으로 bind해야 하는 환경(예: 공유 LAN)에서는 `CHECKNETWORK_EXPOSE_TRUSTED_LOCAL=yes`로 명시 승인하고 시작 WARN 로그를 확인해야 하며, 가능한 한 `public` mode(API key + rate limit + SSRF policy)를 우선한다.
 
 Public client는 모든 API 요청에 설정된 API key를 Bearer credential로 보낸다. Web UI의 공용 연결 설정에서 API base별 Bearer를 명시적으로 활성화할 수 있으며, 값은 해당 탭의 `sessionStorage`에만 보관된다. 원격 API에는 HTTPS가 필요하고 loopback HTTP만 예외다. credential은 URL, request signature, report, DOM text, JSON/Markdown export 또는 `localStorage`에 포함하지 않는다.
 
@@ -27,6 +28,21 @@ traceroute의 공인 IP는 서버에서 GeoIP 제공자에 전달된다. 사내 
 Geo 상세정보는 같은 공급자 응답의 추가 필드를 보존한다. 이를 위해 IP별 별도 조회나 새 공급자를 추가하지 않는다. `geo_details=1`은 report 응답 확장에 대한 선택이며 GeoIP 외부 조회를 끄는 설정이 아니다. Web/Android가 이 쿼리를 보내도 구서버의 기본 응답을 재시도 없이 사용할 수 있어 서버와 클라이언트를 순차 갱신할 수 있다. 기존 클라이언트의 쿼리 없는 응답 형식은 유지된다. 별도 DB·유료 플랜·새 환경변수는 필요 없다.
 
 화면의 공급자·`upstream`/`cache`·조회/만료 시각은 추가 텍스트 묶음의 출처다. 기존 좌표·ASN이 같은 조회에서 얻어졌다는 보증이나 공급자 DB 갱신 시각으로 해석하지 않는다. 좌표 없는 텍스트 정보는 지점을 만들지 않으며, Anycast/VPN/실제 장비 소재지·패킷 통과 위치를 판정하지 않는다. 기본 사람용 export의 기존 privacy 경계와 원본 JSON 경고를 유지한다. 세부 계약과 한도는 [GEO-DETAILS.md](GEO-DETAILS.md)를 참조한다. 오프라인 지도는 브라우저의 외부 tile 요청을 없애지만 서버의 GeoIP 조회와는 별개다.
+
+## 배포 모드와 인증 경계
+
+| 실행 방식 | 바인딩과 승인 | 접근 경계 |
+|---|---|---|
+| 직접 실행 기본값 | `127.0.0.1:8080`, `trusted-local`, 별도 승인 불필요 | 같은 호스트의 신뢰할 수 있는 사용자만 사용 |
+| 직접 실행 비loopback | `:8080`, `[::]:8080`, LAN IP 또는 hostname이면 `CHECKNETWORK_EXPOSE_TRUSTED_LOCAL=yes` 필수 | 인증 없는 사설망 진단 기능이 노출됨. 승인 변수 자체는 인증이나 방화벽이 아님 |
+| 기본 Compose | 컨테이너 `:8080` + 승인 `yes`; 호스트 API `127.0.0.1:8090`, Web `127.0.0.1:3000` | 같은 Docker 네트워크의 컨테이너는 API에 직접 접근할 수 있으므로 네트워크 구성원도 신뢰 대상 |
+| Public + reverse proxy | `public`, API key 및 양수 rate limit 필수 | 프록시에서 TLS·인증·사용자별 rate limit을 적용하고, backend 직접 접근은 loopback/격리 네트워크로 제한 |
+
+승인은 앞뒤 공백 없는 소문자 `yes`만 인정한다. `YES`, `true`, `1`, ` yes`는 승인으로 보지 않는다. `localhost` 같은 hostname은 DNS 결과에 의존하므로 loopback 예외로 인정하지 않으며, 로컬 실행은 IP literal을 사용한다. 승인한 비loopback trusted-local 구성은 시작 시 WARN을 기록한다. Public 모드에서는 승인 변수가 있어도 API key/rate limit 요구가 완화되지 않는다.
+
+현재 API는 `Forwarded`, `X-Forwarded-For`, `X-Real-IP`를 인증이나 rate-limit 식별자로 신뢰하지 않는다. rate limit은 실제 연결의 `RemoteAddr` IP를 사용하므로 하나의 reverse proxy 뒤 사용자들은 backend quota를 공유한다. 프록시는 외부에서 받은 forwarding 헤더를 정리하고 사용자별 제한을 별도로 적용해야 한다. 프록시의 TLS 종료는 backend `public` 인증·SSRF 정책을 끄는 이유가 되지 않는다. CORS 허용 Origin이나 헤더는 인증을 대신하지 않는다.
+
+릴리스 검증용 smoke 컨테이너도 `CHECKNETWORK_MODE=trusted-local`과 승인 `yes`를 실행 인자로 전달한다. 이 예외는 검증용 격리 네트워크에 한정하며, 이미지 기본 환경에 승인 값을 bake하지 않는다.
 
 ## 실행 및 자원 envelope
 
@@ -109,7 +125,7 @@ GOOS=windows GOARCH=amd64 go build -o bin/checknetwork-windows-amd64.exe ./cmd/c
 docker compose up --build
 ```
 
-Compose API는 host의 `127.0.0.1:9090`, 웹은 `localhost:3000`에서 접근한다. 컨테이너 API는 `trusted-local`로 실행되며 host publish도 loopback으로 제한한다. 외부 공개 시에는 `public` 모드와 TLS reverse proxy를 사용하고 proxy 계층에도 인증/rate limit을 둔다. 기본 Compose build args의 exact 개발 sentinel은 `CHECKNETWORK_VERSION=0.1.0-dev`, `CHECKNETWORK_REVISION=0000000000000000000000000000000000000000`, `SOURCE_DATE_EPOCH=0`이며 API/Web에 동일하게 전달된다. zero revision은 개발 전용 sentinel이고 실제 commit 또는 release provenance가 아니므로 release artifact로 배포하지 않는다. 명시적인 `CHECKNETWORK_VERSION`, `CHECKNETWORK_REVISION`, `SOURCE_DATE_EPOCH` override는 Compose가 그대로 두 service에 전달한다.
+Compose API는 host의 `127.0.0.1:8090`, 웹은 `localhost:3000`에서 접근한다. 컨테이너 API는 `trusted-local`로 실행되며 host publish도 loopback으로 제한한다. 외부 공개 시에는 `public` 모드와 TLS reverse proxy를 사용하고 proxy 계층에도 인증/rate limit을 둔다. 기본 Compose build args의 exact 개발 sentinel은 `CHECKNETWORK_VERSION=0.1.0-dev`, `CHECKNETWORK_REVISION=0000000000000000000000000000000000000000`, `SOURCE_DATE_EPOCH=0`이며 API/Web에 동일하게 전달된다. zero revision은 개발 전용 sentinel이고 실제 commit 또는 release provenance가 아니므로 release artifact로 배포하지 않는다. 명시적인 `CHECKNETWORK_VERSION`, `CHECKNETWORK_REVISION`, `SOURCE_DATE_EPOCH` override는 Compose가 그대로 두 service에 전달한다.
 
 API image는 non-root `65532:65532`로 실행하고 Web image는 nginx `worker_processes 2`를 사용한다. 두 service 모두 exec-form healthcheck가 있으며 Web은 API `/readyz` health를 기다린다. 운영 smoke는 `docker compose config`, `docker compose build api web`, `docker compose up -d --wait`, API `/readyz`와 Web URL 확인, `docker compose down` 순서로 수행한다.
 

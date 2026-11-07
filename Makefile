@@ -57,7 +57,7 @@ REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
 
 .PHONY: web-test-deployment web-test-deployment-live
 
-test: android-env-bootstrap-test
+test: android-env-bootstrap-test ci-policy
 	go test ./...
 	$(MAKE) web-test
 
@@ -139,10 +139,53 @@ android-assemble: android-wrapper-verify android-env
 
 android-check: android-test android-lint android-assemble
 
-ci-inner: frontend-deps
+ci-inner: frontend-deps ci-policy
 	./scripts/ci-inner.sh
 
 ci: ci-inner
 
 ci-clean-archive:
 	./scripts/ci-clean-archive.sh "$$(git rev-parse HEAD)"
+
+# Hosted CI calls these same entry points; no alternate test logic in YAML.
+CI_TOOLS_DIR ?= $(abspath bin/ci-tools)
+export CI_TOOLS_DIR
+.PHONY: ci-quick ci-policy ci-workflows ci-security ci-security-tools security-test go-vuln npm-audit secret-scan release-vuln release-bases
+
+ci-quick: frontend-deps
+	$(MAKE) test web-test-syntax vet build
+
+ci-policy:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_ci_*.py' -v
+	@printf 'CI_OK: ci-policy\n'
+
+ci-workflows:
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
+ci-security-tools:
+	mkdir -p "$(CI_TOOLS_DIR)"
+	GOBIN="$(CI_TOOLS_DIR)" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+	GOBIN="$(CI_TOOLS_DIR)" go install github.com/zricethezav/gitleaks/v8@v8.30.1
+
+ci-security: frontend-deps ci-security-tools
+	sh scripts/ci-security.sh
+
+security-test:
+	go test -count=1 ./backend/... ./cmd/checknetwork-api -run 'Public|NetworkPolicy|PolicyTransport|Exposure|TrustedLocal|ComposeResolvedExposure|ReleaseSmokeEnvironment'
+
+go-vuln:
+	"$(CI_TOOLS_DIR)/govulncheck" ./...
+
+release-vuln:
+	"$(CI_TOOLS_DIR)/govulncheck" -mode=binary bin/checknetwork-api
+
+# Base cache changes happen before verify-release-real takes its inventory.
+# Derived archives remain tagless and must never be loaded by this target.
+release-bases:
+	python3 scripts/prepare-release-bases.py
+
+npm-audit:
+	npm --prefix frontend audit --audit-level=high
+
+secret-scan:
+	"$(CI_TOOLS_DIR)/gitleaks" git --no-banner --redact=100 --log-opts=--all .

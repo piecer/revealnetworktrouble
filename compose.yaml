@@ -10,6 +10,9 @@ services:
       CHECKNETWORK_ALLOWED_ORIGINS: http://localhost:3000
       CHECKNETWORK_ADDR: :8080
       CHECKNETWORK_MODE: ${CHECKNETWORK_MODE:-trusted-local}
+      # Containerized deployments bind :8080 by design; the explicit "yes" declares that host-side
+      # exposure stays controlled by loopback-only port publishing (see docs/OPERATIONS.md).
+      CHECKNETWORK_EXPOSE_TRUSTED_LOCAL: ${CHECKNETWORK_EXPOSE_TRUSTED_LOCAL:-yes}
       CHECKNETWORK_API_KEY: ${CHECKNETWORK_API_KEY:-}
       CHECKNETWORK_RATE_LIMIT_PER_MINUTE: ${CHECKNETWORK_RATE_LIMIT_PER_MINUTE:-}
     ports:

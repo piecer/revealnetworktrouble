@@ -1,0 +1,37 @@
+# Exact patch versions shared by Quick, Full, Security, and Release jobs.
+name: CheckNetwork toolchain
+description: Configure the tested Go/Node toolchain and optionally Android
+inputs:
+  android:
+    description: Install the pinned Android/JDK toolchain
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Configure disposable receipts and tools
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/checknetwork-$GITHUB_JOB"
+        echo "CI_EVIDENCE_DIR=$RUNNER_TEMP/checknetwork-$GITHUB_JOB" >> "$GITHUB_ENV"
+        echo "CI_TOOLS_DIR=$RUNNER_TEMP/checknetwork-tools" >> "$GITHUB_ENV"
+        echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+    - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+      with:
+        go-version: '1.26.10'
+        cache: false # stdlib-only module has no go.sum
+    - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+      with:
+        node-version: '22.23.1'
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - if: inputs.android == 'true'
+      uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+      with:
+        distribution: temurin
+        java-version: '17.0.21+9'
+    - if: inputs.android == 'true'
+      uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+      with:
+        cmdline-tools-version: '12266719'
+        packages: 'platforms;android-35 build-tools;35.0.0'
+        log-accepted-android-sdk-licenses: false

@@ -389,6 +389,8 @@ create_owned_api_container() {
         --network "$api_network_id" \
         --user 65532:65532 \
         --env CHECKNETWORK_ADDR=:8080 \
+        --env CHECKNETWORK_MODE=trusted-local \
+        --env CHECKNETWORK_EXPOSE_TRUSTED_LOCAL=yes \
         --env PATH=/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         --entrypoint /checknetwork-api \
         --health-cmd 'wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/readyz' \
