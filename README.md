@@ -174,3 +174,112 @@ Android 환경까지 준비했다면 `make android-check`로 Android 테스트·
 | 테스트 실행과 아직 검증하지 않은 범위 | [테스트 기준](docs/TESTING.md) |
 | 구현 이력과 남은 검증·개선 항목 | [구현 이력](docs/IMPLEMENTATION-HISTORY.md) |
 | 이전 README의 내부 계약·검증 기록 | [기술 참고 문서](docs/README-TECHNICAL-NOTES.md) |
+[English](README.en.md) · [사용/운영](docs/OPERATIONS.md) · [API](docs/API.md) · [기여](CONTRIBUTING.md) · [보안](SECURITY.md)
+
+[![CI](https://github.com/piecer/revealnetworktrouble/actions/workflows/ci.yml/badge.svg)](https://github.com/piecer/revealnetworktrouble/actions/workflows/ci.yml)
+
+DNS·TCP·HTTP(S)·traceroute·SSH/메일 계열 상태를 검사하고 관측 증거와 다음 점검 단계를 보고하는 Go API + Web + Android 앱이다.
+
+중요: 검사는 API 서버 측에서 실행된다. 브라우저나 Android가 연결한 원격 서버의 관측이지, 사용자 기기의 Wi-Fi·통신사 경로를 직접 측정한 결과가 아니다. `confidence`도 장애 원인 확률이 아니라 수집한 근거의 수준이다.
+
+소스 버전은 `VERSION`의 `0.1.0`이다. 이 값만으로 공개 릴리스/태그 발행이나 지원 플랫폼 검증 완료를 뜻하지 않는다. CI 배지도 원격 workflow 반영·실행 후의 상태를 표시하며 로컬 통과 결과를 대신하지 않는다. 프로젝트 라이선스는 [Apache-2.0](LICENSE)이며 공개 배포 승인은 별도다.
+
+## 빠른 시작: Docker Compose
+
+필요: Docker daemon, Compose 및 이미지 다운로드 접근. 기본 설정은 개발용이며 API/Web의 host publish는 loopback으로 제한된다.
+
+```sh
+# 저장소 루트에서 실행한다. 사용 중인 서비스/포트와 충돌하지 않는지 먼저 확인한다.
+docker compose up --build --wait
+# API 기본 host port는 8090, Web은 3000이다.
+curl --fail http://127.0.0.1:8090/readyz
+curl --fail http://127.0.0.1:8090/api/v1/health
+```
+
+브라우저에서 `http://localhost:3000`을 연다. API 기본 주소는 `http://localhost:8090`이다. `/livez`는 프로세스 생존, `/readyz`는 traceroute capability와 drain을 포함한 준비 상태, `/api/v1/health`는 build identity다. health 한 경로의 성공을 전체 readiness와 혼동하지 않는다.
+
+다른 API host port가 필요하면 `CHECKNETWORK_API_PORT=18090 docker compose up --build --wait`처럼 설정한다. API publish와 Web build-time 기본값이 함께 바뀌므로 Web 재빌드가 필요하다. 컨테이너 내부 API port는 8080이다.
+
+## 빠른 시작: Go + 정적 Web
+
+필요: Go 1.22 이상(검증 툴체인은 Go 1.26.10), Python 3, platform traceroute 실행 파일. traceroute가 없거나 startup loopback probe가 실패하면 `/readyz`는 503이며 기능을 준비 완료로 간주하지 않는다. 시스템 패키지 설치는 해당 OS의 검증된 패키지 경로를 사용한다.
+
+```sh
+# 터미널 1: 이 명령에만 검증 툴체인을 적용한다. 기본 API bind는 127.0.0.1:8080이다.
+GOTOOLCHAIN=go1.26.10 go run ./cmd/checknetwork-api
+```
+
+```sh
+# 터미널 2: 정적 파일 서버도 loopback으로 제한한다.
+python3 -m http.server 3000 --bind 127.0.0.1 --directory frontend
+```
+
+`http://localhost:3000`의 `API 연결 설정`을 열어 `http://localhost:8080`으로 바꾼다. 정적 HTML/Compose 밖 canonical Web의 초기 주소 9090, 직접 Go 실행의 8080, 기본 Compose의 8090은 서로 다르다. 이미 port 3000이 사용 중이면 다른 Web port와 그에 맞는 `CHECKNETWORK_ALLOWED_ORIGINS`를 사용한다.
+
+```sh
+# 터미널 3: 실제 API 요청. 결과에는 개별 검사의 실패도 정상적인 관측으로 포함될 수 있다.
+curl --fail http://127.0.0.1:8080/readyz
+curl --fail -X POST http://127.0.0.1:8080/api/v1/reports \
+  -H 'Content-Type: application/json' \
+  -d '{"timeout_ms":5000,"targets":[{"kind":"dns","address":"example.com"},{"kind":"https","address":"https://example.com"}]}'
+```
+
+## 사용 시나리오
+
+| 상황 | 먼저 실행할 검사 | 해석과 다음 단계 |
+|---|---|---|
+| 이름으로 접속되지 않음 | DNS와 같은 대상의 TCP | DNS 관측 실패와 endpoint 연결 실패를 분리한다. resolver/주소/정책을 확인한다. |
+| HTTPS만 실패 | HTTPS, 필요하면 TCP 443 | 인증서 만료·hostname·trust와 연결/응답 실패를 구분한다. 인증서 검증을 끄는 것을 해결책으로 삼지 않는다. |
+| 경로가 불안정해 보임 | traceroute 반복·목적지 필터 | 무응답 홉을 즉시 장애로 단정하지 않는다. completed/실패 attempt와 관측 한계를 함께 확인한다. |
+
+서비스 검사는 server-first greeting 관측이며 로그인·메일 송수신·STARTTLS·end-to-end 성공을 검증하지 않는다. 원본 JSON보다 사람용 보고서와 구조화된 analysis를 먼저 읽는다.
+
+## 화면과 지원 기능
+
+통합 진단, 기본 2D/선택 가능한 3D 경로 토폴로지, offline Geo 지도, IP 라벨 import/편집, IP family별 공통 CIDR/주소 범위 계산을 제공한다. 2D/3D는 같은 facts의 보기이며 진단 결과를 바꾸지 않는다. Geo/ASN은 등록 정보 기반 추정치다. `공통 구간`의 CIDR 일치만으로 실제 공통 네트워크 경로나 동일 장비를 확정하지 않는다.
+
+![실제 로컬 API의 통합 진단 화면](docs/images/diagnostics.png)
+
+![고정 producer fixture를 재생한 2D 토폴로지 화면](docs/images/topology.png)
+
+![고정 producer fixture를 재생한 offline Geo 지도 화면](docs/images/geo-map.png)
+
+![브라우저에서 로컬 계산한 IPv4/IPv6 공통 CIDR 화면](docs/images/common-prefix.png)
+
+그림의 실행 출처·해시·재현 조건은 [화면 검증 기록](docs/images/PROVENANCE.md)에 있다. fixture 재생 화면은 UI 예시이지 외부 네트워크 진단 성공이나 운영 이미지 검증 증거가 아니다. 사전 README의 추가 공통 경로 알고리즘 설명과 Stage별 수치는 [구현 이력](docs/IMPLEMENTATION-HISTORY.md)에 보존했다.
+
+## Android 빠른 시작
+
+필요: JDK 17, Android platform 35, build-tools 35.0.0. Wrapper 검증/환경 검사기는 자동 설치기가 아니다. [환경 설정](docs/OPERATIONS.md)을 먼저 따른다.
+
+```sh
+# JDK/SDK를 준비한 후 저장소 루트에서 실행한다.
+make android-wrapper-verify
+make android-env
+make android-test
+make android-lint
+make android-assemble
+```
+
+debug는 개발용 네트워크 정책, release는 더 엄격한 정책을 사용한다. 단말의 localhost는 단말 자신이므로 별도의 API 호스트 설정이 필요하다. public credential에는 HTTPS가 필요하다. 기본 공유는 redacted human summary이고 원본 JSON은 경고 확인 후 private-cache content URI로 공유한다. 실기기/TalkBack·프로세스 종료 후 descriptor 동작은 별도 acceptance다.
+
+## 보안 배포
+
+`trusted-local`은 무인증이며 사설망 진단을 허용한다. 직접 실행 시 loopback 밖 bind는 정확한 `CHECKNETWORK_EXPOSE_TRUSTED_LOCAL=yes` 승인과 WARN이 필요하지만 이 승인은 인증·방화벽이 아니다. 공개 접근에는 `public`, API key, 양수 rate limit 및 TLS reverse proxy를 사용한다. CORS는 인증이 아니며 proxy 뒤 backend quota는 실제 연결 source IP 기준으로 공유된다. [보안 정책](SECURITY.md)과 [배포 경계](docs/OPERATIONS.md)를 확인한다.
+
+## 개발·검증
+
+```sh
+# Node 22+, Docker Compose CLI, Go를 준비한다. 전체 CI에는 Android 환경도 필요하다.
+export GOTOOLCHAIN=go1.26.10
+make ci-quick
+make ci-workflows
+# 도구와 의존성 취약점·secret·보안 회귀를 검사한다.
+make ci-security
+# Android를 포함한 전체 로컬 gate다.
+make ci
+```
+
+Offline archive validators: API 33 + Web 30 = 63. 이 수치는 archive fixture 계층이며 전체 테스트 수가 아니다. 실행 결과와 미검증 범위는 [Phase 2 검증](docs/PHASE2-VERIFICATION.md), [테스트 기준](docs/TESTING.md), [CI 절차](docs/CI.md)를 따른다. 로컬 자동화는 실제 브라우저·screen reader·Android 실기기·TLS proxy·정확한 SHA의 릴리스를 대신하지 않는다.
+
+[현재 아키텍처](docs/ARCHITECTURE.md) · [실행 계획](PLAN.md) · [구현 이력](docs/IMPLEMENTATION-HISTORY.md) · [변경 기록](CHANGELOG.md)

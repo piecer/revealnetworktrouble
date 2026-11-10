@@ -207,7 +207,7 @@ if expected is not None and expected != binary_hash:
     sys.stderr.write("API archive validation failed: binary SHA-256 does not match expected value\n")
     raise SystemExit(1)
 metadata = "sha256:" + ("b" if second and os.environ.get("FAKE_IMAGE_MISMATCH") == "true" else "a") * 64
-result = {"schema":"checknetwork.api-archive.v1","archive":hashlib.sha256(archive.read_bytes()).hexdigest(),"config":metadata,"manifest":metadata,"rootfs":metadata,"layers":[metadata],"binary":binary_hash,"traceroute":hashlib.sha256(traceroute.encode()).hexdigest(),"go_version":"go1.22.12","go_path":"github.com/network-troubleshooting-company/checknetwork/cmd/checknetwork-api"}
+result = {"schema":"checknetwork.api-archive.v1","archive":hashlib.sha256(archive.read_bytes()).hexdigest(),"config":metadata,"manifest":metadata,"rootfs":metadata,"layers":[metadata],"binary":binary_hash,"traceroute":hashlib.sha256(traceroute.encode()).hexdigest(),"go_version":"go1.26.10","go_path":"github.com/network-troubleshooting-company/checknetwork/cmd/checknetwork-api"}
 print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 `
 }

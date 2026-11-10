@@ -9,6 +9,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PipelineDefinitionTests(unittest.TestCase):
+    def test_release_builder_and_archive_contract_use_the_reviewed_ci_toolchain(self):
+        # Keep the independently pinned image, compiler and offline contract together.
+        version = "1.26.10"
+        builder = "sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473"
+        required = {
+            "Dockerfile": ("FROM golang@" + builder + " AS build", "/checknetwork-api: go" + version),
+            ".github/actions/toolchain/action.yml": ("go-version: '" + version + "'",),
+            "scripts/verify_api_archive.py": ('go_version="go' + version + '"',),
+            "scripts/verify_api_archive_test.py": ('GO_VERSION = "go' + version + '"',),
+            "cmd/checknetwork-api/release_lifecycle_fake_test.go": ('"go_version":"go' + version + '"',),
+        }
+        for name, snippets in required.items():
+            with self.subTest(path=name):
+                body = (ROOT / name).read_text()
+                for snippet in snippets:
+                    self.assertIn(snippet, body)
+
     def test_npm_lock_contains_reviewed_security_fixes(self):
         # Audit feeds may lag a vendor advisory; keep the reviewed floor explicit.
         packages = json.loads((ROOT / "frontend/package-lock.json").read_text())["packages"]

@@ -1,86 +1,93 @@
-# 아키텍처 및 개발 기준
+# 아키텍처
 
-## 구성
+현재 구조와 신뢰 경계를 설명한다. Stage별 당시 수치·승인 전 상태·기존 문구는 [구현 이력](IMPLEMENTATION-HISTORY.md)에 보존한다. 실행 설정은 [운영](OPERATIONS.md), wire schema는 [API](API.md), 검증 범위는 [테스트](TESTING.md)와 [CI](CI.md)를 따른다.
 
-Web label 저장 admission은 기존 key 보존 후 신규 key를 한도 내에서 병합한다. 표는 활성 view만 mount하고, 숨겨진 입력 DOM까지 센 남은 예산에서 page size를 결정한다. Topology empty-state는 graph cardinality만 보지 않고 명시적 선택 수와 실행 outcome을 받아 선택 해제·관측 불가·projection 제한을 구분한다.
+## 1. 시스템 구성
+
+| 구성 | 실제 위치 | 책임 |
+|---|---|---|
+| 프로세스 진입점 | `cmd/checknetwork-api` | 환경 검증, traceroute capability probe, listener admission, readiness/drain/shutdown |
+| HTTP 경계 | `backend/api` | route/auth/rate, bounded decode·admission·serialization, CORS, telemetry |
+| 진단 엔진 | `backend/diagnostic` | Checker 실행·deadline·결과·deterministic Analyze·compact topology |
+| Web | `frontend` | 정적 ESM 앱, strict response parser, request ownership, Canvas·semantic inspector |
+| Android | `android/app` | Java Activity, core schema, network transport, state/session, private-cache 공유 |
+| 운영·검증 | `scripts`, `Makefile`, `.github` | 로컬/hosted 공통 gate, archive 검증, 실패 신호·증거 보존 |
+
+별도 `ReportService` 타입이나 `internal/api` 패키지는 없다. 현재 HTTP `api.Server`가 `diagnostic.Runner`를 직접 호출한다. `ServiceChecker`는 SSH/메일 계열 server-first greeting 검사이며 report orchestration 서비스가 아니다. `IPContextService`는 선택한 IP의 on-demand 부가 정보를 다루는 별도 경계다.
+
+## 2. 진단 데이터 흐름
 
 ```text
-Web / Mobile / CLI
-        |
-   REST JSON API
-        |
- Report Service
-        |
- Analysis Interpreter  <- normalized facts / deterministic evidence rules
-        |
- Diagnostic Runner
-   |      |       |         |
-  DNS    TCP   HTTP(S)   Services   <- 교체 가능한 Checker
+# 실제 호출 순서; 분석은 Checker를 실행하기 전이 아니라 결과 수집 후 수행한다.
+Web / Android / 다른 API client
+  -> [Android: GET /api/v1/checks capability 사전 조회]
+  -> POST /api/v1/reports (Web은 capability 사전 조회 없이 직접 요청)
+  -> api.Server: auth/rate -> body decode -> validation -> report admission
+  -> Runner.RunWithID -> CheckerSupervisor -> Checker.Check
+  -> 결과/summary -> Analyze -> 선택적 compact topology
+  -> API bounded serialization -> response-write admission
+  -> client strict schema -> 현재 request owner에게만 publication
 ```
 
-production은 explicit `net.Listen`을 default 128/hard 256의 leased listener로 감싼 뒤 `http.Server.Serve`에 전달한다. 따라서 accepted connection token은 handler goroutine보다 먼저 획득되고 실제 connection `Close`에서 exactly once 반환된다. overflow socket은 즉시 close되고 accept loop는 close/shutdown으로 중단 가능한 5 ms backoff를 거친다.
+`Runner.finalizeReport`는 raw results로 summary와 `Analyze`를 만든 다음 compact graph를 생성한다. transport는 원본 report를 바꾸지 않는 응답 copy에서 raw attempts/대표 topology를 제거한다. compact 응답은 nodes 500, links 1,000, body 1 MiB 미만이고 full JSON은 newline 포함 8 MiB 이하로 제한한다.
 
-Authenticated body-decode admission, report admission과 response-write admission은 서로 분리된다. body slot은 route/auth/rate 확인 및 declared oversize preflight 뒤 nonblocking으로 획득하고, `MaxBytesReader`에서 JSON object 하나와 EOF를 decode하는 동안만 유지한다. 기본 body capacity는 effective report limit이고 hard max는 64이며 포화는 고정 `body_decode_capacity_unavailable` 503이다. report slot은 checker 실행과 bounded serialization까지만 소유하고, 최대 16개의 독립 write token을 얻은 뒤 report slot을 반환한다. write token이 없으면 큰 payload를 보존/queue하지 않고 작은 `write_capacity_unavailable` 응답을 시도한다. API는 request ID를 auth 이전에, report ID를 실행 이전에 생성하며 submit/admit/reject/start/computed/finish/cancel과 모든 HTTP terminal event에서 같은 opaque ID를 사용한다.
+보고서의 `healthy`/`degraded`/`unreachable`과 analysis의 설명은 서로 다른 층이다. 실패한 traceroute의 부분 출력만으로 도달 실패나 링크 장애를 확정하지 않는다. 실패 attempt는 full raw attempts에 남을 수 있지만 compact/Geo 관측 집계에 성공 경로처럼 합성되지 않는다.
 
-Traceroute command/parser는 Unix `traceroute`와 Windows `tracert.exe` adapter를 분리한다. compact 요청에서는 Runner가 raw results 전체로 `analysis`를 먼저 만든 다음 deterministic compact graph를 생성한다. API transport는 raw report를 mutate하지 않는 copy에서 attempts와 대표 topology만 제거하고 final JSON을 header 이전에 marshal한다. Geo suffix와 route transaction을 단조 이진 탐색으로 축소해 1 MiB 미만을 보장한다.
+## 3. Checker / Runner / Analysis 역할
 
-Web은 strict compact schema, compact-first/legacy-bounded model, owner-safe progressive coordinator로 분리된다. Stage 8에서 semantic node/link/route마다 단일 텍스트 element만 materialize하고 visual item을 만들지 않아 facts는 유지됐지만 보이는 graph가 사라졌다. Stage 9은 동일한 validated model을 기본 2D 또는 optional 3D perspective Canvas로 투영하며 mode는 report/analysis/diagnosis를 바꾸지 않는다. Canvas는 nodes 500/links 1,000/routes 1,000과 DPR≤4에서 deterministic layout을 쓰고 continuous animation 없이 pointer/keyboard/reset/resize interaction 때만 redraw한다. Bounded semantic inspector는 Canvas와 동기화되어 keyboard/screen-reader path, label editing과 context failure fallback을 유지한다. Target rows는 `MAX_TARGETS=20`에서 닫히고 append admission은 hidden retained view를 포함한 current document 전체를 global `MAX_DOCUMENT_ELEMENTS=1200`으로 계산한다. Exact-fit 20번째 row만 commit하고 target cap+1 또는 document cap+1 candidate는 partial append 없이 거부한다. topology/Geo/labels 중 active view만 dynamic DOM을 소유하며 현재 maximum fixture는 1,152 DOM elements다. 앱 state와 listener는 `createApp` instance에 귀속되고 `destroy()`가 request, timer, scheduler, Canvas와 listener를 정리한다.
+- `Checker`는 `Kind()`와 `Check(context.Context, Target) Result`를 구현한다. DNS, TCP, HTTP(S), traceroute 및 SSH/메일 계열 검사는 이 seam으로 연결된다.
+- `Runner`는 target validation, request budget, checker lease, 독립 결과 수집과 종료 시점 arbitration을 소유한다. 한 검사의 실패가 다른 검사 결과를 없애지 않는다.
+- `Analyze`는 stable `error_code`와 typed normalized facts에 결정적 규칙을 적용한다. 자유 형식 서버 오류 문자열을 원인 증거로 파싱하지 않는다.
+- producer의 finding/presentation/API-error fixtures를 Web/Android가 함께 소비한다. 알려진 값끼리라도 모순인 tuple/details는 report 전체의 publication을 거부한다.
+- `confidence`는 장애 원인 확률이 아니라 해당 finding을 지지하는 근거 수준이다. observed/inferred/unavailable과 coverage limitation을 구분한다.
+- 서비스 검사의 성공은 `server_greeting` 관측 범위다. 로그인·명령·STARTTLS·mailbox·end-to-end 서비스 동작 성공을 뜻하지 않는다.
 
-Android는 `MainActivity` presentation과 schema/model `core`, `network`, `state`를 분리한다. production session은 bounded `/checks` discovery로 server capability를 확인한 다음 report POST를 수행한다. 한 `OperationDeadline`이 두 단계의 315초 monotonic budget을 소유하고 discovery local 10초 및 request별 report deadline과 매 지점 교차한다. `RequestCoordinator`의 owner/signature가 교체·입력 무효화·취소·recreation 후 stale callback을 차단하며 transport는 Content-Length/stream 8 MiB와 exactly-once disconnect를 소유한다. valid reduced capability mismatch는 closed `UNSUPPORTED_CAPABILITY` reason으로 전달하고 malformed success response는 `INVALID_RESPONSE`로 유지한다. Non-2xx는 별도 final `ApiError` classifier가 producer fixture의 exact 16 `(status,code)` pairs만 인정한다. Parser는 body≤64 Ki UTF-16 code units, depth≤2, properties≤3, tokens≤10, wire name/value≤128 code units의 exact closed `error/code/message` tree만 허용하며 duplicate/unknown/missing/null/trailing/malformed UTF-16을 거부한다. Invalid body/pair는 status를 보존한 `invalid_server_response`, fixed local message, non-retryable/no timestamp이고, valid pair는 local message/retryability를 쓴다. 두 transport가 disconnect 전에 모든 Retry-After values를 수집하며 허용 row+single canonical `1..3600`만 injected `now+seconds`를 만든다. Header 실패는 typed body를 invalid로 바꾸지 않는다. Activity는 `ApiErrorPresentation`의 retry visibility, timestamp applicability와 unauthorized-only credential focus를 최종 적용한다. bounded form만 saved state에 기록하며 Bearer와 raw report는 retained memory 밖으로 직렬화하지 않는다. 사람용 redacted text와 확인 후 생성하는 private-cache raw content URI를 별도 공유한다.
+## 4. 보안 신뢰 경계
 
-Android session은 dispatch 실행 시점의 immutable state identity까지 확인한다. capability parser는 Android `JsonReader` token walk 앞에 strict lexical preflight를 두고 duplicate decoded names, unknown-field depth 및 malformed UTF-16을 materialization 전에 거부한다. UI draft persistence와 kind-applicable request/signature projection은 별개이며 direct core validation은 그대로 유지한다.
+직접 실행 기본값은 `127.0.0.1:8080`, `trusted-local`이다. loopback 밖 trusted-local bind는 정확한 `CHECKNETWORK_EXPOSE_TRUSTED_LOCAL=yes` 없이는 거부하고, 승인하면 인증 없는 노출 WARN을 남긴다. hostname을 loopback 예외로 간주하지 않는다. 기본 Compose는 컨테이너 내부 `:8080` 승인과 호스트 loopback publish를 분리한다.
 
-Capability의 lexical/token admission은 package-private `CapabilityJsonPreflight`가 소유하고 `CheckCapabilities`는 public capability API, semantic validation, local limit intersection과 request compatibility를 소유한다. 호출 방향은 `CheckCapabilities`→preflight 한 방향이며 64 KiB UTF-8/root-inclusive depth 8 및 고정 오류 계약을 유지한다. 다른 parser로 일반화하거나 공유하지 않는다. Test-only `FrozenCheckCapabilities`는 분리 직전 구현을 독립 보존해 같은 입력의 acceptance, exact error 및 request projection을 비교하며 production APK에는 포함되지 않는다.
+`public`은 API key와 양수 rate limit을 요구하고 NetworkPolicy가 DNS 재해석·redirect를 포함한 실제 dial 주소를 검증한다. 사설·loopback·link-local·metadata·특수 목적 주소 접근을 차단한다. CORS는 인증이 아니다. rate-limit key는 실제 연결 `RemoteAddr`이고 `Forwarded`/`X-Forwarded-For`/`X-Real-IP`로 바꿀 수 없다. reverse proxy 뒤 사용자는 backend quota를 공유하므로 TLS·사용자별 인증/제한은 proxy에서도 필요하다.
 
-`internal/api`는 HTTP 전송만 담당하고, `diagnostic` 패키지는 프로토콜이나 UI를 알지 못한다. 새 프론트엔드는 API만 사용하며, 새 검사 방식은 `Checker` 인터페이스 구현으로 추가한다.
+Web Bearer는 API base별 현재 탭의 session storage에만 두고 report/export/URL에 넣지 않는다. Android도 credential과 raw report를 saved state에 직렬화하지 않는다. IP/Geo 부가 조회는 외부 공급자에게 조회 대상이 전달되는 별도 경계이며 offline 지도는 그 조회까지 없애는 기능이 아니다.
 
-진단 checker가 만든 `Result`는 먼저 typed normalized facts로 변환한 뒤 결정적 analysis 규칙에 입력된다. 분석은 backend의 자유 형식 오류 message를 파싱하지 않고 stable `error_code`와 구조화된 details만 사용한다. `confidence`는 원인 확률이 아니라 finding 문장을 지지하는 evidence의 직접성이고, 관측 불가·malformed·legacy 데이터는 별도 coverage limitation으로 보존한다.
+## 5. 동시성·시간제한 모델
 
-서비스는 checker supervisor 하나를 공유한다. slot은 goroutine 생성 전에 획득하며 checker가 실제 return/panic할 때만 반환된다. non-traceroute checker가 끝나면 return 직후 기록한 timestamp를 parent/supervisor cancellation → report deadline → checker deadline → returned result 순으로 arbitration한다. timestamp가 deadline과 같거나 늦으면 healthy result를 commit하지 않는다. cleanup cancellation은 arbitration 뒤에만 발생한다. request budget이 먼저 끝나면 collector는 deterministic timeout/cancel result를 반환하고 late result가 이미 반환된 report를 mutate하지 못한다. HTTP(S) checker도 header만으로 성공하지 않고 최대 32 KiB body observation을 완료한 뒤 latency/status를 확정하며 read failure를 `response_read_failed`로 보존한다. Go는 context를 무시하는 checker나 injected HTTP transport를 강제 종료할 수 없다. 이런 noncooperative worker는 shutdown 뒤에도 남을 수 있고 실제 반환 때까지 checker/Geo active slot을 점유한다. shutdown은 deadline 직후 한 lock에서 `active/stuck/remaining` atomic snapshot을 얻고 어느 값이든 nonzero면 fixed failure와 exit 1을 반환한다. count는 process/target prose가 없는 bounded integer이며 `remaining=active`; 늦은 실제 return은 accounting만 0으로 수렴시키고 이미 보고한 실패를 성공으로 바꾸지 않는다.
+| 자원 | 기본값 / 상한 | 소유·반환 경계 |
+|---|---|---|
+| accepted connection | 128 / 256 | handler 생성 전 lease, 실제 Close 때 반환 |
+| body decode | effective report limit / 64 | auth/rate 뒤 JSON 한 객체+EOF decode 동안 |
+| report | 4 / 16 | 검사와 bounded serialization까지 |
+| checker | 80 / 1,024 | goroutine 생성 전 획득, 실제 return/panic 뒤 반환 |
+| GeoIP | active 8, queued 64, LRU 2,048 | 동일 IP generation coalescing, 성공 cache만 보존 |
+| response write | 최대 16 | report slot과 독립된 write token |
 
-HTTP(S) request의 `expected_status` validation은 Runner admission에서 닫힌다. omitted/0은 13 kind 모두 허용하고, nonzero 100..599는 HTTP(S)만 허용한다. checker는 redirect chain을 따른 최종 response status만 비교한다. service checker는 write API를 호출하지 않는 reader-only path로 4,096-byte/8-line/512-byte(SSH identification 255-byte) server-first grammar를 판정하고 성공에 `verification_scope=server_greeting`을 붙인다. protocol transaction/auth/STARTTLS/mailbox/e2e는 이 component의 범위 밖이다.
+request는 최대 20 targets, traceroute는 target별 1~10 attempts다. checker timeout은 100~30,000 ms, report budget은 가장 긴 검사/반복 시간과 grace로 정하고 최대 301초다. Web/Android client deadline은 315초다. Android capability discovery와 report POST는 하나의 monotonic deadline을 공유한다.
 
-TLS failure adapter는 하나의 frozen verification clock과 typed Go error chain을 사용한다. hostname→untrusted→`x509.Expired` validity boundary→generic handshake 순으로 분류하며 expired/not-yet-valid에서만 canonical `certificate_not_before`/`certificate_not_after`를 내보낸다. Traceroute adapter는 attempt execution, completed reachability, path quality를 별도 facts로 유지한다. timeout/cancel/command error가 붙은 parseable failed-attempt topology는 full raw attempts에만 남고 compact route/node/link/stat 및 Geo aggregate에서 제외된다. 별도 completed route가 있으면 full timeout/command-failure result가 optional representative topology를 유지할 수 있지만 generic runner-owned `cancelled`는 13 kind 모두 details를 금지한다. completed reached+unreached만 partial reachability를 지지한다.
+HTTP/1 server의 source contract는 ReadTimeout 35초, WriteTimeout 336초, 공유 shutdown deadline 346초다. HTTP/2 gateway의 stream/deadline 의미를 같은 것으로 가정하지 않는다. context를 무시하는 goroutine을 Go가 강제 종료할 수는 없다. shutdown 후 남은 checker가 있으면 bounded active/stuck/remaining snapshot과 함께 실패 종료하며 late completion이 이미 반환한 report를 바꾸지 않는다.
 
-GeoIP lookup은 프로세스 전체 active 8, queued 64로 제한되고 같은 IP generation의 waiter는 coalesce된다. abandoned generation은 successor를 지우거나 cache를 overwrite할 수 없다. 성공만 2,048-entry/24-hour LRU에 clone해 저장한다. 결과의 privacy-safe source/failure aggregate는 topology details에서 분석의 `coverage.enrichment` schema로 승격된다.
+## 6. Web/Android 구조
 
-HTTP/1 timeout 모델은 `H=5s`, `B=30s`, `E=301s`, `R=5s`, `D=5s`이다. 따라서 accept 기준 `ReadTimeout=H+B=35s`, post-header `WriteTimeout=B+E+R=336s`이며 HTTP drain과 checker supervisor shutdown은 하나의 end-to-end `ShutdownTimeout=H+B+E+R+D=346s`를 공유한다. 정상 client deadline 315초는 `E+R=306s`에 DNS/connect/TLS/upload/download/scheduler용 9초를 더한 값이며 hostile slow-body `B`를 더하지 않는다. Go HTTP/2에서 `WriteTimeout`의 stream/deadline 의미는 HTTP/1과 같다고 보장할 수 없으므로 TLS gateway/실제 브라우저 조합을 별도 probe해야 하며, 이 산술식은 HTTP/1 server contract이다.
+Web의 diagnostics와 topology는 독립 request lane이다. owner/signature와 generation 검증으로 이전 요청의 success/finalize, 입력 변경 뒤 callback, navigation/destroy 뒤 작업이 현재 화면을 덮지 못하게 한다. 동적 DOM은 active view가 소유한다. `MAX_TARGETS=20`, `MAX_DOCUMENT_ELEMENTS=1200`, render chunk 100 경계를 적용한다.
 
-Operational handler는 business middleware의 바깥에서 exact GET/HEAD `/livez`와 `/readyz`만 처리하고 그 외 요청은 응답을 쓰지 않은 채 API boundary로 전달한다. Startup은 version prose 대신 trusted deployment `PATH`의 exact platform traceroute 실행 파일을 resolve한 뒤 `127.0.0.1` 대상 fixed grammar candidates를 하나의 2초 deadline과 32 KiB combined-output cap 안에서 기능 probe한다. Unix candidate는 common numeric `-n -q 1 -w 2 -m 30`과 `-n`을 지원하지 않는 구현용 `-q 1 -w 2 -m 30`이다. 성공한 exact path와 grammar를 private immutable capability로 캐시하고 readiness와 TracerouteChecker가 같은 capability를 사용한다. Executable 부재 또는 모든 grammar의 timeout/overflow/nonzero/unparseable/loopback 미도달은 nil capability와 `traceroute_unavailable`로 fail closed한다. Runtime PATH 재조회나 probe에서 선택하지 않은 grammar fallback은 없다. Web/Android screen/export는 exact fixed `Traceroute capability was unavailable, so no route observation was established.`만 사용한다. Probe destination은 loopback뿐이고 임의 target/GeoIP를 사용하지 않는다. Transient saturation은 readiness에 반영하지 않는다. drain transition은 irreversible phase를 먼저 닫는다. Operational readiness는 즉시 503이 되고 business request는 route와 public auth/rate를 지난 뒤 `server_draining`에서 닫혀 body/report/checker admission보다 앞서 종료된다. HTTP와 checker는 공유 346초 deadline으로 종료한다. Compose는 `/readyz`를 healthcheck로 사용한다.
+토폴로지는 기본 2D와 선택 가능한 3D perspective로 같은 검증된 facts를 그린다. mode는 report/analysis/diagnosis를 바꾸지 않는다. nodes 500/links 1,000/routes 1,000, DPR≤4를 적용하고 continuous animation 없이 interaction/resize에 반응한다. Canvas와 동기화된 bounded semantic inspector를 keyboard·screen-reader 경로와 Canvas 불가 시 fallback으로 유지한다. Geo 좌표와 ASN 문맥은 등록 정보/추정치이지 장비 소재지·소유권 증명이 아니다.
 
-Telemetry `outcome`은 delivery/lifecycle 전용이다. 완전한 HTTP 200 report write의 `report_finish`만 검증된 `report_status`, `analysis_verdict`, total/failed/finding counts를 조건부 확장한다. tuple이 없거나 모순이면 확장을 생략하고 base event는 유지한다. typed positive allowlist 외 raw request/diagnostic/provider/error 값은 구조상 입력할 필드가 없다.
+현재 `공통 구간`은 최대 64개 IP를 family별 CIDR/범위로 계산하는 로컬 기능이다. CIDR 일치가 실제 공통 route segment 관측을 뜻하지 않는다. 이전 README의 추가 경로 비교 초안은 [이력](IMPLEMENTATION-HISTORY.md)에 별도로 보존했다.
 
-Producer contract layer는 `findingRegistry` exact 23개, 31 result shapes와 expanded 136-row `(kind,status,error_code,details)` semantic compatibility matrix에서 `finding-contract-v1`을 생성한다. Producer가 matrix를 소유하고 Web/Android는 같은 checked-in fixture bytes와 exact eight producer traceroute witness fixtures를 strict parser/registry에 통과시킨다. `healthy`는 empty/absent `error_code`만 허용하며, known value로 구성됐어도 모순인 tuple/details는 UI/state publication 전에 report 전체를 atomic 거부하고 fixed local invalid-response만 게시한다. 별도 `BuildPresentationContract`는 실제 Runner/Analyze report와 coverage probes에서 exact 6 semantic keys, 10 evidence result kinds, 21 coverage signals, 23 action relationships, 33 scenarios를 생성하고 references/cardinality를 검증한다. 이 presentation 10은 31 result shapes와 별개다. API error도 `apiErrorRegistry`의 exact 16 definitions과 producer-derived structural mutation corpus 85 cases를 response writer, Web, Android가 공유한다.
+Android는 Activity presentation, `core`, `network`, `state`를 분리한다. `RequestCoordinator` owner와 `DiagnosticsSession` state identity가 취소/재생성 후 stale publication을 막는다. detached hierarchy를 검증 후 한 번 교체하고 publication 실패는 rollback한다. raw share는 Application process singleton의 single slot/no queue, off-main I/O, 8 MiB/file, 2 files/16 MiB, bounded reconciliation을 사용한다. non-exported `FileProvider`의 read grant를 쓰며 15분 lease는 프로세스가 관측할 때 revoke/cleanup하는 정책이다. 프로세스 종료 후 이미 열린 descriptor나 수신 앱 복사본의 강제 만료를 보장하지 않는다.
 
-Compact producer/consumers는 `compact-v1` object별 exact field closure를 공유한다. required collection은 non-null empty를 보존하고 optional absent와 present-invalid/null을 구분한다. public node Geo/ASN bundle은 field 단위가 아니라 one atomic bundle이며 Go JSON escape bytes가 4,096 이하면 유지하고 +1이면 거부/producer omission한다. ASN 정보가 없으면 empty object 대신 field를 생략한다.
+## 7. 확장 방법
 
-Web presentation은 maximum 40-finding producer report에서 751-element initial DOM과 한 lazy panel을 연 784-element peak를 사용하며 global 1,200-element guard 아래 한 panel slot만 소유한다. Android Activity는 complete detached hierarchy를 만든 뒤 exact owner/generation을 확인해 single swap하고, post-swap visibility/status/focus/live/share publication이 실패하면 exact installed candidate를 rollback한다.
+새 검사 추가 시 기존 `Checker` 정의와 이웃 구현을 먼저 읽고 `buildCheckers` 등록, validation/capability, typed error/details, analysis 규칙, producer fixture, 두 client의 strict parser/presentation을 함께 검토한다. 외부 네트워크 없이 재현하는 timeout/cancel·malformed·최대 경계 테스트를 먼저 작성한다. 새 프런트엔드는 HTTP API를 사용하며 진단 엔진에 UI 의존성을 넣지 않는다.
 
-Android raw sharing은 Activity manager가 아니라 Application process singleton이 소유한다. single slot/no queue, one off-main worker, owner+listener generation, 8 MiB/file, 2 files/16 MiB live ceiling, 32-entry/32-delete incremental reconciliation을 사용한다. cleanup/path/revoke failure는 admission을 닫고 retry 전 secret owner/raw references를 버린다. FileProvider는 non-exported read grant뿐이며 15분 lease는 process observation 시점의 lifecycle이지 kernel/provider descriptor 강제 만료가 아니다. Activity는 current rendered READY와 runtime IDLE/GRANTED에서 새 raw-share 경고를 허용하고 매번 재확인을 요구한다. CLEANUP_FAILED의 별도 cleanup retry control만 기존 bounded runtime retry에 연결하며 준비 queue나 자동 retry를 추가하지 않는다.
+새 정적 asset은 Docker COPY, checksum/mtime 목록, archive allowlist, smoke mount와 served-byte 검증까지 함께 갱신해야 한다. 릴리스는 pinned exact base와 tagless archive, 안전 추출, borrowed-base mount compatibility, 소유한 자원만 정리하는 계약을 유지한다. source scan의 통과를 별도 Docker compiler나 최종 이미지의 검증으로 대체하지 않는다.
 
-Release identity는 tracked `VERSION=0.1.0`, exact revision ldflags, startup log, health DTO와 OCI labels를 한 source of truth로 묶는다. pinned builder/traceroute/runtime images와 checksum-pinned traceroute APK, empty build ID, trimpath, commit-derived epoch를 사용한다. API와 Web은 exact `linux/amd64`, required buildx `--no-cache --provenance=false`와 `--output=type=docker,...,rewrite-timestamp=true`로 각각 tagless archive를 두 번 만들고 archive bytes와 offline validator identity를 pass 간 비교한다. Web pinned nginx base도 project source와 분리된 mode `0700` generated context의 `FROM nginx@exactdigest`-only Dockerfile로 두 번 export한다. Revision-independent base epoch는 0이며 two-export byte equality와 exact config/layer/diff-ID/history/platform validation을 요구한다. API projector는 exact pinned Alpine layer/diff-ID/history prefix를 trusted base로 먼저 확정한 뒤 bounded layers에서 `/checknetwork-api`와 `/traceroute`만 선택하고, Web projector는 bounded layers에서 canonical nginx config/ten assets만 선택한다. Web outer reader는 physical archive 512 MiB와 별개로 regular-member declared bytes를 stream 순서에서 retain 전 512 MiB로 합산하며, exact Docker manifest→config/layers 및 optional coupled OCI index/layout→single manifest blob graph만 허용한다. Explicit blob ancestor directory만 허용하고 implicit tar parents는 요구하지 않아 unknown regular/directory/link/special과 compressed aggregate expansion을 함께 닫는다. 두 projector 모두 OCI whiteout을 layer-aware한 **layer-local marker set**으로 적용한다. root opaque는 모든 lower entry를, directory opaque는 해당 lower descendants를, ordinary whiteout은 lower target과 descendants를 제거하지만 같은 layer에서 생성한 entry는 marker의 tar 순서와 무관하게 보존한다. 최종 selected closure는 제거된 canonical file이 같은 layer 또는 이후 layer에서 재생성되지 않으면 실패한다. API 선택 파일은 caller-owned empty real directory에 dir-fd, no-follow, exclusive create, fsync 및 readback hash로 추출된다.
+## 8. 설계상 한계
 
-두 derived API/Web archive는 daemon에 load, daemon-tag, import, delete 또는 execute하지 않는다. 따라서 derived daemon image ownership/cleanup role은 없다. API가 소유하는 daemon role은 isolated API network와 smoke container 정확히 두 개이며 Web도 isolated internal network와 smoke container 정확히 두 개다. 각각 borrowed pinned Alpine/nginx base에 검증된 selected files를 read-only mount하므로 compatibility만 증명하고 derived archive 실행을 증명하지 않는다; borrowed base/cache는 삭제하지 않는다. 두 role set은 pending-before-create와 exact name+nonce+independent owner+immutable ID proof를 쓰며 normal response와 daemon-success/CLI-response-loss를 동일하게 닫는다. Cleanup은 exact-owned ID 제거 후 name absence까지 확인해야 완료되고, identity mismatch/replacement 또는 daemon/inspect/remove ambiguity는 caller를 보존한 cleanup failure다. Publication commit과 success output 앞의 barrier가 네 owned resource absence를 닫으며 실패 시 publication rollback과 nonzero를 강제한다. Ordinary failure와 HUP/INT/TERM 경계는 같은 idempotent EXIT path를 사용한다. fixed signal exit status는 129/130/143이며 cleanup 실패에도 변하지 않는다.
+- 진단의 관측 위치는 API 서버다. 원격 Web/Android 기기의 로컬 Wi-Fi·통신사 경로를 직접 측정하지 않는다.
+- traceroute 무응답·RTT 차이·ASN/Geo 문맥은 원인 확정이 아니다. unavailable과 inferred를 숨기지 않는다.
+- startup traceroute는 trusted deployment PATH의 실행 파일을 실제 loopback probe해 캐시한다. 임의 바이너리를 sandbox하는 기능이 아니며 nil capability는 readiness 실패다.
+- raw 공유·로그·공급자 조회에는 개인정보 경계가 남는다. human redaction이 모든 민감 정보를 자동 식별한다는 보장은 없다.
+- 기본 CI는 실제 Chrome/Firefox/Safari·screen reader·Android 실기기·TLS reverse proxy·registry 배포 검증을 대신하지 않는다.
+- Docker builder와 offline validator는 CI와 같은 Go 1.26.10을 요구한다. exact image digest 고정과 최종 binary 취약점 검사는 별도 계약이며, source scan만으로 최종 산출물을 승인하지 않는다. [릴리스 경계](CI.md)를 확인한다.
 
-Stage 8 release review source는 base parent `36dc1dca9838337a5b5d1cf6ebc76bb35f5a4243`에 대한 future external canonical manifest다. 최신 parent focused gates와 Task 1~15 task-level reviews는 blocker 0 / major 0이다. Stage 8 historical source cardinality는 findings 23/result shapes 31/expanded result matrix 136, presentation `6/10/21/23/33`, Web 260(456 semantic mutations including 13 generic cancelled-detail rejections), Android debug/release 각각 direct-child XML 297 + variant canaries 2, archive validators API 28 + Web 25 = 53, exact real release-gate fake cases 12다. Compose SemVer fix 뒤 현재 Web source inventory는 298 tests다. Production exact gate는 umask 077/027/000 세 pass와 canonical Docker inventory equality를 요구한다. 이 documentation edit 뒤 final clean-environment `make ci`는 pending이다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest/검증에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. 그 뒤의 new manifest, manifest-derived temporary release, five-way review, Stage 8 commit, exact-SHA closure도 pending이다. 이전 임시 manifest version/record count/hash를 current evidence로 사용하지 않으며 worktree에서 final commit/SHA를 선제 주장하지 않는다.
-
-Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
-
-## 일관성 기준
-
-- 모든 공개 JSON 필드는 `snake_case`를 사용한다.
-- 시간은 UTC RFC3339, 기간은 밀리초 정수로 표현한다.
-- 모든 검사는 `context.Context` 취소와 타임아웃을 지킨다.
-- 사용자에게 반환하는 실패는 안정적인 `error_code`와 설명을 함께 가진다.
-- 한 검사 실패가 다른 검사를 중단시키지 않는다.
-- 테스트는 외부 인터넷, 특정 DNS 설정, 관리자 권한에 의존하지 않는다.
-- 로그에 요청 본문, 자격 증명, 전체 URL 쿼리를 남기지 않는다.
-- compact response는 nodes 500, links 1,000, body 1 MiB 미만이고 Web commit은 chunk 100, document 1,200 elements를 넘지 않는다.
-- Android response도 UTF-8 8 MiB에서 중단하고 strict report/analysis/compact schema를 atomic하게 검증한 뒤 현재 owner에게만 게시한다.
-
-## 보안 기준
-
-기본 API는 `127.0.0.1:8080`의 `trusted-local` 모드이며 사설망 진단을 허용한다. 공개 인터넷에서는 `public` 모드가 API key와 source IP rate limit을 요구하고, DNS 재해석과 HTTP redirect를 포함한 실제 dial 직전에 사설·loopback·link-local·metadata·특수 목적 주소를 차단한다. CORS는 인증으로 취급하지 않는다. 요청 본문은 1 MiB, 대상은 요청당 20개, 동시 report는 기본 4개로 제한한다. 운영에서는 TLS gateway의 인증/rate limit도 중첩한다.
-
-- header parser는 64 KiB, accepted connection은 기본 128/hard max 256, body decode는 effective report default/hard max 64, report 설정 hard max는 16, checker는 기본 80/hard max 1,024, GeoIP는 active 8/queued 64/cache 2,048, response write hard max는 16이다.
-- full response는 newline 포함 8 MiB 이하이고 compact response는 1 MiB 미만이다.
+Offline archive validators: API 33 + Web 30 = 63. 이는 archive 검증기 fixture 계층의 수치이며 현재 전체 테스트 합계가 아니다. 실행별 수치는 검증 기록을 기준으로 한다.

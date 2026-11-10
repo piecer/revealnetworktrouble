@@ -19,7 +19,7 @@ import verify_api_archive as validator
 VERSION = "1.2.3"
 REVISION = "a" * 40
 GO_PATH = "github.com/network-troubleshooting-company/checknetwork/cmd/checknetwork-api"
-GO_VERSION = "go1.22.12"
+GO_VERSION = "go1.26.10"
 PATH_ENV = "/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
@@ -601,6 +601,7 @@ class APIArchiveValidatorTest(unittest.TestCase):
     def test_go_version_path_and_linker_identity_are_verified_offline(self):
         for old, new, pattern in (
             (GO_VERSION.encode(), b"go1.22.11", "Go version"),
+            (GO_VERSION.encode(), b"go1.22.12", "Go version"),
             (GO_PATH.encode(), b"github.com/network-troubleshooting-company/checknetwork/cmd/checknetwork-apx", "Go path"),
             (("main.version=" + VERSION).encode(), b"main.version=9.9.9", "linker identity"),
         ):

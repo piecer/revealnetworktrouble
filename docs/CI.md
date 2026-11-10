@@ -48,7 +48,7 @@ Security 도구:
 - Gitleaks 8.30.1: `fetch-depth: 0`으로 받은 전체 Git 이력(`--all`)을 검사하고 출력은 100% redact한다. 로컬 미커밋 파일은 Git 이력 검사 범위가 아니므로 GitHub에 반영한 SHA에서 재검증이 필요하다. 임의의 `.env`나 credential 파일을 읽는 디렉토리 전체 스캔으로 바꾸지 않는다.
 - `security-test`: 기존 Public 인증, quota, SSRF·redirect·DNS 재해석과 이번 노출 가드 회귀를 재사용한다.
 
-Go source gate의 통과는 Dockerfile의 별도 builder 또는 컨테이너 OS 취약점 해소를 증명하지 않는다. 현재 Dockerfile builder/아카이브 계약은 Go 1.22.12로 고정돼 있다. 따라서 release에서 추출한 최종 `bin/checknetwork-api`에도 `make release-vuln`을 실행하고 통과 전에 후보를 업로드하지 않는다. 릴리스 builder 갱신은 정확한 image digest 및 archive validator 계약을 함께 검증해야 하며, 이 CI 추가 작업에서 검증 없이 교체하지 않는다. Android/Gradle 또는 OS 전체 취약점 스캔은 이 Go/npm 검사 범위와 구분한다.
+Go source gate의 통과는 Dockerfile의 별도 builder 또는 컨테이너 OS 취약점 해소를 증명하지 않는다. Dockerfile builder와 offline archive validator는 CI와 같은 Go 1.26.10을 요구한다. builder는 공식 `golang:1.26.10-bookworm`의 index digest `sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473`에 고정하며, binary build-info·synthetic fixtures·lifecycle fake도 같은 버전을 검사한다. `ci-policy`는 이 계약의 퇴행을 거부한다. release에서 추출한 최종 `bin/checknetwork-api`에도 `make release-vuln`을 실행하고 통과 전에 후보를 업로드하지 않는다. Android/Gradle 또는 OS 전체 취약점 스캔은 이 Go/npm 검사 범위와 구분한다.
 
 Dependabot은 Actions, Go module, frontend npm, Android Gradle, 두 Dockerfile에 대해 주간 갱신 PR을 설정했다. 자동 merge를 설정하지 않았다. Makefile의 Go 실행 도구 버전과 composite의 툴체인 patch 버전은 정기 검토에서 수동으로 확인한다.
 

@@ -75,7 +75,7 @@ DEFAULT_POLICY = Policy(
     base_diff_ids=PINNED_ALPINE_DIFF_IDS,
     base_history=PINNED_ALPINE_HISTORY,
     traceroute_sha256="f10fa4938a33f3b11350eb4930f4aa75aebf810264f9b7a98597788f49d1d956",
-    go_version="go1.22.12",
+    go_version="go1.26.10",
     go_path="github.com/network-troubleshooting-company/checknetwork/cmd/checknetwork-api",
     path_env="/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 )

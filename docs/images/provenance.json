@@ -1,0 +1,24 @@
+{
+  "captured_at": "2026-11-10T22:16:46.727957+09:00",
+  "source_base_sha": "734885ae9b5bfa22070675c7d2ea17b87e8cf0c5",
+  "source_kind": "Uncommitted working-tree snapshot; not an exact-SHA release or deployed production image.",
+  "source_manifest_sha256": "6935d5d95a5f002a9edc523b22ea7baa6cabfc9f9654d1e3d6298fc2542ec741",
+  "script": "frontend/documentation.browser.cjs",
+  "script_sha256": "828315898d7abb3e6f45430f07d170f139422028680b6005d0aaadaf14ce4718",
+  "browser": "Chromium 153.0.8010.12",
+  "playwright": "1.63.0",
+  "viewports": [1440, 320, 375, 400],
+  "cases_passed": 24,
+  "diagnostics": "actual Go API on owned loopback port; real example.com DNS/HTTPS",
+  "topology_and_geo": "explicit fixed producer fixture replay, not live external paths",
+  "fixture": "testdata/geo-details-rich-compact-report.json",
+  "fixture_sha256": "87a05d687e0b84c3bfab969fa3c0533b30a7e14b3f36318d5bb67a5925952a2a",
+  "third_party_browser_requests": 0,
+  "evidence_directory": "/home/piecer/.hermes/cache/scratch/checknetwork-progress2-execution-20261110-8enljsk9/native-documentation-browser-matched/browser",
+  "images": [
+    {"file": "common-prefix.png", "sha256": "1acc3e2624806501c995f74381549a7f0fac9d51d49cc7014634a19ab4c8cf57", "width": 1440, "height": 1534},
+    {"file": "diagnostics.png", "sha256": "c5cf30c63e76d48ad626c49beb86ed3e05de33ce8033d65d10ee895175f08116", "width": 1440, "height": 2091},
+    {"file": "geo-map.png", "sha256": "8c43b5a28dadf5f903fe901b0ae4f5e7ac1ecc178b6529038a6620d9835956b2", "width": 1440, "height": 1971},
+    {"file": "topology.png", "sha256": "8df2b80b97e48fbcb34a096eb278674cbaa6998ca212a06e229590d36573e920", "width": 1440, "height": 2656}
+  ]
+}
