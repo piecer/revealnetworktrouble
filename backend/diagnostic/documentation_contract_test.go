@@ -15,8 +15,6 @@ const (
 	stage8BaseParent          = "36dc1dca9838337a5b5d1cf6ebc76bb35f5a4243"
 	implementationHistoryPath = "docs/IMPLEMENTATION-HISTORY.md"
 	readmeContractPath        = "docs/README-TECHNICAL-NOTES.md"
-	stage8PlanPath            = ".hermes/plans/2026-09-03_100000-stage8-truthful-diagnostics-and-client-reliability.md"
-	stage9PlanPath            = ".hermes/plans/2026-09-07_090438-topology-2d-3d-restoration.md"
 )
 
 func TestReadmeKeepsQuickStartAndTechnicalReferenceDiscoverable(t *testing.T) {
@@ -58,7 +56,6 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 	// reader-facing quick start. No existing contract assertion is discarded.
 	currentDocPaths := []string{readmeContractPath, "SPEC.md", "docs/API.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", implementationHistoryPath}
 	docPaths := currentDocPaths
-	docPaths := append(append([]string(nil), currentDocPaths...), stage8PlanPath, implementationHistoryPath)
 	var joined strings.Builder
 	for _, path := range docPaths {
 		joined.WriteString("\n--- " + path + " ---\n")
@@ -481,7 +478,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 		// Keep every frozen Stage claim, but do not force old counts and
 		// pre-release status into living onboarding/architecture documents.
 		// Current entry points and boundaries have their own public-doc test.
-		if path == "README.md" || path == "docs/ARCHITECTURE.md" {
+		if path == readmeContractPath || path == "docs/ARCHITECTURE.md" {
 			contractPath = implementationHistoryPath
 		}
 		text := read(contractPath)
