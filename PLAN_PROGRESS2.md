@@ -1,12 +1,14 @@
 # PLAN 진행 현황 및 후속 작업 2차 점검
 
-- 점검일: 2026-11-10 (KST)
+- 최초 점검일: 2026-11-10 (KST). 최종 후속 검증일: 2026-11-11 (KST).
 - 기준 계획: 저장소 루트 `PLAN.md`의 개선 실행계획 v1.1. `docs/PLAN.md`는 과거 Stage별 구현 계획이므로 두 문서의 단계를 혼합하지 않는다.
-- 기준 HEAD: `734885ae9b5bfa22070675c7d2ea17b87e8cf0c5` (`main`, 커밋일 2026-11-07).
+- 최초 점검 기준 HEAD: `734885ae9b5bfa22070675c7d2ea17b87e8cf0c5` (`main`, 커밋일 2026-11-07).
 - 점검 대상: 위 HEAD와 기존 미커밋 작업 트리. 문서에 적힌 상태뿐 아니라 실제 파일·구현·회귀 테스트·이번 실행 결과를 대조했다.
 - 변경 범위: 이 보고서만 추가한다. 기존 코드·문서·로컬 Compose·백업 파일을 수정하거나 commit/push/tag/운영 재배포하지 않는다.
 
-위 범위와 1~10절은 최초 감사 시점의 기록이다. 이어진 사용자 요청으로 남은 작업을 실행했으며, 로컬 수정·격리 검증·관련 파일의 로컬 커밋까지 별도 승인받았다. 후속 현황은 11절에 기록한다. 원격 쓰기·태그/릴리스 발행·운영 재배포는 이번 승인 범위 밖이다.
+위 범위와 1~10절은 최초 감사 시점의 기록이다. 이어진 사용자 요청으로 남은 작업을 실행했으며, 로컬 수정·격리 검증·관련 파일의 로컬 커밋까지 별도 승인받았다. 11절은 11월 10일의 실행 기록이고, 최신 완료·잔여 판정은 12절이다. 원격 쓰기·태그/릴리스 발행·운영 재배포는 이번 승인 범위 밖이다.
+
+**최신 상태: Go 1.26.11의 정확한 후보 `17ecbd437eb270388b4cce5b3fc56d293c4a0359`에서 승인된 로컬 검증과 산출물 보존을 완료했다. 공개 릴리스 전체 완료는 아니다. 원격 강제 게이트·실기기/독립 호스트 수용·발행은 별도 승인 또는 환경이 필요하다.**
 
 ## 1. 핵심 결론
 
@@ -250,6 +252,8 @@ scratch는 임시 보관 영역이다. 최종 후보에서는 증거를 다시 �
 
 ## 11. 후속 실행 — 2026-11-10
 
+이 절의 완료·미완료 표시는 당시 기록이다. 다음 날의 재개·취약점 발견·새 후보 검증 및 현재 잔여 작업은 12절을 따른다.
+
 ### 로컬 구현·검증 완료
 
 - [x] P0 Docker builder와 offline validator·fixture·lifecycle fake를 CI와 같은 Go 1.26.10에 맞췄다. 공식 image index digest를 조회해 고정하고 계약 퇴행 검사를 추가했다. 기존 1.22.12 binary 수용과 버전 불일치를 먼저 실패시킨 뒤 수정했다.
@@ -274,3 +278,92 @@ scratch는 임시 보관 영역이다. 최종 후보에서는 증거를 다시 �
 - [ ] 승인된 RC/정식 VERSION/tag 일치, 노트·체크섬·지원 플랫폼·binary/container 공개 배포. 로컬 산출물 검증과 발행은 별개다.
 
 후속 원본 증거: `/home/piecer/.hermes/cache/scratch/checknetwork-progress2-execution-20261110-8enljsk9/`. `baseline.json`, `red-summary.json`, `green-summary.json`, `verification-summary.json`, `github-readonly.json`, 실제 archive/binary 검사 로그와 브라우저 JSON을 보존한다. 기존 `compose.local.yaml`과 `frontend/dom.test.js.orig`는 수정·커밋 대상에서 제외한다.
+
+## 12. 최종 로컬 검증 완료 — 2026-11-11
+
+### 12-1. 최종 판정과 정확한 검증 대상
+
+승인받은 로컬 수정·검증·관련 파일 커밋·산출물 보존 범위는 완료했다. 선택한 릴리스 검증 대상은 clean checkout의 `17ecbd437eb270388b4cce5b3fc56d293c4a0359`, `VERSION=0.1.0`, `linux/amd64`, Go `1.26.11`이다. 원격 push, 설정 변경, 태그·Release 발행, registry push, 기존 운영 스택 재배포는 수행하지 않았다.
+
+이 보고서의 후속 기록 커밋은 위 후보의 검증 결과를 보존하는 문서 변경이며, 검증한 revision을 새 HEAD로 소급 변경하지 않는다. 다른 SHA를 발행 대상으로 선택하면 해당 SHA에서 exact-SHA gate를 다시 실행해야 한다. 호스트의 Go/npm/Gradle 캐시와 Android SDK를 공유한 소스 격리 검증이며 새 VM·독립 호스트·hosted cold runner 검증은 아니다.
+
+### 12-2. 재개 중 발견한 차단 요인과 수정
+
+- 이전 `07f916b`의 마지막 실행은 SIGTERM 종료와 완료 영수증 부재를 확인했다. 성공으로 간주하지 않았다. 남아 있던 임시 컨테이너·네트워크는 이름·독립 nonce/owner label·mount 경로·startup revision으로 이전 실행 소유임을 확인한 뒤 해당 immutable ID만 제거하고 부재를 재확인했다.
+- 재개 시 HEAD가 `e1df1462bf5f66d5a00a406b85ee192eb0b0a259`로 바뀌어 있었다. 문서 이관 뒤 중복 `docPaths :=` 선언과 삭제된 계획 경로 참조가 남아 컴파일 실패를 실제 재현했다. 현재 문서·이력의 assertion을 유지하는 최소 수정과 독립 리뷰를 거쳐 로컬 `0c215d6`에 반영했다.
+- `0c215d6`은 Full CI·clean archive·production 3-pass를 통과했지만, 당일 실제 source/추출 binary 검사에서 **GO-2026-6859**가 검출됐다. Go 1.26.10의 과거 0건 결과나 기능·재현 빌드 성공으로 이를 덮지 않고 후보를 제외했다.
+- 공식 Go 다운로드 목록과 취약점 DB, 공식 image index를 확인한 뒤 CI·Docker builder·offline policy·fixture·lifecycle fake를 Go **1.26.11**로 함께 갱신했다. builder index는 `sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0`이다. 시스템 Go 설치 자체는 바꾸지 않았다.
+- 새 고정 계약과 취약한 1.26.10 binary 거부를 먼저 실패시킨 뒤 수정했다. 실제 이전 binary의 scanner 종료 3도 보존했다. README의 직접 실행 예제 모두에 수정 툴체인을 명시했다. API validator는 34개, Web은 30개로 현재 합계 64개이며 역사적 63개 기록은 보존했다. 근거: `scripts/test_ci_definition.py:12`, `scripts/verify_api_archive_test.py:616`, `backend/diagnostic/documentation_contract_test.go:298`.
+- 갱신한 18개 파일의 diff·해시·기본 policy의 구 compiler 거부·현재/과거 문서 계약을 독립 리뷰로 재확인하고 로컬 `17ecbd4`에 반영했다. 이전 후보의 리뷰 승인을 새 코드나 최신 보안 검사 대신 사용하지 않았다.
+
+### 12-3. 최종 후보에서 실제 통과한 검사
+
+아래는 모두 위 후보의 새 실행 결과다. 명령 종료 코드와 원본 로그를 보존했으며, 실패한 준비 시도는 성공 수에 넣지 않았다.
+
+| 검사 | 결과 | 실제 시간 / 검증 경계 |
+|---|---|---|
+| `make ci-security` | 종료 0 | 31.065초. Public/SSRF/노출 회귀, Go source, dev dependency 포함 npm audit, 전체 도달 가능한 Git 이력 secret scan. 해당 실행의 findings 0건 |
+| `make ci` | 종료 0 | 376.530초. CI_OK 15개, CI_FAILED 없음. Go/Web/race/vet/build와 Android 두 variant 포함 |
+| Go 일반 검사 | 최상위 523 pass / 6 skip / 실패 0 | 하위 테스트 포함 pass event 1,299개이며 최상위와 합산하지 않음 |
+| Web Node TAP | 892 pass / 실패·skip 0 | 별도 `app.test.js`, `common-prefix.test.js` 계약 스크립트도 통과 |
+| Android debug/release JVM | 각 764 tests / 실패·오류·skip 0 | 각 direct-child XML 44개에서 집계. 두 variant lint·assemble도 통과 |
+| `make ci-workflows` | 종료 0 | 0.316초. 실제 Git checkout에서 actionlint 수행 |
+| `make release-bases` | 종료 0 | 3.870초. inventory 기준점 전에 exact-digest borrowed Alpine/nginx base의 identity·platform을 확인. borrowed base/cache는 삭제하지 않음 |
+| `make ci-clean-archive` | 종료 0 | 528.686초. 정확한 SHA의 canonical source archive에서 Full CI와 실제 Docker archive 검증 |
+| `make verify-release-real REVISION=<위 SHA>` | 종료 0 | 138.357초. umask 077/027/000 세 pass, 두 번 빌드한 API/Web archive 및 11개 성공 필드 일치, canonical Docker inventory·release label 부재 확인 |
+| 최종 추출 binary `make release-vuln` | 종료 0 | 0.715초. host 일반 빌드가 아니라 실제 offline 검증·추출·로컬 출력된 binary를 같은 바이트로 canonical scan 경로에 둔 뒤 검사 |
+| `make web-test-browser` | 종료 0 | 26.963초. graph-first·route-visual·label-integrity·topology-empty·IP context와 실제 handler CORS/Retry-After 검사 |
+| 실제 TLS/HTTP/2 로컬 proxy | 종료 0 | 2.268초. race 포함 3개 테스트를 5회 실행해 15 pass. 인증·quota·client cancellation·checker deadline 전파 확인. controlled checker이며 실제 DNS 측정이나 운영 gateway 검증은 아님 |
+| 최종 binary 실제 API + documentation browser | 종료 0 | 8.179초. `/readyz` 200 및 health의 version/revision 일치, 1440/320/375/400px × 6 view/mode = 24개 사례 통과 |
+| 격리 Compose build/start/readiness | 종료 0 | 31.929초. API/Web 실제 build·healthy·readiness, loopback 임시 포트와 Web build-time API port 일치 확인 |
+
+기본 Go 검사에서 skip된 6개는 앞의 최초 점검 목록과 같다. CORS browser는 별도 opt-in으로 실행했다. 그 외 GNU inetutils live, Go real ownership 및 API/Web component Buildx opt-in 테스트를 실행했다고 표시하지 않는다. Production verifier가 별도 실행한 실제 archive/compatibility 검증과 해당 Go 테스트의 실행 여부도 구분한다.
+
+최종 API binary는 Go 1.26.11 build-info와 기존 offline identity parser를 통과했다. `-trimpath` 출력에서 ldflags/revision이 보이지 않는 것을 실패나 provenance로 오인하지 않고, parser의 linked-byte identity 및 실제 API health의 정확한 revision을 확인했다. clean archive 추출 binary와 production 세 pass의 binary SHA-256도 같았다.
+
+실제 API의 DNS/HTTPS 진단과 topology/Geo fixture replay를 구분했다. 공통 CIDR은 로컬 계산이다. 새 PNG 4개를 열어 빈 그래프·큰 잘림·보이는 비밀 노출 여부를 점검했고 차단 문제는 보이지 않았다. Geo 상세 패널의 의도된 내부 scroll을 화면 전체 잘림과 혼동하지 않는다. 숨겨진 설정·raw JSON의 비밀 부재나 실기기·screen reader 적합성을 스크린샷으로 보장하지 않는다.
+
+Compose 실행은 source의 개발 identity(`0.1.0-dev`, zero revision)를 유지한 격리 프로젝트다. 최종 release binary의 실제 실행은 borrowed pinned Alpine에 검증된 파일을 read-only mount한 compatibility 확인이다. 이를 derived release archive 자체의 daemon 실행, 독립 호스트 설치 또는 운영 재배포로 확대 해석하지 않는다.
+
+### 12-4. 보존 산출물과 재현 증거
+
+장기 보관 경로:
+
+`/home/piecer/dev/artifacts/revealnetworktrouble/17ecbd437eb270388b4cce5b3fc56d293c4a0359/`
+
+- `checknetwork-api-linux-amd64`: 실제 검증·추출한 최종 실행 파일. SHA-256은 `4be3cbe7645295779cc0b673e36ae08450e04350e7c1d19adca8422ca6820ae3`.
+- `REVISION`, `VERSION`, `SOURCE_DATE_EPOCH`, `SOURCE.tar`, `LICENSE`: 위 후보의 identity와 canonical source. 보고서용 후속 커밋을 위 revision으로 위장하지 않는다.
+- `VERIFICATION.json`: 명령별 실제 종료 코드·시간, 기계 집계, archive/selected-file digest, 수용 범위와 공개 릴리스 미완료 경계.
+- `evidence/`, `EVIDENCE.tar.gz`: 원본 Go JSON·Node TAP·Android XML·명령 로그, runtime·소유권·정리 영수증, 공식 Go/image/advisory 원문, 독립 리뷰와 실패/후보 제외 기록, 새 화면 PNG·브라우저 JSON.
+- `SHA256SUMS`: 실제 보존 파일을 대상으로 생성·재검증한 체크섬. 서명 또는 공급망 attestation으로 주장하지 않는다.
+
+원본 scratch는 `/home/piecer/.hermes/cache/scratch/checknetwork-progress2-final-20261111-7aofcjby/`이며 최종 후보 실행은 그 아래 `patched-go12611/`에 있다. 재개 전의 11월 10일 기록과 취약점으로 제외한 0c215d6 결과를 최신 통과 증거와 섞지 않았다. 기존 tracked README 이미지는 11월 10일 provenance를 그대로 보존하고, 이번에 생성한 PNG는 위 증거 묶음에 따로 둔다.
+
+환경/준비 실패도 남겼다: 묶음 호출의 420초 전송 제한은 뒤따르던 보안 검사를 SIGTERM으로 중단했으므로 재실행했다. Git metadata 없는 source snapshot의 actionlint 실패는 실제 checkout에서 다시 확인했다. Chromium의 160-byte singleton socket 경로 실패는 scratch 아래 짧은 private TMPDIR로 분리해 재현·해결한 뒤 전체 게이트를 다시 통과했다. scan target 미준비와 출력 build-info의 과도한 revision 가정도 성공으로 숨기지 않았다. 이 사유로 scanner를 끄거나 gate를 약화하지 않았다.
+
+### 12-5. 원래 계획별 현재 완료·잔여 경계
+
+| 원래 항목 | 현재 완료한 범위 | 여전히 필요한 범위 |
+|---|---|---|
+| 작업 1-1 | 새 후보 SHA의 Full/clean archive, 실제 집계·시간·skip·로그 확보 | 독립 VM/호스트가 필요한 설치 수용 |
+| 작업 1-2 | 모드/SSRF 회귀, 실제 API·Compose readiness, 로컬 TLS/HTTP/2 proxy | 기존 LAN 노출 정책의 운영 승인·운영 gateway/배포 반영 |
+| Phase 2 전체 | Quick/Full/Security/Release 구현과 로컬 canonical gate | 원격 반영·required check 강제·실패 PR merge 차단·hosted cold runner |
+| 작업 3-1 | 아키텍처/이력 분리 및 문서 계약을 함께 로컬 커밋 | 공개 저장소 반영은 별도 승인 |
+| 작업 3-2 | 한·영 README, 출처를 구분한 화면, 실제 API/반응형 실행 | 새 사용자의 README-only 독립 설치 수용 |
+| 작업 3-3 | 기존 Apache-2.0 파일·기여/보안/변경 기록 보존·로컬 반영 | Description/Topics, 비공개 신고 채널·담당자·지원 정책 확정 |
+| 작업 4-1 | Chromium headless 자동 UI·CORS·24개 반응형 사례 | 실제 Chrome/Firefox/Safari·물리 모바일·고밀도 가독성·screen reader 수용 |
+| 작업 4-2 | Android 두 variant JVM·lint·assemble | emulator/실단말·TalkBack/Switch Access·OEM 공유·프로세스 종료 수용 |
+| 작업 4-3 | 관측 위치·직접성·한계·다음 행동의 기존 계약·자동 회귀 | 모든 화면/내보내기 일관성의 최종 수용 및 실제 사용자 이해도 |
+| 작업 5-1 | 정확한 후보의 Full→clean archive→3-pass, binary scan, Compose 및 독립 리뷰 | 독립 환경 설치와 플랫폼 수동 acceptance, 운영 배포 검증 |
+| 작업 5-2 | 검증된 로컬 binary·source·체크섬·증거 보존 | 승인된 RC/final VERSION·태그 정합성, 노트·지원 범위·공개 발행/배포 |
+
+2026-11-11 22:11 KST의 read-only GitHub 조회: remote main은 `0fa3efa929e0812b6bde965c55f82de26529b75b`, protected=false, branch protection 404, workflow/run total_count는 각각 0, Description=null/Topics=[], private vulnerability reporting=false였다. 권한 부족이 아니라 **원격 쓰기 승인 범위 밖**이므로 설정을 바꾸지 않았다. 로컬 YAML·테스트 성공을 merge 차단 활성화로 표시하지 않는다.
+
+이 호스트의 11월 11일 adb 조회는 연결 항목 0개였고 SDK emulator 실행 파일도 없었다. Chromium 자동화·JVM·APK 생성을 실단말 수용으로 대신하지 않는다. 새 VM/독립 호스트 설치, 실제 운영 gateway 및 사용자 이해도도 검증 완료로 표시하지 않는다. 원격 설정/반영, 수동 플랫폼 gate와 RC/정식 발행이 남아 있으므로 **공개 릴리스 가능 상태라는 최종 승인은 보류**한다.
+
+### 12-6. 기존 상태 보존과 마무리
+
+- 검증용 container/network/image는 소유권을 확인해 정리하고, release 및 progress2 nonce/owner label을 가진 잔여 자원이 없음을 다시 조회했다. borrowed base/cache는 제거하지 않았다.
+- 기존 운영 API/Web의 ID·image·StartedAt·실행 상태·공개 포트가 재개 시 baseline과 같았다. 운영 재배포나 해당 운영 환경의 보안 패치 적용 완료를 주장하지 않는다.
+- 기존 미추적 7개(로컬 Compose와 `.orig` 백업), 기존 ignored `bin/checknetwork-api`의 해시를 보존했다. 사용자 파일을 삭제하거나 함께 stage하지 않았다.
+- 최종 산출물의 readback/checksum, 후보 tracked source 해시·clean 상태, 계획 항목 대응·문서 형식·source 참조, 관련 문서 테스트·diff 및 기록 커밋의 범위 검사를 완료 증거와 함께 보존한다.
