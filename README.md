@@ -47,7 +47,8 @@ Go 1.22 이상과 Python 3가 필요합니다. 경로 추적에는 운영체제�
 첫 번째 터미널에서 API를 실행합니다.
 
 ```bash
-go run ./cmd/checknetwork-api
+# 보안 수정 툴체인을 명시해 실행한다.
+GOTOOLCHAIN=go1.26.11 go run ./cmd/checknetwork-api
 ```
 
 두 번째 터미널에서도 저장소 루트를 기준으로 웹 서버를 실행합니다.
@@ -149,6 +150,8 @@ curl --fail -X POST http://localhost:8080/api/v1/reports \
 Go/Web 테스트에는 Go와 Node.js 22 이상, npm, `make`가 필요합니다. 아래 명령은 저장소 루트에서 실행합니다.
 
 ```bash
+# CI와 같은 보안 수정 툴체인을 사용한다.
+export GOTOOLCHAIN=go1.26.11
 npm --prefix frontend ci
 make test             # Go/Web 테스트 및 Android 환경 탐색 스크립트 검사
 make web-test-syntax  # JavaScript 문법 검사
@@ -202,11 +205,11 @@ curl --fail http://127.0.0.1:8090/api/v1/health
 
 ## 빠른 시작: Go + 정적 Web
 
-필요: Go 1.22 이상(검증 툴체인은 Go 1.26.10), Python 3, platform traceroute 실행 파일. traceroute가 없거나 startup loopback probe가 실패하면 `/readyz`는 503이며 기능을 준비 완료로 간주하지 않는다. 시스템 패키지 설치는 해당 OS의 검증된 패키지 경로를 사용한다.
+필요: Go 1.22 이상(검증 툴체인은 Go 1.26.11), Python 3, platform traceroute 실행 파일. traceroute가 없거나 startup loopback probe가 실패하면 `/readyz`는 503이며 기능을 준비 완료로 간주하지 않는다. 시스템 패키지 설치는 해당 OS의 검증된 패키지 경로를 사용한다.
 
 ```sh
 # 터미널 1: 이 명령에만 검증 툴체인을 적용한다. 기본 API bind는 127.0.0.1:8080이다.
-GOTOOLCHAIN=go1.26.10 go run ./cmd/checknetwork-api
+GOTOOLCHAIN=go1.26.11 go run ./cmd/checknetwork-api
 ```
 
 ```sh
@@ -271,7 +274,7 @@ debug는 개발용 네트워크 정책, release는 더 엄격한 정책을 사�
 
 ```sh
 # Node 22+, Docker Compose CLI, Go를 준비한다. 전체 CI에는 Android 환경도 필요하다.
-export GOTOOLCHAIN=go1.26.10
+export GOTOOLCHAIN=go1.26.11
 make ci-quick
 make ci-workflows
 # 도구와 의존성 취약점·secret·보안 회귀를 검사한다.
@@ -280,6 +283,6 @@ make ci-security
 make ci
 ```
 
-Offline archive validators: API 33 + Web 30 = 63. 이 수치는 archive fixture 계층이며 전체 테스트 수가 아니다. 실행 결과와 미검증 범위는 [Phase 2 검증](docs/PHASE2-VERIFICATION.md), [테스트 기준](docs/TESTING.md), [CI 절차](docs/CI.md)를 따른다. 로컬 자동화는 실제 브라우저·screen reader·Android 실기기·TLS proxy·정확한 SHA의 릴리스를 대신하지 않는다.
+Offline archive validators: API 34 + Web 30 = 64. 이 수치는 archive fixture 계층이며 전체 테스트 수가 아니다. 실행 결과와 미검증 범위는 [Phase 2 검증](docs/PHASE2-VERIFICATION.md), [테스트 기준](docs/TESTING.md), [CI 절차](docs/CI.md)를 따른다. 로컬 자동화는 실제 브라우저·screen reader·Android 실기기·TLS proxy·정확한 SHA의 릴리스를 대신하지 않는다.
 
 [현재 아키텍처](docs/ARCHITECTURE.md) · [실행 계획](PLAN.md) · [구현 이력](docs/IMPLEMENTATION-HISTORY.md) · [변경 기록](CHANGELOG.md)

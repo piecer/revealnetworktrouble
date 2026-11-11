@@ -133,7 +133,7 @@ API image는 non-root `65532:65532`로 실행하고 Web image는 nginx `worker_p
 
 tracked `VERSION`은 `0.1.0`이다. release binary는 `-trimpath -buildvcs=false -buildid=`와 ldflags로 version 및 exact 40자리 lowercase revision을 주입한다. `/api/v1/health`의 exact schema `{"status":"ok","version":"0.1.0","revision":"<revision>"}`, `server started` JSON log, OCI `org.opencontainers.image.version`/`revision` labels가 일치해야 한다.
 
-Dockerfile의 Go builder, Alpine traceroute extraction, runtime base는 모두 image digest로 고정된다. builder는 CI와 같은 Go `1.26.10`을 확인하며 offline validator와 fixture도 이 버전을 요구한다. traceroute는 Alpine v3.20 `traceroute-2.1.5-r0.apk` URL과 SHA-256 checksum으로 고정된다. `SOURCE_DATE_EPOCH`은 wall clock이나 ambient env가 아니라 exact commit timestamp에서 만든다.
+Dockerfile의 Go builder, Alpine traceroute extraction, runtime base는 모두 image digest로 고정된다. builder는 CI와 같은 Go `1.26.11`을 확인하며 offline validator와 fixture도 이 버전을 요구한다. traceroute는 Alpine v3.20 `traceroute-2.1.5-r0.apk` URL과 SHA-256 checksum으로 고정된다. `SOURCE_DATE_EPOCH`은 wall clock이나 ambient env가 아니라 exact commit timestamp에서 만든다.
 
 ```bash
 # 개발 전체 gate

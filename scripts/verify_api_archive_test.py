@@ -19,7 +19,7 @@ import verify_api_archive as validator
 VERSION = "1.2.3"
 REVISION = "a" * 40
 GO_PATH = "github.com/network-troubleshooting-company/checknetwork/cmd/checknetwork-api"
-GO_VERSION = "go1.26.10"
+GO_VERSION = "go1.26.11"
 PATH_ENV = "/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
@@ -612,6 +612,14 @@ class APIArchiveValidatorTest(unittest.TestCase):
                     fixture(layer_entries=entries), pattern,
                     binary_sha256=hashlib.sha256(changed).hexdigest(),
                 )
+
+    def test_default_policy_rejects_the_vulnerable_go_1_26_10_compiler(self):
+        # A fixture update must not silently retain the compiler from GO-2026-6859.
+        changed = BINARY.replace(GO_VERSION.encode(), b"go1.26.10")
+        entries = [("checknetwork-api", changed, "file", 0o755, ""), ("traceroute", TRACEROUTE, "file", 0o755, "")]
+        fx = fixture(layer_entries=entries)
+        fx.policy = dataclasses.replace(fx.policy, go_version=validator.DEFAULT_POLICY.go_version)
+        self.assert_rejected(fx, "Go version", binary_sha256=hashlib.sha256(changed).hexdigest())
 
     def test_real_go_module_build_info_framing_is_verified(self):
         framed = go_binary(framed=True)

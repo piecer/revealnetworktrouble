@@ -11,20 +11,26 @@ ROOT = Path(__file__).resolve().parents[1]
 class PipelineDefinitionTests(unittest.TestCase):
     def test_release_builder_and_archive_contract_use_the_reviewed_ci_toolchain(self):
         # Keep the independently pinned image, compiler and offline contract together.
-        version = "1.26.10"
-        builder = "sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473"
+        version = "1.26.11"
+        builder = "sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0"
         required = {
             "Dockerfile": ("FROM golang@" + builder + " AS build", "/checknetwork-api: go" + version),
             ".github/actions/toolchain/action.yml": ("go-version: '" + version + "'",),
             "scripts/verify_api_archive.py": ('go_version="go' + version + '"',),
             "scripts/verify_api_archive_test.py": ('GO_VERSION = "go' + version + '"',),
             "cmd/checknetwork-api/release_lifecycle_fake_test.go": ('"go_version":"go' + version + '"',),
+            "README.md": ("GOTOOLCHAIN=go" + version + " go run ./cmd/checknetwork-api",),
+            "README.en.md": ("GOTOOLCHAIN=go" + version + " go run ./cmd/checknetwork-api",),
         }
         for name, snippets in required.items():
             with self.subTest(path=name):
                 body = (ROOT / name).read_text()
                 for snippet in snippets:
                     self.assertIn(snippet, body)
+        for name in ("README.md", "README.en.md"):
+            for line in (ROOT / name).read_text().splitlines():
+                if "go run ./cmd/checknetwork-api" in line:
+                    self.assertIn("GOTOOLCHAIN=go" + version + " go run ./cmd/checknetwork-api", line)
 
     def test_npm_lock_contains_reviewed_security_fixes(self):
         # Audit feeds may lag a vendor advisory; keep the reviewed floor explicit.
@@ -63,7 +69,7 @@ class PipelineDefinitionTests(unittest.TestCase):
             self.assertIn(required, release)
         toolchain = files[2].read_text()
         self.assertIn("make release-vuln", release)
-        for required in ("go-version: '1.26.10'", "node-version: '22.23.1'", "java-version: '17.0.21+9'",
+        for required in ("go-version: '1.26.11'", "node-version: '22.23.1'", "java-version: '17.0.21+9'",
                          "platforms;android-35 build-tools;35.0.0"):
             self.assertIn(required, toolchain)
 

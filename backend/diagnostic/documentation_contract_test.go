@@ -297,7 +297,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 
 	pythonTestMethod := regexp.MustCompile(`(?m)^\s+def test_[A-Za-z0-9_]+\(`)
 	validatorCounts := map[string]int{
-		"scripts/verify_api_archive_test.py": 33,
+		"scripts/verify_api_archive_test.py": 34,
 		"scripts/verify_web_archive_test.py": 30,
 	}
 	validatorTotal := 0
@@ -308,8 +308,8 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 		}
 		validatorTotal += got
 	}
-	if validatorTotal != 63 {
-		t.Errorf("archive validator total=%d, want 63", validatorTotal)
+	if validatorTotal != 64 {
+		t.Errorf("archive validator total=%d, want 64", validatorTotal)
 	}
 	// Check the current coverage bullet itself, not a matching count elsewhere
 	// in the document; explicitly historical Stage 8/9 records remain intact.
@@ -322,8 +322,15 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			t.Errorf("current documentation-contract archive count=%v, want collected total %d", counts, validatorTotal)
 		}
 	}
-	for _, path := range currentDocPaths[:len(currentDocPaths)-1] {
-		if !strings.Contains(read(path), "Offline archive validators: API 33 + Web 30 = 63") && path != "docs/API.md" {
+	// Frozen Stage snapshots retain their original inventory; living entry points
+	// must advertise the collected current inventory instead of reusing history.
+	for _, path := range []string{readmeContractPath, "SPEC.md", "docs/OPERATIONS.md", "docs/TESTING.md", "docs/PLAN.md", implementationHistoryPath} {
+		if !strings.Contains(read(path), "Offline archive validators: API 33 + Web 30 = 63") {
+			t.Errorf("historical archive validator inventory missing from %s", path)
+		}
+	}
+	for _, path := range []string{"README.md", "docs/ARCHITECTURE.md"} {
+		if !strings.Contains(read(path), "Offline archive validators: API 34 + Web 30 = 64") {
 			t.Errorf("current archive validator inventory missing from %s", path)
 		}
 	}
@@ -445,7 +452,7 @@ func TestDocumentationContractMatchesCurrentSourceAndFixtures(t *testing.T) {
 			"env -u JAVA_HOME -u ANDROID_HOME -u ANDROID_SDK_ROOT make ci", "Compose SemVer regression fix 뒤 현재 Stage 9 source inventory는 Web 298 tests", "456 fixture-derived semantic mutations", "generic cancelled-detail rejection 13", "eight witness fixtures", "ignored `checknetwork-api` binary",
 			"exact 512 MiB/4,096/256 MiB/512 MiB/64/256 MiB/512 MiB/128 MiB bounds",
 			"smoke container+API network 정확히 두 개", "load/daemon-tag/import/delete/execute되지 않음",
-			"api_archive/api_config/api_manifest/api_rootfs/api_binary/api_traceroute", "current source와 fixture cardinality `298`", "`23/31/136`", "archive validators 63",
+			"api_archive/api_config/api_manifest/api_rootfs/api_binary/api_traceroute", "current source와 fixture cardinality `298`", "`23/31/136`", "archive validators 64",
 			"`MAX_TARGETS=20`", "global `MAX_DOCUMENT_ELEMENTS=1200`", "exact real release-gate fake cases 12",
 			"default 2D/optional 3D Canvas projection", "같은 facts", "no-refetch/no-diagnosis-change", "no-continuous-animation redraw",
 			"Nodes 500/links 1,000/routes 1,000/DPR≤4", "global DOM≤1,200", "현재 최대 fixture 1,152", "physical Chrome/Firefox/Safari", "실제 screen-reader",

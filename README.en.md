@@ -27,11 +27,11 @@ Browser: `http://localhost:3000`. API: `http://localhost:8090`. Container API po
 
 ## Go + static Web quick start
 
-Requires Go 1.22+ (the verified CI toolchain is Go 1.26.10), Python 3 and a supported platform traceroute executable. Missing/failed startup traceroute capability makes readiness return 503.
+Requires Go 1.22+ (the verified CI toolchain is Go 1.26.11), Python 3 and a supported platform traceroute executable. Missing/failed startup traceroute capability makes readiness return 503.
 
 ```sh
 # Terminal 1: default API bind is 127.0.0.1:8080.
-GOTOOLCHAIN=go1.26.10 go run ./cmd/checknetwork-api
+GOTOOLCHAIN=go1.26.11 go run ./cmd/checknetwork-api
 ```
 
 ```sh
@@ -95,7 +95,7 @@ A device's localhost is the device itself: configure a reachable API explicitly.
 
 ```sh
 # Node 22+, Go and Docker Compose CLI are required; Full also needs Android tooling.
-export GOTOOLCHAIN=go1.26.10
+export GOTOOLCHAIN=go1.26.11
 make ci-quick
 make ci-workflows
 make ci-security

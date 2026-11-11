@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Go 표준 라이브러리 보안 갱신 — 2026-11-11
+
+- 실제 source/추출 binary 검사에서 GO-2026-6859가 검출된 Go 1.26.10 후보를 제외하고 CI·Docker builder·offline validator·fixture를 Go 1.26.11로 함께 갱신한다.
+- 공식 builder index digest를 고정하고 취약한 1.26.10 산출물 거부 및 README 실행 툴체인의 회귀 검사를 추가한다. 과거 검증 기록은 당시 버전과 수치를 보존한다.
+- 변경된 정확한 후보 SHA에서 보안·재현 빌드·전체 CI를 다시 통과해야 하며, 버전 갱신 자체를 공개 릴리스 승인으로 간주하지 않는다.
+
 ### 보안·자동화 — 734885a
 
 - trusted-local의 non-loopback bind에 exact `CHECKNETWORK_EXPOSE_TRUSTED_LOCAL=yes` 승인과 startup WARN을 요구한다. 기본 Compose의 host loopback 공개를 유지한다.

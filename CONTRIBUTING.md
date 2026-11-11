@@ -4,7 +4,7 @@
 
 ## 환경
 
-Go module 최소 버전은 1.22이고 CI는 수정 툴체인 Go 1.26.10을 사용한다. Node 22+ 및 npm lockfile, Python 3와 Docker Compose CLI가 필요하다. Full은 JDK 17, Android platform 35/build-tools 35.0.0을 추가로 요구한다. 실제 Docker/브라우저/기기 검증은 [CI](docs/CI.md)와 [테스트](docs/TESTING.md)의 별도 조건을 따른다.
+Go module 최소 버전은 1.22이고 CI는 수정 툴체인 Go 1.26.11을 사용한다. Node 22+ 및 npm lockfile, Python 3와 Docker Compose CLI가 필요하다. Full은 JDK 17, Android platform 35/build-tools 35.0.0을 추가로 요구한다. 실제 Docker/브라우저/기기 검증은 [CI](docs/CI.md)와 [테스트](docs/TESTING.md)의 별도 조건을 따른다.
 
 ## 변경 절차
 
@@ -16,7 +16,7 @@ Go module 최소 버전은 1.22이고 CI는 수정 툴체인 Go 1.26.10을 사�
 
 ```sh
 # 빠른 검증: 기존 Make 진입점을 사용한다.
-export GOTOOLCHAIN=go1.26.10
+export GOTOOLCHAIN=go1.26.11
 make ci-quick
 make ci-policy
 make ci-workflows

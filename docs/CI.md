@@ -20,7 +20,7 @@ Git, Docker CLI/Compose, Python 3, Go 및 Node가 필요하다. 기존 Go 테스
 
 ```sh
 # GitHub와 같은 수정 Go 툴체인만 해당 명령에 적용한다. 시스템 Go를 변경하지 않는다.
-export GOTOOLCHAIN=go1.26.10
+export GOTOOLCHAIN=go1.26.11
 export JAVA_HOME="$HOME/.local/java/temurin-17"
 export ANDROID_HOME="$HOME/.local/share/checknetwork-android/sdk"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
@@ -39,7 +39,7 @@ make ci-security
 
 ## 버전과 보안 검사 범위
 
-공유 composite action `.github/actions/toolchain/action.yml`이 Go 1.26.10, Node 22.23.1, Temurin JDK 17.0.21+9, Android CLI tools 12266719/platform 35/build-tools 35.0.0을 고정한다. SDK license 자동 수락은 CI용 설정이다. 호스트 기본 JDK/Go를 바꿀 필요가 없다. Ubuntu runner는 `ubuntu-24.04`이며 runner image 전체가 재현 가능한 digest로 고정된 환경은 아니다.
+공유 composite action `.github/actions/toolchain/action.yml`이 Go 1.26.11, Node 22.23.1, Temurin JDK 17.0.21+9, Android CLI tools 12266719/platform 35/build-tools 35.0.0을 고정한다. SDK license 자동 수락은 CI용 설정이다. 호스트 기본 JDK/Go를 바꿀 필요가 없다. Ubuntu runner는 `ubuntu-24.04`이며 runner image 전체가 재현 가능한 digest로 고정된 환경은 아니다.
 
 Security 도구:
 
@@ -48,7 +48,9 @@ Security 도구:
 - Gitleaks 8.30.1: `fetch-depth: 0`으로 받은 전체 Git 이력(`--all`)을 검사하고 출력은 100% redact한다. 로컬 미커밋 파일은 Git 이력 검사 범위가 아니므로 GitHub에 반영한 SHA에서 재검증이 필요하다. 임의의 `.env`나 credential 파일을 읽는 디렉토리 전체 스캔으로 바꾸지 않는다.
 - `security-test`: 기존 Public 인증, quota, SSRF·redirect·DNS 재해석과 이번 노출 가드 회귀를 재사용한다.
 
-Go source gate의 통과는 Dockerfile의 별도 builder 또는 컨테이너 OS 취약점 해소를 증명하지 않는다. Dockerfile builder와 offline archive validator는 CI와 같은 Go 1.26.10을 요구한다. builder는 공식 `golang:1.26.10-bookworm`의 index digest `sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473`에 고정하며, binary build-info·synthetic fixtures·lifecycle fake도 같은 버전을 검사한다. `ci-policy`는 이 계약의 퇴행을 거부한다. release에서 추출한 최종 `bin/checknetwork-api`에도 `make release-vuln`을 실행하고 통과 전에 후보를 업로드하지 않는다. Android/Gradle 또는 OS 전체 취약점 스캔은 이 Go/npm 검사 범위와 구분한다.
+Go source gate의 통과는 Dockerfile의 별도 builder 또는 컨테이너 OS 취약점 해소를 증명하지 않는다. Dockerfile builder와 offline archive validator는 CI와 같은 Go 1.26.11을 요구한다. builder는 공식 `golang:1.26.11-bookworm`의 index digest `sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0`에 고정하며, binary build-info·synthetic fixtures·lifecycle fake도 같은 버전을 검사한다. `ci-policy`는 이 계약의 퇴행을 거부한다. release에서 추출한 최종 `bin/checknetwork-api`에도 `make release-vuln`을 실행하고 통과 전에 후보를 업로드하지 않는다. Android/Gradle 또는 OS 전체 취약점 스캔은 이 Go/npm 검사 범위와 구분한다.
+
+2026-11-11 source/추출 binary 재검사에서 Go 1.26.10의 GO-2026-6859가 검출됐다. 공식 수정 버전인 1.26.11로 위 계약을 갱신하고 1.26.10 binary를 명시적으로 거부한다. 과거의 0건 검사나 재현 빌드 통과만으로 이 취약점이 있는 후보를 승인하지 않는다.
 
 Dependabot은 Actions, Go module, frontend npm, Android Gradle, 두 Dockerfile에 대해 주간 갱신 PR을 설정했다. 자동 merge를 설정하지 않았다. Makefile의 Go 실행 도구 버전과 composite의 툴체인 patch 버전은 정기 검토에서 수동으로 확인한다.
 

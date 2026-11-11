@@ -17,7 +17,7 @@ runs:
         echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
     - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
       with:
-        go-version: '1.26.10'
+        go-version: '1.26.11'
         cache: false # stdlib-only module has no go.sum
     - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
       with:

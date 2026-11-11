@@ -1,4 +1,4 @@
-FROM golang@sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473 AS build
+FROM golang@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS build
 ARG VERSION
 ARG REVISION
 ARG SOURCE_DATE_EPOCH
@@ -10,7 +10,7 @@ RUN test -n "${SOURCE_DATE_EPOCH}" && \
     CGO_ENABLED=0 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" go build -trimpath -buildvcs=false \
       -ldflags="-s -w -buildid= -X main.version=${VERSION} -X main.revision=${REVISION}" \
       -o /checknetwork-api ./cmd/checknetwork-api && \
-    test "$(go version -m /checknetwork-api | sed -n '1p')" = '/checknetwork-api: go1.26.10' && \
+    test "$(go version -m /checknetwork-api | sed -n '1p')" = '/checknetwork-api: go1.26.11' && \
     touch -d "@${SOURCE_DATE_EPOCH}" /checknetwork-api
 
 FROM alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS traceroute

@@ -26,4 +26,4 @@ Bearer·API key·쿠키·실제 내부 target/report를 소스·이슈·스크�
 
 CI는 Public/SSRF/노출 회귀, Go source govulncheck, dev dependency 포함 npm high/critical audit, 전체 Git 이력 Gitleaks를 수행한다. 설치·DB/API 오류는 실패다. 공급자 advisory와 audit DB가 다르면 공식 영향 범위와 수정 버전을 직접 확인하며, 0건만으로 안전을 선언하지 않는다.
 
-Git 이력 검사는 미커밋 credential 파일 전체 스캔이 아니다. Go source scan은 별도 Docker compiler·OS·Android 의존성이나 실제 배포를 검증하지 않는다. Docker builder와 offline validator를 Go 1.26.10으로 맞췄어도 추출 release binary의 별도 gate와 clean exact-SHA 릴리스 검증을 생략할 수 없다. [CI](docs/CI.md), [운영](docs/OPERATIONS.md), [검증 기록](docs/PHASE2-VERIFICATION.md)을 참조한다.
+Git 이력 검사는 미커밋 credential 파일 전체 스캔이 아니다. Go source scan은 별도 Docker compiler·OS·Android 의존성이나 실제 배포를 검증하지 않는다. Docker builder와 offline validator를 Go 1.26.11로 맞췄어도 추출 release binary의 별도 gate와 clean exact-SHA 릴리스 검증을 생략할 수 없다. [CI](docs/CI.md), [운영](docs/OPERATIONS.md), [검증 기록](docs/PHASE2-VERIFICATION.md)을 참조한다.

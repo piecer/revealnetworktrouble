@@ -88,6 +88,6 @@ Android는 Activity presentation, `core`, `network`, `state`를 분리한다. `R
 - startup traceroute는 trusted deployment PATH의 실행 파일을 실제 loopback probe해 캐시한다. 임의 바이너리를 sandbox하는 기능이 아니며 nil capability는 readiness 실패다.
 - raw 공유·로그·공급자 조회에는 개인정보 경계가 남는다. human redaction이 모든 민감 정보를 자동 식별한다는 보장은 없다.
 - 기본 CI는 실제 Chrome/Firefox/Safari·screen reader·Android 실기기·TLS reverse proxy·registry 배포 검증을 대신하지 않는다.
-- Docker builder와 offline validator는 CI와 같은 Go 1.26.10을 요구한다. exact image digest 고정과 최종 binary 취약점 검사는 별도 계약이며, source scan만으로 최종 산출물을 승인하지 않는다. [릴리스 경계](CI.md)를 확인한다.
+- Docker builder와 offline validator는 CI와 같은 Go 1.26.11을 요구한다. exact image digest 고정과 최종 binary 취약점 검사는 별도 계약이며, source scan만으로 최종 산출물을 승인하지 않는다. [릴리스 경계](CI.md)를 확인한다.
 
-Offline archive validators: API 33 + Web 30 = 63. 이는 archive 검증기 fixture 계층의 수치이며 현재 전체 테스트 합계가 아니다. 실행별 수치는 검증 기록을 기준으로 한다.
+Offline archive validators: API 34 + Web 30 = 64. 이는 archive 검증기 fixture 계층의 수치이며 현재 전체 테스트 합계가 아니다. 실행별 수치는 검증 기록을 기준으로 한다.

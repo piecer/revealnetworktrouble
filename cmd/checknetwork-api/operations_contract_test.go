@@ -390,7 +390,7 @@ func TestReleaseDockerfileIsImmutableAndCarriesExactIdentity(t *testing.T) {
 		"-X main.version=${VERSION}", "-X main.revision=${REVISION}",
 		"org.opencontainers.image.version=$VERSION", "org.opencontainers.image.revision=$REVISION",
 		"touch -d \"@${SOURCE_DATE_EPOCH}\" /checknetwork-api",
-		"test \"$(go version -m /checknetwork-api | sed -n '1p')\" = '/checknetwork-api: go1.26.10'",
+		"test \"$(go version -m /checknetwork-api | sed -n '1p')\" = '/checknetwork-api: go1.26.11'",
 		"ADD --checksum=sha256:0409f348956dc74b83701cf48294f58ab6424e6f717e0f912687bb89d09026de https://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64/traceroute-2.1.5-r0.apk /tmp/traceroute.apk",
 		"tar -xzf /tmp/traceroute.apk -C / usr/bin/traceroute", "rm -f /tmp/traceroute.apk",
 		"AS traceroute", "COPY --from=traceroute /usr/bin/traceroute /traceroute",
