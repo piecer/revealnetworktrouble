@@ -633,7 +633,7 @@ func TestReleaseVerifierRejectsStandaloneTarDespiteAmbientClaims(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -647,7 +647,7 @@ func TestReleaseVerifierRejectsStandaloneTarDespiteAmbientClaims(t *testing.T) {
 		}
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -684,7 +684,7 @@ func TestReleaseVerifierRejectsMutatedGitArchiveBeforeDocker(t *testing.T) {
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -707,7 +707,7 @@ func TestReleaseVerifierRejectsMutatedGitArchiveBeforeDocker(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "README.fixture", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "README.fixture", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -768,7 +768,7 @@ func TestReleaseVerifierStandaloneUsesCanonicalTreeAndRejectsCheckoutMutation(t 
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -792,7 +792,7 @@ func TestReleaseVerifierStandaloneUsesCanonicalTreeAndRejectsCheckoutMutation(t 
 		t.Fatal(err)
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -887,7 +887,7 @@ func TestReleaseVerifierPublicationMutationPreservesExistingOutput(t *testing.T)
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -949,7 +949,7 @@ exec "$REAL_MV" "$@"
 		t.Fatal(err)
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "payload", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, gitErr := command.CombinedOutput(); gitErr != nil {
@@ -1050,7 +1050,7 @@ func newReleaseSignalFixture(t *testing.T) releaseSignalFixture {
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -1117,7 +1117,7 @@ exec "$REAL_MV" "$@"
 		t.Fatal(err)
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -1369,7 +1369,7 @@ func TestReleaseVerifierBuildsTwiceDetectsMismatchAndCleans(t *testing.T) {
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"} {
+	for _, name := range []string{"VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -1401,7 +1401,7 @@ case "${FAKE_BINARY_MISMATCH:-}:$out" in true:*-2) printf two >"$out" ;; *) prin
 		t.Fatal(err)
 	}
 	gitEnv := append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
-	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py"}, {"commit", "-qm", "fixture"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "VERSION", "scripts/verify-release.sh", "scripts/release-resource-ownership.sh", "scripts/verify_api_archive.py", "scripts/borrowed_base_identity.py"}, {"commit", "-qm", "fixture"}} {
 		command := exec.Command("git", args...)
 		command.Dir, command.Env = repo, gitEnv
 		if output, err := command.CombinedOutput(); err != nil {
@@ -1477,7 +1477,7 @@ case "${FAKE_BINARY_MISMATCH:-}:$out" in true:*-2) printf two >"$out" ;; *) prin
 			t.Fatalf("derived API daemon action %q was attempted:\n%s", forbidden, calls)
 		}
 	}
-	if strings.Count(calls, "ARGS=image inspect alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc --format {{.Id}}") != 1 {
+	if strings.Count(calls, "ARGS=image inspect alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\n") != 1 {
 		t.Fatalf("borrowed-base inspection was not exact:\n%s", calls)
 	}
 	successLines := regexp.MustCompile(`(?m)^release verified: api_archive=[0-9a-f]{64} api_config=sha256:[0-9a-f]{64} api_manifest=sha256:[0-9a-f]{64} api_rootfs=sha256:[0-9a-f]{64} api_binary=[0-9a-f]{64} api_traceroute=[0-9a-f]{64}$`).FindAllString(output, -1)
@@ -1489,6 +1489,13 @@ case "${FAKE_BINARY_MISMATCH:-}:$out" in true:*-2) printf two >"$out" ;; *) prin
 			t.Fatalf("cleanup %q count = %d, want %d:\n%s", exact, strings.Count(calls, exact), want, calls)
 		}
 	}
+	t.Run("classic-image-store", func(t *testing.T) {
+		// Replay the real registry config identity rather than the index-only fake.
+		classicOutput, _, classicErr := run("FAKE_BASE_STORE=classic")
+		if classicErr != nil {
+			t.Fatalf("pinned classic config identity must pass the canonical verifier: %v\n%s", classicErr, classicOutput)
+		}
+	})
 	releaseOutput := filepath.Join(root, "published-api")
 	output, _, runErr = run("CHECKNETWORK_RELEASE_OUTPUT=" + releaseOutput)
 	if runErr != nil {

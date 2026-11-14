@@ -84,7 +84,13 @@ if args == ["info"]:
 if args[:2] == ["image", "inspect"]:
     ref = inspect_ref()
     if ref == "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc":
-        print("sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc")
+        image_id = "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+        if os.environ.get("FAKE_BASE_STORE") == "classic":
+            image_id = "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731"
+        if option("--format") == "{{.Id}}":
+            print(image_id)
+        else:
+            print(json.dumps([{"Id": image_id, "Os": "linux", "Architecture": "amd64", "RepoDigests": [ref]}]))
         raise SystemExit(0)
     record = image_record(ref)
     fmt = option("--format")

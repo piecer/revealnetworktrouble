@@ -68,6 +68,8 @@ Buildx 0.31.1과 BuildKit 0.27.0의 image digest를 고정했다. 위 verifier�
 
 `release-bases`는 borrowed base만 pull하며 파생 archive를 daemon에 load하지 않는다. 별도 BuildKit 저장소에 image가 있거나 tar export가 성공했다는 이유로 daemon cache가 준비됐다고 판단하지 않는다. 준비한 borrowed base는 verifier cleanup에서 제거할 소유 자원이 아니다. 로컬에서 이 준비 단계의 실제 실행·identity 검증은 통과했지만 전체 hosted cold-runner release 성공을 뜻하지 않는다.
 
+고정 reference의 OCI index digest와 daemon의 image ID는 구분한다. classic image store는 선택한 Linux/amd64 config digest를, containerd image store는 index digest를 ID로 반환할 수 있다. 준비 단계와 canonical source의 verifier는 같은 `scripts/borrowed_base_identity.py`로 exact RepoDigests 문자열 배열·OS·architecture와 해당 base의 알려진 index/config ID만 검증한다. 다른 base의 ID나 임의 SHA는 허용하지 않으며 manifest ID까지 임의로 확대하지 않는다. 검증 후 실제 반환 ID를 그대로 사용하고, container/network 소유권·nonce·독립 owner·정리 및 inventory 전후 비교의 exact-ID 계약은 바꾸지 않는다.
+
 GitHub Release 작성, container registry push, 배포, 태그 생성은 없다. 후보 성공도 실기기·브라우저·reverse proxy 검증을 대신하지 않는다.
 
 ## 로그 보존
