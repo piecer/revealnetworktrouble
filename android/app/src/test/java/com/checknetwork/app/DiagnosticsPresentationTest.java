@@ -4,8 +4,10 @@ import static org.junit.Assert.*;
 
 import com.checknetwork.app.core.CheckKind;
 import com.checknetwork.app.core.Report;
+import com.checknetwork.app.core.ReportMarkdownExporter;
 import com.checknetwork.app.core.ReportParser;
 import com.checknetwork.app.core.ReportRequest;
+import java.util.ArrayList;
 import java.util.List;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -72,6 +74,45 @@ public final class DiagnosticsPresentationTest {
         assertTrue(indexKey(blocks,"evidence_directness") < indexKey(blocks,"coverage_limitation"));
         assertTrue(indexKey(blocks,"coverage_limitation") < indexKey(blocks,"next_action"));
         assertTrue(indexKey(blocks,"next_action") < index(blocks,"Result summary"));
+    }
+
+    @Test public void healthyResultStatusCountsRemainIndependentFromWarningFindings() throws Exception {
+        Path fixtures = Paths.get(System.getProperty("user.dir"), "..", "..", "testdata").normalize();
+        List<Report> reports = new ArrayList<>();
+        for (String name : List.of("trace-observation-healthy-varied-paths-compact.json", "trace-observation-healthy-varied-paths-full.json")) {
+            reports.add(ReportParser.parse(new String(Files.readAllBytes(fixtures.resolve(name)), StandardCharsets.UTF_8)));
+        }
+        JSONObject contract = new JSONObject(new String(Files.readAllBytes(fixtures.resolve("presentation-contract.json")), StandardCharsets.UTF_8));
+        for (int i = 0; i < contract.getJSONArray("scenarios").length(); i++) {
+            JSONObject scenario = contract.getJSONArray("scenarios").getJSONObject(i);
+            if (scenario.getString("name").equals("finding.tls_certificate_expiring")) reports.add(ReportParser.parse(scenario.getJSONObject("report").toString()));
+        }
+        assertEquals(3, reports.size());
+        for (Report report : reports) {
+            assertEquals("ATTENTION", report.analysis().orElseThrow().verdict().name());
+            String screen = AnalysisPresentation.from(report).blocks().stream().filter(block -> !block.folded())
+                    .map(AnalysisPresentation.Block::body).collect(java.util.stream.Collectors.joining("\n"));
+            for (String text : List.of(screen, ReportMarkdownExporter.export(report))) {
+                assertTrue(text, text.contains("1 result statuses with no issue reported, 0 result statuses with an issue reported"));
+                assertTrue(text, text.contains("Result-status counts are independent of analysis findings; zero result-status issues does not mean zero warning findings"));
+                assertTrue(text, text.contains("finding." + report.analysis().orElseThrow().findings().get(0).code().name().toLowerCase(java.util.Locale.ROOT)));
+                assertFalse(text, text.contains("without reported attention"));
+                assertFalse(text, text.contains("requiring attention"));
+            }
+        }
+    }
+
+    @Test public void resultStatusCountsDoNotCallObservedHttpFailureIncomplete() {
+        String json="{\"id\":\"http-report\",\"status\":\"unreachable\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":9,"+
+                "\"summary\":{\"total\":1,\"passed\":0,\"failed\":1},\"results\":[{\"kind\":\"http\",\"address\":\"https://example.test\",\"status\":\"unreachable\",\"latency_ms\":9,\"started_at\":\"2026-09-02T00:00:00Z\",\"error_code\":\"unexpected_status\",\"message\":\"unexpected HTTP status\",\"details\":{\"expected_status\":200,\"status_code\":503}}]}";
+        Report report = ReportParser.parse(json);
+        for (String text : List.of(AnalysisPresentation.from(report).blocks().get(0).body(), ReportMarkdownExporter.export(report))) {
+            assertTrue(text, text.contains("0 result statuses with no issue reported, 1 result statuses with an issue reported"));
+            assertFalse(text, text.contains("incomplete observations"));
+            assertFalse(text, text.contains("completed observations"));
+        }
+        assertEquals(1, report.summary().failed());
+        assertEquals(503, ((Number) report.results().get(0).details().get("status_code")).intValue());
     }
 
     @Test public void rawResultsArePlainBoundedCompleteAndAlwaysLast() {

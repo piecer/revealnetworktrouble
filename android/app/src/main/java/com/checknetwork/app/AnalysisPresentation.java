@@ -42,9 +42,11 @@ public final class AnalysisPresentation {
     public static AnalysisPresentation from(Report report) {
         List<Block> out = new ArrayList<>();
         SafeBudget budget = new SafeBudget(MAX_SAFE_PRESENTATION_CHARS);
-        String countSummary = report.summary().passed() + " completed observations, "
-                + report.summary().failed() + " incomplete observations";
+        String countSummary = report.summary().passed() + " result statuses with no issue reported, "
+                + report.summary().failed() + " result statuses with an issue reported";
         String context = "Status: " + AnalysisPresentationRegistry.reportStatus(report)
+                + "\nObservation point: " + AnalysisPresentationRegistry.OBSERVATION_POINT
+                + "\n" + AnalysisPresentationRegistry.INTERPRETATION_GUIDE
                 + "\nStarted: " + report.startedAt()
                 + "\nDuration: " + report.durationMs() + " ms"
                 + "\nChecks: " + report.summary().total() + " total, " + countSummary

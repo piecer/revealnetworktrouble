@@ -8,7 +8,7 @@ const arg=process.argv[2];assert.ok(arg,'owned output directory or parent config
 const parentMode=arg.startsWith('{'),config=parentMode?JSON.parse(arg):{frontend:__dirname,output:arg};
 fs.mkdirSync(config.output,{recursive:true});
 const assets=['index.html','styles.css','app.js','common-prefix.js','state.js','topology-model.js','topology-presentation.js','topology-renderer.js','topology-visualizer.js','geo-map.js'];
-const executable=process.env.IP_CONTEXT_CHROMIUM||'/home/piecer/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome';
+const executable=process.env.IP_CONTEXT_CHROMIUM||chromium.executablePath();
 const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
 const save=(name,value)=>fs.writeFileSync(path.join(config.output,name),JSON.stringify(value,null,2)+'\n');
 let server,browser,currentPage;

@@ -235,7 +235,9 @@ function nodeDetail(value) {
   const contextParts = contextLabel ? [contextLabel, ASN_CONTEXT_DISCLAIMER,
     ...(value.asn_contexts ?? []).map(c => `경로 ${c.result_index + 1} · 시도 ${c.attempt} · 구간 ${c.start}–${c.end} (출현 ${c.route_occurrence + 1}): AS${c.asn} 사이`),
     value.asn_contexts_omitted ? `추가 경로 문맥 ${value.asn_contexts_omitted}개 생략` : ''] : [];
-  const parts = [...contextParts, label && label !== address ? label : '', address, elementText(value.display_note), elementText(value.status, 'unknown'), hopDetail(value)];
+  const geoDisclaimer = value.public_ip === true && value.geolocation
+    ? 'GeoIP 추정 위치: 실제 장비 소재지나 패킷 경로를 보장하지 않습니다.' : '';
+  const parts = [...contextParts, label && label !== address ? label : '', address, geoDisclaimer, elementText(value.display_note), elementText(value.status, 'unknown'), hopDetail(value)];
   if (Number.isFinite(value.observations)) parts.push(`${value.observations} observations`);
   if (Number.isFinite(value.latency_ms_avg)) parts.push(`평균 RTT ${value.latency_ms_avg} ms (링크 지연 아님)`);
   else parts.push('평균 RTT 미측정');

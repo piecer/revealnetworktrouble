@@ -21,6 +21,8 @@ import java.util.regex.Pattern;
  */
 public final class AnalysisPresentationRegistry {
     public static final String GREETING_SCOPE = "Expected server-first greeting observed; command, authentication, STARTTLS, mailbox, and end-to-end service behavior were not tested.";
+    public static final String OBSERVATION_POINT = "API server execution environment, not this browser or phone.";
+    public static final String INTERPRETATION_GUIDE = "Meaning: observed = measured facts; inferred = interpretation; unavailable = no observation established. Confidence describes evidence directness, not the likelihood of a cause. Result-status counts are independent of analysis findings; zero result-status issues does not mean zero warning findings.";
     private static final List<String> SEMANTIC_KEYS = List.of(
             "cause", "supporting_evidence", "expectation", "evidence_directness",
             "coverage_limitation", "next_action");

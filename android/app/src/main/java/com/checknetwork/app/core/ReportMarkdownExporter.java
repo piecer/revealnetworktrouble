@@ -11,12 +11,14 @@ public final class ReportMarkdownExporter {
         Objects.requireNonNull(report, "report");
         BoundedMarkdown out = new BoundedMarkdown(MAX_EXPORT_CHARS);
         out.add("# Network diagnostic summary\n\n")
+                .add("- Observation point: ").add(AnalysisPresentationRegistry.OBSERVATION_POINT).add("\n")
+                .add(AnalysisPresentationRegistry.INTERPRETATION_GUIDE).add("\n")
                 .add("- Overall status: ").add(AnalysisPresentationRegistry.reportStatus(report)).add("\n")
                 .add("- Started: ").add(report.startedAt().toString()).add("\n")
                 .add("- Duration: ").add(String.valueOf(report.durationMs())).add(" ms\n")
                 .add("- Checks: ").add(String.valueOf(report.summary().total())).add(" total, ");
-        out.add(String.valueOf(report.summary().passed())).add(" completed observations, ")
-                .add(String.valueOf(report.summary().failed())).add(" incomplete observations\n");
+        out.add(String.valueOf(report.summary().passed())).add(" result statuses with no issue reported, ")
+                .add(String.valueOf(report.summary().failed())).add(" result statuses with an issue reported\n");
         out.add("- Verdict: ").add(AnalysisPresentationRegistry.verdict(report)).add("\n\n")
                 .add("## Check outcomes\n\n");
         if (report.results().isEmpty()) out.add("No checks were returned.\n");

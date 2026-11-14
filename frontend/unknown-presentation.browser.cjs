@@ -48,7 +48,9 @@ const crypto = require('node:crypto');
         if (start > 0 && i < p.length) bypasses.push([p[start-1],p[i],i-start]);
       }
       for (const show of [true,false]) {
-        await page.locator('[data-toggle-unresponsive]').setChecked(show); await ready();
+        const toggle = page.locator('[data-toggle-unresponsive]');
+        if (await toggle.isChecked() !== show) await page.locator('label:has([data-toggle-unresponsive])').click();
+        assert.equal(await toggle.isChecked(), show); await ready();
         const nodeItems = await page.locator('.topology-node').evaluateAll(ns => ns.map(n => ({id:n.dataset.nodeId, editable:n.tagName==='BUTTON', text:n.textContent})));
         assert.deepEqual(nodeItems.filter(n => !n.id.startsWith('presentation:')).map(n=>n.id).sort(), responsive, 'responsive tail inventory exact');
         const groups = nodeItems.filter(n => n.id.startsWith('presentation:'));

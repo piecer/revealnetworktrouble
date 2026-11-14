@@ -360,8 +360,8 @@ api_manifest_sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]
 api_rootfs_sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["rootfs"])' "$api_validation_one")
 api_traceroute_sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["traceroute"])' "$api_validation_one")
 
-api_base_id=$(docker image inspect "$api_base" --format '{{.Id}}' 2>/dev/null) || fail 'pinned Alpine base must already be present for borrowed-base API smoke'
-[ "$api_base_id" = 'sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc' ] || fail 'borrowed Alpine base identity mismatch'
+[ -f "$source_dir/scripts/borrowed_base_identity.py" ] && [ ! -L "$source_dir/scripts/borrowed_base_identity.py" ] || fail 'borrowed-base identity helper is missing or not regular in canonical source'
+api_base_id=$(python3 "$source_dir/scripts/borrowed_base_identity.py" "$api_base") || fail 'borrowed Alpine base identity/platform mismatch or base missing'
 
 create_owned_api_network
 api_container_role=smoke
@@ -435,8 +435,7 @@ if [ -f "$source_dir/frontend/Dockerfile" ]; then
     validation_one=$tmp/web-one.json
     validation_two=$tmp/web-two.json
 
-    base_id=$(docker image inspect "$web_base" --format '{{.Id}}' 2>/dev/null) || fail 'pinned nginx base must already be present for borrowed-base smoke'
-    [ "$base_id" = 'sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10' ] || fail 'borrowed nginx base identity mismatch'
+    base_id=$(python3 "$source_dir/scripts/borrowed_base_identity.py" "$web_base") || fail 'borrowed nginx base identity/platform mismatch or base missing'
     mkdir -m 0700 "$web_base_context"
     chmod 0700 "$web_base_context"
     printf '%s\n' 'FROM nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10' > "$web_base_context/Dockerfile"

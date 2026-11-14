@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Prepare only the exact borrowed bases before release inventory capture."""
+import importlib.util
 import json
+from pathlib import Path
 import subprocess
 import sys
 
-# Match verify-release.sh's pinned borrowed-base references and immutable IDs.
-BASES = (
-    "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
-    "nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10",
-)
+# Import the canonical sibling even when tests load this script by file path.
+_spec = importlib.util.spec_from_file_location(
+    "borrowed_base_identity", Path(__file__).with_name("borrowed_base_identity.py"))
+if _spec is None or _spec.loader is None:
+    raise ImportError("canonical borrowed-base identity helper cannot be loaded")
+_identity = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_identity)
+BASES = _identity.BASES
 
 
 def docker(*args):
@@ -20,14 +25,8 @@ def prepare(call=docker):
     for ref in BASES:
         call("pull", "--platform", "linux/amd64", ref)
         info = json.loads(call("image", "inspect", ref))
-        if not isinstance(info, list) or len(info) != 1 or not isinstance(info[0], dict):
-            raise ValueError("base inspect must contain exactly one image")
-        image = info[0]
-        if (image.get("Id") != ref.split("@", 1)[1]
-                or image.get("Os") != "linux" or image.get("Architecture") != "amd64"
-                or ref not in (image.get("RepoDigests") or [])):
-            raise ValueError("base does not match the verifier's exact identity/platform: " + ref)
-        receipts.append({"reference": ref, "id": image["Id"], "platform": "linux/amd64"})
+        image_id = _identity.validate_inspect(ref, info)
+        receipts.append({"reference": ref, "id": image_id, "platform": "linux/amd64"})
     return receipts
 
 
