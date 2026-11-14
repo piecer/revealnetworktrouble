@@ -1,14 +1,14 @@
 # PLAN 진행 현황 및 후속 작업 2차 점검
 
-- 최초 점검일: 2026-11-10 (KST). 최종 후속 검증일: 2026-11-11 (KST).
+- 최초 점검일: 2026-11-10 (KST). 최종 후속 검증일: 2026-11-14 (KST).
 - 기준 계획: 저장소 루트 `PLAN.md`의 개선 실행계획 v1.1. `docs/PLAN.md`는 과거 Stage별 구현 계획이므로 두 문서의 단계를 혼합하지 않는다.
 - 최초 점검 기준 HEAD: `734885ae9b5bfa22070675c7d2ea17b87e8cf0c5` (`main`, 커밋일 2026-11-07).
 - 점검 대상: 위 HEAD와 기존 미커밋 작업 트리. 문서에 적힌 상태뿐 아니라 실제 파일·구현·회귀 테스트·이번 실행 결과를 대조했다.
 - 변경 범위: 이 보고서만 추가한다. 기존 코드·문서·로컬 Compose·백업 파일을 수정하거나 commit/push/tag/운영 재배포하지 않는다.
 
-위 범위와 1~10절은 최초 감사 시점의 기록이다. 이어진 사용자 요청으로 남은 작업을 실행했으며, 로컬 수정·격리 검증·관련 파일의 로컬 커밋까지 별도 승인받았다. 11절은 11월 10일의 실행 기록이고, 최신 완료·잔여 판정은 12절이다. 원격 쓰기·태그/릴리스 발행·운영 재배포는 이번 승인 범위 밖이다.
+위 범위와 1~10절은 최초 감사 시점의 기록이다. 이어진 사용자 요청으로 남은 작업을 실행했으며, 로컬 수정·격리 검증·관련 파일의 로컬 커밋까지 별도 승인받았다. 11절은 11월 10일, 12절은 11월 11일의 실행 기록이고, 최신 완료·잔여 판정은 13절이다. 원격 쓰기·태그/릴리스 발행·운영 재배포는 이번 승인 범위 밖이다.
 
-**최신 상태: Go 1.26.11의 정확한 후보 `17ecbd437eb270388b4cce5b3fc56d293c4a0359`에서 승인된 로컬 검증과 산출물 보존을 완료했다. 공개 릴리스 전체 완료는 아니다. 원격 강제 게이트·실기기/독립 호스트 수용·발행은 별도 승인 또는 환경이 필요하다.**
+**최신 상태: 관측·해석·복구 안내를 보완한 정확한 후보 `40ba919ebf1d6508bbe22b65346b05f991a8e471`에서 승인된 로컬 검증과 산출물 보존을 완료했다. 원격 main의 기존 hosted CI 성공도 확인했지만, 새 후보의 원격 반영·필수 check 강제·실기기/독립 호스트/사용자 수용·공개 발행은 여전히 별도다. 공개 릴리스 전체 완료로 판정하지 않는다.**
 
 ## 1. 핵심 결론
 
@@ -367,3 +367,92 @@ Compose 실행은 source의 개발 identity(`0.1.0-dev`, zero revision)를 유�
 - 기존 운영 API/Web의 ID·image·StartedAt·실행 상태·공개 포트가 재개 시 baseline과 같았다. 운영 재배포나 해당 운영 환경의 보안 패치 적용 완료를 주장하지 않는다.
 - 기존 미추적 7개(로컬 Compose와 `.orig` 백업), 기존 ignored `bin/checknetwork-api`의 해시를 보존했다. 사용자 파일을 삭제하거나 함께 stage하지 않았다.
 - 최종 산출물의 readback/checksum, 후보 tracked source 해시·clean 상태, 계획 항목 대응·문서 형식·source 참조, 관련 문서 테스트·diff 및 기록 커밋의 범위 검사를 완료 증거와 함께 보존한다.
+
+## 13. 잔여 로컬 작업 후속 완료 — 2026-11-14
+
+### 13-1. 이번 범위와 검증 대상
+
+12절 이후 남아 있던 작업 4-1·4-3의 로컬 재현·표현 일관성 점검을 진행하고, 실제 누락과 회귀만 수정했다. 코드·테스트 13개 파일을 독립 리뷰한 뒤 로컬 `40ba919ebf1d6508bbe22b65346b05f991a8e471`에 반영했다. `VERSION=0.1.0`, Go `1.26.11`, `linux/amd64`이며, API schema·원본 JSON·네트워크 정책·진단 기능을 확장하거나 운영 서비스를 교체하지 않았다.
+
+아래 exact-SHA 검사는 해당 커밋의 별도 clean checkout에서 실행했다. 앞선 working-tree 및 브라우저 실행은 `snapshot-v5.json`의 소스 해시와 함께 보존했고, 424개 소스의 바이트가 clean checkout과 일치함을 확인했다. 보고서 후속 커밋은 결과 기록용이며, 검증한 binary/source revision을 그 새 HEAD로 소급 변경하지 않는다.
+
+### 13-2. 확인한 누락과 최소 보완
+
+- [x] Web 진단·토폴로지·Geo 및 Android의 보고서·사람용 내보내기에 API 서버 실행 환경에서의 관측이며 현재 브라우저·휴대전화의 측정이 아님을 명시했다. Web의 토폴로지·Geo 안내는 각 fullscreen 영역 안에 남는다.
+- [x] observed/inferred/unavailable의 의미와 confidence가 근거 직접성이지 원인 확률이 아니라는 설명을 화면·사람용 내보내기에 유지했다. 공인 IP의 GeoIP 주의문은 긴 사용자 메모보다 먼저 표시하되 기존 사용자 라벨의 우선순위를 보존했다.
+- [x] `summary.failed`를 미완료 관측으로 표시하던 Android 문구를 수정했다. HTTP 503처럼 응답을 실제 받은 실패도 미관측이라고 부르지 않는다.
+- [x] 독립 리뷰가 새로 발견한 집계 결함도 수정했다. `summary.passed/failed`는 `result.status`의 집계이며 분석 경고 수가 아니다. 만료 임박 TLS 인증서·정상 도달한 대체 경로에는 결과 상태와 별개로 경고가 존재할 수 있다. Web·Android의 화면과 사람용 내보내기는 결과-status 집계라고 명시하고, 0건의 결과-status 문제가 0건의 분석 경고를 뜻하지 않는다고 설명한다. 새 attention 산출 로직은 추가하지 않았다.
+- [x] 기존 producer의 TLS 만료 임박 및 healthy 경로 변동 compact/full fixture를 실제 parser에 입력해 위 구분과 finding·attention verdict 보존을 회귀 검증했다. 기존 과잉 건강 주장 금지·privacy·closed parser 검사는 완화하지 않았다.
+- [x] Web의 분석 미지원 상태에 비어 있던 supporting evidence·coverage·next action 설명을 화면·내보내기 양쪽에 채웠다. 알려진 API 오류 16개 fixture와 timeout에 로컬 복구 안내를 추가하고, 허용된 Retry-After의 대기 시간을 표시한다. 자동 재요청은 추가하지 않았다. 취소는 완료된 결과가 아님과 수동 재실행을 설명하며 실행 버튼 포커스·내보내기 비활성 경계를 유지한다.
+- [x] IP-context browser gate의 사용자 홈에 고정된 실행 경로를 실제 선택한 Playwright package의 경로로 바꿨다. 무응답 체크박스는 숨겨진 input을 강제로 클릭하지 않고 연결된 보이는 label을 조작한 뒤 checked 상태를 검증한다.
+- [x] 최초 broad CI의 DOM 기준값·도움말 길이·라벨 우선순위 회귀와 다음 실행의 ASN 문구 계약 실패를 숨기지 않고 보존했다. 추가 해석 문단 1개만 DOM 기준값에 반영하고 1,200개 hard limit은 유지했다. 140자 도움말과 정확한 ASN 추정·소속 미확인 문구는 HEAD 원문으로 복원하고, 새 관측 위치 안내를 기존 범례로 분리했다.
+
+실패한 v2 리뷰와 기능 검사는 통과했지만 집계 의미로 거절된 v3 리뷰를 모두 보존한다. 최종 v5 독립 리뷰는 SHA-256 13/13과 diff를 대조하고 차단 보안·논리 결함 없이 승인했다. 이 승인 자체를 후속 실행 성공 대신 사용하지 않았다.
+
+### 13-3. 새 후보에서 실제 완료한 검증
+
+| 검사 | 결과 | 실제 시간 / 경계 |
+|---|---|---|
+| exact-SHA `make ci` | 종료 0 | 362.779초. Go/Web/race/vet/build, Android 두 variant JVM·lint·assemble |
+| Go 일반 검사 | 최상위 523 pass / 6 skip / 실패 0 | 하위 테스트 포함 pass event 1,299개이며 합산하지 않음 |
+| Web Node TAP | 901 pass / 실패·skip 0 | 별도 app/common-prefix 계약 검사도 통과 |
+| Android debug/release JVM | 각 767 tests / 실패·오류·skip 0 | 각 direct-child XML 44개에서 집계 |
+| exact-SHA `make ci-security` | 종료 0 | 27.892초. Public/SSRF/노출 회귀, Go source, dev dependency 포함 npm audit, 도달 가능한 Git 이력 secret scan |
+| `make release-bases` | 종료 0 | 3.770초. borrowed base 준비는 production inventory 기준점 전에 완료 |
+| exact-SHA `make ci-clean-archive` | 종료 0 | 415.137초. canonical source archive의 Full CI와 실제 Docker archive 검증 |
+| `make verify-release-real REVISION=<새 후보 SHA>` | 종료 0 | 130.668초. umask 077/027/000 3-pass와 11개 성공 필드·Docker inventory 비교 |
+| 실제 최종 추출 binary `make release-vuln` | 종료 0 | 0.815초. host 일반 빌드가 아니라 실제 검증·추출한 binary 검사 |
+| exact-SHA `make web-test-browser` | 종료 0 | 24.604초. canonical Chromium graph/route/label/empty/IP-context 및 실제 Go handler CORS/Retry-After |
+| exact-SHA `make web-test-deployment-live` | 종료 0 | 1.516초. cached borrowed nginx의 18개 조건부 요청·no-store·동일 길이 변경 및 exact-ID 정리. Compose build/up이나 운영 재배포 아님 |
+
+해당 source/binary scanner 실행에서 취약점·비밀정보 findings는 없었다. 이것은 해당 실행 시점의 결과이며 이후 보안 상태를 영구 보장하지 않는다. 처음의 선택 13개 파일에 대한 별도 secret scan과 workflow lint도 통과했다. 기본 Go의 skip 6개는 7절 목록과 같고, CORS browser는 별도 canonical gate로 실행했다. 나머지 GNU live·component real-Buildx opt-in 테스트를 실행했다고 바꾸지 않는다.
+
+추가로 Playwright `1.63.0`의 실제 patched Chromium `153.0.8010.12`, Firefox `155.0`, Linux WebKit `26.6`으로 선택된 matrix를 실행했다. 엔진별 1440/320/375/400px × 6 view/mode, 각각 24개 사례를 검사했다. graph-first·route-visual·label-integrity·topology-empty·무응답 표현, 실제 API 기반 진단과 명시적인 topology/Geo fixture replay를 구분한다. 새 해석·상태 집계·legacy·429·취소 사례에서는 브라우저 조작과 실제 다운로드 파일도 검증했다.
+
+이 matrix는 개발 identity를 가진 host-built API를 사용한 소스 snapshot 검사다. 실제 제공된 asset 해시가 새 커밋의 소스와 일치함을 확인했지만, release binary의 실단말 실행으로 주장하지 않는다. IP-context gate의 CDP 부분은 Chromium 전용이므로 Firefox/WebKit 두 조합은 명시적으로 제외했다. branded Chrome·Safari, 물리 휴대전화, screen reader·사용자 이해도 수용으로 확대하지 않는다.
+
+새 desktop 진단·토폴로지 PNG 두 개도 제한적으로 열어 관측 위치·집계 한계의 표시, 실제 그래프와 큰 잘림·보이는 credential 여부를 점검했다. 접힌 설정·raw 내용의 안전성이나 고밀도 가독성 전체를 시각 점검만으로 보장하지 않는다. 기존 README 이미지의 과거 provenance는 덮어쓰지 않았다.
+
+### 13-4. 원격 상태 재조회와 남은 승인·환경
+
+2026-11-14 13:53 KST의 GitHub GET 재조회 결과:
+
+- remote main은 `129fc6801959582d90d9424baa79721a29fcc741`이며, 기존 main push CI run `43032382132`가 성공했다. 앞선 원본 job/log/artifact 확인에서 Quick·Full·Security·CI required 성공과 artifact digest를 확인했다. 기존 원격 반영을 이번 작업에서 push한 것으로 주장하지 않는다.
+- main은 protected=false, branch protection 조회는 404, rulesets는 비어 있다. CI required의 성공과 실제 merge 차단 강제는 다르다.
+- Description=null, Topics=[], private vulnerability reporting=false다. 신고 채널·담당자·지원 정책은 운영자 결정이 필요하다.
+- Release 실행과 원격 tag/release 목록은 비어 있다. 새 `40ba919`의 push·hosted CI·발행은 수행하지 않았다. 기존 dependency PR의 실패를 main이나 새 후보의 실행 결과로 섞지 않는다.
+
+이 호스트의 adb 연결 단말 0개·SDK emulator 실행 파일 부재 조회 기록은 `device-availability.json`에 있다. JVM·APK·headless engine 결과를 실기기 수용으로 대체하지 않는다.
+
+| 원래 항목 | 이번에 추가 완료한 범위 | 여전히 남은 범위 |
+|---|---|---|
+| 작업 1-1 | 새 정확한 후보의 Full/clean archive와 원본 집계 | 새 VM·독립 호스트의 설치 수용 |
+| 작업 1-2 | 새 후보 보안 회귀·CORS·borrowed nginx 검증 | 운영 LAN 노출 승인·gateway·운영 반영. 12절의 과거 Compose/TLS 검증과 구분 |
+| Phase 2 | 기존 remote main hosted CI 성공·artifact 확인, 새 후보의 로컬 canonical gates | 새 후보 원격 반영, required check 강제·실패 PR merge 차단·cold-runner Release |
+| 작업 3-1 | 기존 문서·이력 계약 유지 및 후속 기록 | 새 변경의 공개 저장소 반영은 별도 승인 |
+| 작업 3-2 | 실제 API/fixture를 구분한 3-engine 반응형 재검증·PNG 증거 | 신규 사용자의 README-only 독립 설치 |
+| 작업 3-3 | 원격 metadata·신고 설정의 현재 상태 확인 | Description/Topics, 비공개 신고 채널·담당자·지원 범위 확정 |
+| 작업 4-1 | headless 3-engine 선택 matrix, canonical Chromium/CORS, 실패·취소 복구 | 실제 Chrome/Safari·물리 모바일·고밀도 가독성·screen reader 및 제외 조합 수용 |
+| 작업 4-2 | 각 767 JVM·lint·assemble | emulator/실단말·회전/재생성·TalkBack/Switch Access·OEM 공유/descriptor/프로세스 종료 |
+| 작업 4-3 | 관측 위치·해석 한계·결과 status/분석 경고 구분·주요 화면/내보내기 회귀 | 실제 사용자의 이해도와 전체 플랫폼 수용 |
+| 작업 5-1 | 새 exact-SHA Full→clean archive→3-pass→binary scan 및 독립 리뷰 | 독립 환경 설치·플랫폼 수용·운영 배포 검증 |
+| 작업 5-2 | 새 검증 binary·canonical source·체크섬·원본 증거 보존 | RC VERSION/tag 정합성·노트/지원 범위 수용·승인된 후보/정식 발행·배포 |
+
+### 13-5. 산출물·상태 보존
+
+장기 보관 경로:
+
+`/home/piecer/dev/artifacts/revealnetworktrouble/40ba919ebf1d6508bbe22b65346b05f991a8e471/`
+
+- `checknetwork-api-linux-amd64`: 실제 검증·추출한 실행 파일. SHA-256 `08a6b43bc6141d2f0b360a0fc5d5a3d8c7ecd6e0ea10e0d1ccd68e5a64f91c52`. clean archive와 production 출력의 바이트가 같다.
+- `SOURCE.tar`, `REVISION`, `VERSION`, `SOURCE_DATE_EPOCH`, `LICENSE`: 정확한 코드 후보의 source/identity. source archive의 424개 파일과 각 바이트를 Git commit과 대조했다.
+- `VERIFICATION.json`, `evidence/`, `EVIDENCE.tar.gz`: 실제 종료 코드·시간·Go JSON·Node TAP·Android XML, 브라우저/이미지·원격 읽기·독립 리뷰와 실패 기록. evidence manifest의 자기 자신 제외 record 수와 archive의 실제 파일 수는 구분하며, 전체 member 집합·종류·내용도 readback했다.
+- `SHA256SUMS`: 실제 보존 파일의 재검증된 체크섬. 서명·attestation·공개 릴리스로 주장하지 않는다. 후속 보고서 커밋은 코드 후보와 별도 identity로 연결한다.
+
+증거 전체를 압축파일 내부까지 추가 secret scan한 원본 결과는 종료 1 / 12건이다. 모두 verifier가 출력한 `api_archive`·`api_binary`·`api_traceroute` SHA-256을 generic-api-key 규칙이 키로 오탐한 것이었다. 원문·종료 코드를 보존하고 producer의 정확한 출력 형식, clean/production의 여섯 digest 일치와 실제 binary hash를 대조해 12/12를 비밀이 아닌 체크섬으로 분류했다. 미검토 finding은 없으며, scanner 설정·규칙·경로 예외는 추가하지 않았다. synthetic secret positive control은 실제 탐지되고 보고서 자체 검사는 종료 0이었다. 이 별도 증거 검사 결과를 원본까지 findings 0이었다고 바꾸지 않는다. 판정은 `artifact-secret-scan-adjudication.json`과 원본 scan receipt에 남겼다.
+
+원본 실행 경로는 `/home/piecer/.hermes/cache/scratch/cn-progress2-resume-ew592za9/`이며, 앞선 11월 14일 준비·실패 증거는 그 기록에 연결된 `checknetwork-remaining-20261114-b6l_8mm0/`에 있다. 필요한 원본과 집계는 위 장기 보관 경로에도 복사했다.
+
+재개 시 `compose.local.yaml`과 운영 container ID가 앞선 오전 baseline과 달라진 사실을 확인했다. 기존 파일 내용을 검토·수정하거나 되돌리지 않고 새 재개 기준을 기록했다. 그 기준 이후 기존 미추적 7개·기존 ignored binary의 hash/mode/size, 운영 API/Web의 ID·image·StartedAt·실행 상태·ports 보존을 확인했다. 해당 사용자 파일은 stage하지 않았다.
+
+브라우저의 소유한 API·HTTP listener 종료, nginx exact-ID 제거·부재와 production verifier의 inventory 정리를 확인했다. borrowed base/cache는 삭제하지 않았다. 원격 쓰기·태그/Release·registry push·운영 재배포는 하지 않았으므로, 승인된 로컬 작업 완료와 공개 릴리스 최종 승인 보류를 계속 구분한다.
