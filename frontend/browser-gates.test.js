@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -50,6 +51,33 @@ async function runWrapper(outcome) {
     return { logs, errors, children, timers, code: process.exitCode ?? 0 };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
+
+test('IP context gate delegates default executable selection to its matching Playwright package', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'checknetwork-launch-test-'));
+  const optionsFile = join(directory, 'launch-options.json');
+  const probe = join(directory, 'playwright-probe.cjs');
+  await writeFile(probe, `// Stop after recording the real harness launch boundary; no UI verdict is simulated.
+const fs = require('node:fs');
+module.exports.chromium = { executablePath: () => '/matching-package/browser', launch: async options => {
+  fs.writeFileSync(${JSON.stringify(optionsFile)}, JSON.stringify(options ?? {}));
+  throw new Error('launch-boundary-probe');
+} };
+`);
+  try {
+    for (const override of [undefined, '/explicit-browser-path']) {
+      const env = { ...process.env, PLAYWRIGHT_PATH: probe };
+      delete env.IP_CONTEXT_CHROMIUM;
+      if (override) env.IP_CONTEXT_CHROMIUM = override;
+      const output = join(directory, override ? 'override' : 'default');
+      const child = spawnSync(process.execPath, [new URL('./ip-context.browser.cjs', import.meta.url).pathname, output], { env, encoding: 'utf8', timeout: 10000 });
+      assert.equal(child.status, 1, child.stderr);
+      assert.match(JSON.parse(await readFile(join(output, 'failure.json'), 'utf8')).message, /launch-boundary-probe/);
+      const options = JSON.parse(await readFile(optionsFile, 'utf8'));
+      assert.deepEqual(options, { executablePath: override ?? '/matching-package/browser' });
+      assert.deepEqual(JSON.parse(await readFile(join(output, 'cleanup.json'), 'utf8')), { browserConnected: false, serverListening: false });
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('browser wrapper rejects timeout even when SIGTERM cleanup exits zero', async () => {
   const result = await runWrapper('timeout-graceful');

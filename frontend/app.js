@@ -487,6 +487,14 @@ const OVERALL_VERDICT_TEXT = Object.freeze({
   attention: 'One or more bounded observations require attention.',
   inconclusive: 'The bounded observations were insufficient for a conclusion.'
 });
+const OBSERVATION_POINT = 'API server execution environment, not this browser or phone.';
+const CANCELLATION_MESSAGE = '요청이 취소되었습니다. 완료된 진단 결과가 아니며, 필요하면 다시 실행해 주세요.';
+const INTERPRETATION_GUIDE = 'Meaning: observed = measured facts; inferred = interpretation; unavailable = no observation established. Confidence describes evidence directness, not the likelihood of a cause. Result-status counts are independent of analysis findings; zero result-status issues does not mean zero warning findings.';
+const UNAVAILABLE_ANALYSIS_GUIDANCE = Object.freeze([
+  ['evidence', 'supporting_evidence', 'No validated supporting evidence was linked.'],
+  ['actions', 'next_action', 'Run the check against a producer that supplies the closed analysis contract.'],
+  ['coverage', 'coverage_limitation', 'Only bounded result status and counts can be summarized.']
+]);
 function findingPanel(doc, index, detail) {
   const { presentation, facts, directness } = detail;
   const panel = makeNode(doc, 'div', undefined, 'finding-panel'); panel.id = `finding-panel-${index}`;
@@ -540,13 +548,17 @@ function renderAnalysisWorkspace(doc, report, root = doc.querySelector('#analysi
   const verdictText = analysis ? OVERALL_VERDICT_TEXT[analysis.verdict] : OVERALL_VERDICT_TEXT.inconclusive;
   const header = makeNode(doc, 'div', undefined, `analysis-verdict verdict-${analysis?.verdict || 'inconclusive'}`);
   header.append(makeNode(doc, 'strong', verdictText), makeNode(doc, 'time', new Date(report.started_at).toISOString()), makeNode(doc, 'span', `${report.duration_ms} ms`));
-  verdict.append(header);
+  verdict.append(header, makeNode(doc, 'p', INTERPRETATION_GUIDE));
   root.append(verdict);
 
   if (!analysis) {
     const unsupported = analysisSection(doc, 'findings', 'Automated analysis unavailable');
     unsupported.append(makeNode(doc, 'p', 'The bounded report did not include a supported analysis object.'));
-    root.append(unsupported, analysisSection(doc, 'evidence', 'supporting_evidence'), analysisSection(doc, 'actions', 'next_action'), analysisSection(doc, 'coverage', 'coverage_limitation'));
+    root.append(unsupported);
+    for (const [key, heading, explanation] of UNAVAILABLE_ANALYSIS_GUIDANCE) {
+      const section = analysisSection(doc, key, heading);
+      section.append(makeNode(doc, 'p', explanation)); root.append(section);
+    }
   } else {
     const findings = analysisSection(doc, 'findings', 'Bounded findings');
     const evidenceByID = new Map(analysis.evidence.map(item => [item.id, item]));
@@ -585,7 +597,7 @@ function renderSafeResults(doc, report, targets = {}) {
   const coverage = report.analysis?.coverage;
   const coverageSummary = coverage ? `${coverageFacts(coverage, report.results).length} bounded coverage facts` : 'Automated analysis unavailable';
   const metrics = makeNode(doc, 'dl');
-  for (const [label, value] of [['Checks', report.summary.total], ['Completed observations', report.summary.passed], ['Observations requiring attention', report.summary.failed], ['Duration', `${report.duration_ms} ms`], ['Observation point', 'API server execution environment'], ['Coverage', coverageSummary]]) {
+  for (const [label, value] of [['Checks', report.summary.total], ['Result status: no issue reported', report.summary.passed], ['Result status: issue reported', report.summary.failed], ['Duration', `${report.duration_ms} ms`], ['Observation point', OBSERVATION_POINT], ['Coverage', coverageSummary]]) {
     const item = makeNode(doc, 'div'); item.append(makeNode(doc, 'dt', label), makeNode(doc, 'dd', value)); metrics.append(item);
   }
   summary.append(metrics);
@@ -609,8 +621,9 @@ function renderSafeResults(doc, report, targets = {}) {
 function humanReport(report) {
   const analysis = report.analysis;
   const verdict = analysis ? OVERALL_VERDICT_TEXT[analysis.verdict] : OVERALL_VERDICT_TEXT.inconclusive;
-  const lines = ['# CheckNetwork bounded report', '', `Report status: ${OVERALL_STATUS_TEXT[report.status]}`, `Analysis verdict: ${verdict}`, `Started (UTC): ${report.started_at}`, `Duration (ms): ${report.duration_ms}`, `Checks: ${report.summary.total}`, ''];
-  if (!analysis) return [...lines, 'Automated analysis: unavailable for this bounded report.'].join('\n');
+  const lines = ['# CheckNetwork bounded report', '', `Observation point: ${OBSERVATION_POINT}`, INTERPRETATION_GUIDE, `Report status: ${OVERALL_STATUS_TEXT[report.status]}`, `Analysis verdict: ${verdict}`, `Started (UTC): ${report.started_at}`, `Duration (ms): ${report.duration_ms}`, `Checks: ${report.summary.total}`, `Result status: no issue reported: ${report.summary.passed}`, `Result status: issue reported: ${report.summary.failed}`, ''];
+  if (!analysis) return [...lines, 'Automated analysis: unavailable for this bounded report.',
+    ...UNAVAILABLE_ANALYSIS_GUIDANCE.flatMap(([, heading, explanation]) => [`## ${heading}`, explanation, ''])].join('\n');
   const evidenceByID = new Map(analysis.evidence.map(item => [item.id, item]));
   lines.push('## observed_check_scopes');
   for (const result of report.results) if (hasGreetingScope(result)) lines.push(`- ${SERVER_GREETING_SCOPE}`);
@@ -1363,11 +1376,18 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
       : renderStateName === 'render-error' ? '네트워크 응답은 완료했지만 화면 표시 중 오류가 발생했습니다. 원시 JSON 다운로드는 사용할 수 있습니다.'
         : renderStateName === 'render-limited' ? '문서 요소 한도로 토폴로지를 표시할 수 없습니다. 원시 JSON 다운로드는 사용할 수 있습니다.'
           : renderStateName === 'render-empty' ? renderEmptyMessage
-            : { idle: '입력을 확인하고 실행해 주세요.', loading: purpose === 'diagnostics' ? '진단 중입니다.' : '경로 분석 중입니다.', ready: purpose === 'topology' ? '네트워크 응답과 화면 표시가 완료되었습니다.' : '분석이 완료되었습니다.', error: '요청을 완료하지 못했습니다.', cancelled: '요청이 취소되었습니다.' }[lane.phase];
+            : { idle: '입력을 확인하고 실행해 주세요.', loading: purpose === 'diagnostics' ? '진단 중입니다.' : '경로 분석 중입니다.', ready: purpose === 'topology' ? '네트워크 응답과 화면 표시가 완료되었습니다.' : '분석이 완료되었습니다.', error: '요청을 완료하지 못했습니다.', cancelled: CANCELLATION_MESSAGE }[lane.phase];
   }
   function publishError(purpose, error) {
     const normalized = normalizeRequestError(error); const alert = doc.querySelector('#request-alert');
-    ui(purpose).error.textContent = normalized.message; ui(purpose).error.hidden = false; alert.dataset.purpose = purpose; alert.textContent = `${purpose === 'diagnostics' ? '진단' : '경로 분석'} 실패: ${normalized.message}`; alert.hidden = false; doc.querySelector('#request-live').textContent = '';
+    const retrySeconds = normalized.retryable && Number.isFinite(normalized.retryAt)
+      ? Math.min(3600, Math.max(0, Math.ceil((normalized.retryAt - clock()) / 1000))) : 0;
+    const action = normalized.code === 'unauthorized' ? 'API 주소와 인증 설정을 확인한 뒤 다시 실행해 주세요.'
+      : retrySeconds > 0 ? `${retrySeconds}초 뒤 API 연결 상태를 확인하고 다시 실행해 주세요.`
+        : normalized.retryable ? 'API 연결 상태를 확인한 뒤 다시 실행해 주세요.'
+          : '입력과 API 설정·지원 버전을 확인한 뒤 수정해 주세요.';
+    const message = `${normalized.message} 다음 행동: ${action}`;
+    ui(purpose).error.textContent = message; ui(purpose).error.hidden = false; alert.dataset.purpose = purpose; alert.textContent = `${purpose === 'diagnostics' ? '진단' : '경로 분석'} 실패: ${message}`; alert.hidden = false; doc.querySelector('#request-live').textContent = '';
     if (normalized.code === 'unauthorized') { doc.querySelector('#connection-settings').open = true; doc.querySelector('#bearer-token').focus(); } else alert.focus();
   }
   function invalidate(purpose) {
@@ -1406,7 +1426,7 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
         } finally {
           active.delete(purpose);
           try { lanes[purpose] = transitionRequest(lanes[purpose], { type: 'REQUEST_FINALIZED', ownerId: request.ownerId, inputSignature: request.signature }); }
-          finally { clearPurpose(purpose); renderState(purpose); doc.querySelector('#request-live').textContent = '요청이 취소되었습니다.'; if (reason === 'user') ui(purpose).run.focus(); }
+          finally { clearPurpose(purpose); renderState(purpose); doc.querySelector('#request-live').textContent = CANCELLATION_MESSAGE; if (reason === 'user') ui(purpose).run.focus(); }
         }
       }
     }

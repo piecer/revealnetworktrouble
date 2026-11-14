@@ -1051,7 +1051,7 @@ test('maximum report navigation and budgeted label import stay within the docume
 
   await app.start('diagnostics'); observe();
   const initialElements = document.querySelectorAll('*').length;
-  assert.equal(initialElements, 761, 'maximum valid report baseline including the static Geo target-selector root');
+  assert.equal(initialElements, 762, 'maximum valid report baseline including the static Geo target-selector root and one interpretation paragraph');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -1907,6 +1907,23 @@ test('unknown presentation signals fail closed without fallback or reflection', 
   });
 });
 
+test('legacy analysis has usable evidence limits and next action on screen and human export', async () => {
+  const { presentReport } = await import('./app.js');
+  const { document, dom, app } = setup();
+  const markdown = presentReport(document, report('legacy-private-id'));
+  const explanations = {
+    evidence: 'No validated supporting evidence was linked.',
+    coverage: 'Only bounded result status and counts can be summarized.',
+    actions: 'Run the check against a producer that supplies the closed analysis contract.'
+  };
+  for (const [section, explanation] of Object.entries(explanations)) {
+    assert.ok(document.querySelector(`[data-analysis-section="${section}"] p`)?.textContent.includes(explanation), section);
+    assert.ok(markdown.includes(explanation), section);
+  }
+  assert.doesNotMatch(markdown, /legacy-private-id|example\.test/);
+  app.destroy(); dom.window.close();
+});
+
 test('legacy report is ready but explicitly unsupported/inconclusive', async () => {
   const { document } = setup(); submit(document); await flush();
   assert.equal(document.querySelector('#diagnostics-workspace').dataset.state, 'ready');
@@ -1933,6 +1950,48 @@ test('untyped HTTP 401 uses the invalid-response alert without opening credentia
   assert.equal(document.activeElement, document.querySelector('#request-alert'));
   assert.doesNotMatch(document.body.textContent, /secret proxy/);
   assert.equal(document.querySelector('#diagnostics-workspace').dataset.state, 'error');
+});
+
+test('cancelled diagnostics and topology explain missing completion and permit explicit restart', async () => {
+  for (const purpose of ['diagnostics', 'topology']) {
+    const { dom, app, document } = setup((_url, init) => new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(Object.assign(new Error('private-abort'), { name: 'AbortError' })));
+    }));
+    const pending = app.start(purpose); await flush(); app.cancel(purpose); await pending;
+    assert.equal(app.getState()[purpose].phase, 'cancelled');
+    for (const selector of [`#${purpose}-state-message`, '#request-live']) {
+      assert.match(document.querySelector(selector).textContent, /완료된 진단 결과가 아니며.*다시 실행/);
+    }
+    const run = document.querySelector(purpose === 'diagnostics' ? '#run' : '#run-topology');
+    assert.equal(run.disabled, false); assert.equal(document.activeElement, run);
+    assert.equal(document.querySelector(purpose === 'diagnostics' ? '#download-human' : '#download-topology').disabled, true);
+    assert.doesNotMatch(document.body.textContent, /private-abort/);
+    app.destroy(); dom.window.close();
+  }
+});
+
+test('request errors offer bounded recovery without automatic retries or server prose', async () => {
+  const contract = JSON.parse(await readFile(new URL('../testdata/api-error-contract.json', import.meta.url), 'utf8'));
+  for (const fixture of contract.errors) {
+    let posts = 0;
+    const { dom, app, document } = setup(async () => { posts++; return response(fixture.body, fixture.status, { 'Retry-After': '30' }); }, { clock: () => 1000 });
+    await app.start('diagnostics');
+    const text = document.querySelector('#request-alert').textContent;
+    assert.match(text, /다음 행동:/, fixture.key);
+    if (fixture.retry_after) {
+      assert.ok(Number.isFinite(app.getState().diagnostics.error.retryAt), fixture.key);
+      assert.match(text, /30초 뒤/, fixture.key);
+    }
+    if (fixture.code === 'unauthorized') assert.match(text, /API 주소와 인증/, fixture.key);
+    assert.doesNotMatch(text, /HOSTILE-SERVER-PROSE/);
+    assert.equal(posts, 1, 'recovery advice must not automatically resubmit diagnostics');
+    app.destroy(); dom.window.close();
+  }
+  const { dom, app, document } = setup(async () => { throw Object.assign(new Error('private-timeout'), { name: 'TimeoutError' }); });
+  await app.start('diagnostics');
+  assert.match(document.querySelector('#request-alert').textContent, /다음 행동:.*다시 실행/);
+  assert.doesNotMatch(document.querySelector('#request-alert').textContent, /private-timeout/);
+  app.destroy(); dom.window.close();
 });
 
 test('every exact producer API error fixture renders only local text with classification-owned focus', async () => {
@@ -2644,6 +2703,79 @@ test('topology app delegation preserves native activation keys', () => {
     button.dispatchEvent(event);
     assert.equal(event.defaultPrevented, false, key);
   }
+});
+
+test('healthy result status counts remain independent from warning findings on screen and export', async () => {
+  const { presentReport } = await import('./app.js');
+  const contract = JSON.parse(await readFile(new URL('../testdata/presentation-contract.json', import.meta.url), 'utf8'));
+  const reports = [contract.scenarios.find(s => s.name === 'finding.tls_certificate_expiring').report];
+  for (const name of ['trace-observation-healthy-varied-paths-compact.json', 'trace-observation-healthy-varied-paths-full.json']) {
+    reports.push(JSON.parse(await readFile(new URL(`../testdata/${name}`, import.meta.url), 'utf8')));
+  }
+  for (const value of reports) {
+    const { document, dom, app } = setup(async () => response(JSON.stringify(value)));
+    await app.start('diagnostics');
+    const normalized = app.getOwnedReport('diagnostics');
+    assert.equal(app.getState().diagnostics.phase, 'ready');
+    assert.equal(normalized.analysis.verdict, 'attention');
+    assert.ok(document.querySelector(`[data-presentation-key="finding.${normalized.analysis.findings[0].code}"]`));
+    const markdown = presentReport(document, normalized);
+    const metrics = new Map([...document.querySelectorAll('#summary dl > div')].map(item => [item.querySelector('dt').textContent, item.querySelector('dd').textContent]));
+    assert.equal(metrics.get('Result status: no issue reported'), '1');
+    assert.equal(metrics.get('Result status: issue reported'), '0');
+    assert.match(markdown, /Result status: no issue reported: 1/);
+    assert.match(markdown, /Result status: issue reported: 0/);
+    for (const text of [document.querySelector('#analysis-report').textContent, markdown]) {
+      assert.match(text, /Result-status counts are independent of analysis findings; zero result-status issues does not mean zero warning findings/);
+      assert.doesNotMatch(text, /without reported attention|Checks requiring attention/);
+    }
+    assert.match(markdown, new RegExp(`finding\\.${normalized.analysis.findings[0].code}`));
+    app.destroy(); dom.window.close();
+  }
+});
+
+test('result status counts do not confuse observed HTTP failure with incomplete measurement', async () => {
+  const { presentReport } = await import('./app.js');
+  const { document, dom, app } = setup();
+  const value = report('http-attention', { status: 'unreachable', summary: { total: 1, passed: 0, failed: 1 },
+    results: [result({ kind: 'http', address: 'https://example.test', status: 'unreachable', error_code: 'unexpected_status', details: { expected_status: 200, status_code: 503 } })] });
+  const markdown = presentReport(document, value);
+  const metrics = new Map([...document.querySelectorAll('#summary dl > div')].map(item => [item.querySelector('dt').textContent, item.querySelector('dd').textContent]));
+  assert.equal(metrics.get('Result status: no issue reported'), '0');
+  assert.equal(metrics.get('Result status: issue reported'), '1');
+  assert.match(markdown, /Result status: no issue reported: 0/);
+  assert.match(markdown, /Result status: issue reported: 1/);
+  assert.doesNotMatch(document.querySelector('#summary').textContent + markdown, /[Cc]ompleted observations|incomplete observations/);
+  assert.equal(value.results[0].details.status_code, 503);
+  app.destroy(); dom.window.close();
+});
+
+test('measurement interpretation survives safe screen and human export for analysis and legacy reports', async () => {
+  const { presentReport } = await import('./app.js');
+  for (const analysis of [undefined, fullAnalysis()]) {
+    const { document, dom, app } = setup();
+    const value = report('private-vantage-report', { ...(analysis ? { analysis } : {}) });
+    const markdown = presentReport(document, value);
+    const safeHeader = document.querySelector('#summary').textContent + document.querySelector('[data-analysis-section="verdict"]').textContent;
+    for (const text of [safeHeader, markdown]) {
+      assert.match(text, /API server execution environment/);
+      assert.match(text, /not this browser or phone/);
+      assert.match(text, /observed.*measured facts/i);
+      assert.match(text, /inferred.*interpretation/i);
+      assert.match(text, /unavailable.*no observation established/i);
+      assert.match(text, /Confidence describes evidence directness, not the likelihood of a cause/);
+    }
+    assert.doesNotMatch(markdown, /private-vantage-report|example\.test/);
+    app.destroy(); dom.window.close();
+  }
+});
+
+test('topology and Geo keep the server observation point inside their fullscreen regions', () => {
+  const { document, dom, app } = setup();
+  for (const selector of ['#topology-report-section #topology-color-legend', '#geo-map-view .section-description']) {
+    assert.match(document.querySelector(selector).textContent, /관측 위치.*API 서버.*현재 브라우저.*기기.*아님/);
+  }
+  app.destroy(); dom.window.close();
 });
 
 test('compact vantage and coverage header precedes analysis and folded raw workspaces', async () => {
