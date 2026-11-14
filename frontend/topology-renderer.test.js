@@ -773,6 +773,20 @@ test('private context semantics disclose route-specific inference without adding
   assert.equal(node.dataset.labelAddress, '10.1.2.3');
 });
 
+test('public GeoIP disclaimer precedes long annotations in every node detail projection', () => {
+  const h = harness();
+  const model = { nodes: [{ id: 'geo', kind: 'ip', address: '8.8.8.8', status: 'healthy', public_ip: true,
+    observations: 1, display_note: 'x'.repeat(2048), geolocation: { city: 'Seoul' } }], links: [], routes: [] };
+  h.coordinator.start({ ownerId: 'A', inputSignature: 'a', view: 'topology', model, root: h.root, status: h.status });
+  h.runAll();
+  const node = h.root.querySelector('[data-node-id="geo"]');
+  for (const text of [node.textContent, node.title, node.getAttribute('aria-label'), node.dataset.detail.slice(0, 2048)]) {
+    assert.match(text, /GeoIP 추정 위치/);
+    assert.match(text, /실제 장비 소재지나 패킷 경로를 보장하지 않습니다/);
+  }
+  assert.equal(node.childElementCount, 0);
+});
+
 test('bounded topology elements expose rich semantics and reorder without adding DOM', () => {
   const h = harness();
   const model = {

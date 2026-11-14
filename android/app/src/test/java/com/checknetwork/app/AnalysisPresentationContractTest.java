@@ -57,6 +57,24 @@ public final class AnalysisPresentationContractTest {
         }
     }
 
+    @Test public void measurementInterpretationSurvivesSafeScreenAndHumanExportIncludingLegacy() throws Exception {
+        Report finding = reportFor(Report.FindingCode.DNS_RESOLUTION_FAILED, "error_code", "connection_failed", POISON,
+                true, true, new JSONArray());
+        Report legacy = ReportParser.parse("{\"id\":\"private-vantage\",\"status\":\"healthy\",\"started_at\":\"2026-09-02T00:00:00Z\",\"duration_ms\":0,\"summary\":{\"total\":0,\"passed\":0,\"failed\":0},\"results\":[]}");
+        for (Report report : List.of(finding, legacy)) {
+            for (String text : List.of(safeScreen(report), ReportMarkdownExporter.export(report))) {
+                assertTrue(text, text.contains("API server execution environment"));
+                assertTrue(text, text.contains("not this browser or phone"));
+                assertTrue(text, text.contains("observed = measured facts"));
+                assertTrue(text, text.contains("inferred = interpretation"));
+                assertTrue(text, text.contains("unavailable = no observation established"));
+                assertTrue(text, text.contains("Confidence describes evidence directness, not the likelihood of a cause"));
+                assertNoPoison(text);
+                assertFalse(text.contains("private-vantage"));
+            }
+        }
+    }
+
     @Test public void missingEvidenceActionAndCoverageStillHaveFixedExplicitSections() throws Exception {
         Report report = reportFor(Report.FindingCode.DNS_RESOLUTION_FAILED, "error_code", "connection_failed", POISON,
                 false, false, new JSONArray());
