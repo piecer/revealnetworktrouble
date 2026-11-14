@@ -23,6 +23,26 @@ def image(ref):
 
 
 class ReleaseBaseTests(unittest.TestCase):
+    def test_classic_config_ids_are_accepted_without_reinterpreting_the_index_pin(self):
+        mod = module()
+        # These config IDs are the linux/amd64 descriptors of the pinned indexes.
+        config_ids = (
+            "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731",
+            "sha256:6769dc3a703c719c1d2756bda113659be28ae16cf0da58dd5fd823d6b9a050ea",
+        )
+        values = []
+        for ref, config_id in zip(mod.BASES, config_ids):
+            inspected = image(ref)
+            inspected["Id"] = config_id
+            values.extend(("", json.dumps([inspected])))
+        call = Mock(side_effect=values)
+        try:
+            receipts = mod.prepare(call)
+        except ValueError as exc:
+            self.fail("Known pinned classic config IDs must be accepted: " + str(exc))
+        self.assertEqual([receipt["id"] for receipt in receipts], list(config_ids))
+        self.assertEqual([receipt["reference"] for receipt in receipts], list(mod.BASES))
+
     def test_prepare_pulls_exact_bases_then_verifies_each_identity(self):
         mod = module()
         values = []
@@ -53,6 +73,25 @@ class ReleaseBaseTests(unittest.TestCase):
             with self.subTest(malformed=malformed):
                 with self.assertRaises(ValueError):
                     mod.prepare(Mock(side_effect=["", malformed]))
+
+    def test_classic_identity_cannot_bypass_reference_platform_or_shape_checks(self):
+        mod = module()
+        config_ids = (
+            "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731",
+            "sha256:6769dc3a703c719c1d2756bda113659be28ae16cf0da58dd5fd823d6b9a050ea",
+        )
+        for index, ref in enumerate(mod.BASES):
+            for field, value in (
+                    ("Id", config_ids[1 - index]), ("Os", "windows"),
+                    ("Architecture", "arm64"), ("RepoDigests", []),
+                    ("RepoDigests", [ref.replace("@", "-impostor@")]),
+                    ("RepoDigests", ref), ("RepoDigests", [ref, None])):
+                with self.subTest(reference=ref, field=field, value=value):
+                    inspected = image(ref)
+                    inspected["Id"] = config_ids[index]
+                    inspected[field] = value
+                    with self.assertRaises(ValueError):
+                        mod.prepare(Mock(side_effect=["", json.dumps([inspected])]))
 
     def test_pull_errors_are_not_suppressed(self):
         mod = module()
