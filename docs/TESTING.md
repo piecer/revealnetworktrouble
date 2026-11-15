@@ -10,7 +10,7 @@ make web-test-syntax      # 모든 Web JavaScript 구문 검사
 make test-race
 make vet
 GOFLAGS=-buildvcs=false make build
-make android-wrapper-verify # Gradle 8.11.1 wrapper/JAR/distribution checksum
+make android-wrapper-verify # 고정 Gradle wrapper/JAR/distribution checksum
 make android-env-bootstrap-test # Make의 JDK/SDK 탐색·override 전달 회귀 검사
 make android-env            # JDK 17, Android platform 35/build-tools 35.0.0
 make android-test           # debug/release JVM tests + nonzero collection
