@@ -22,8 +22,8 @@
 ### 문서 정비 — 진행 중
 
 - 현재 아키텍처와 과거 Stage 기록을 분리하고 한국어/영어 사용 안내, 기여·보안 정책을 정리한다.
-- README에 사전부터 있던 공통 경로 초안은 실제 지원 기능과 구분해 [이력](docs/IMPLEMENTATION-HISTORY.md)에 보존한다.
+- README에 사전부터 있던 공통 경로 초안은 실제 지원 기능과 구분해 [이력](docs/archive/IMPLEMENTATION-HISTORY.md)에 보존한다.
 - 사용자 결정에 따라 Apache Software Foundation의 Apache-2.0 원문을 `LICENSE`에 추가했다.
 - 비공개 보안 신고 채널, 원격 metadata/CI 반영, 실기기 acceptance 및 공개 릴리스는 별도 결정/검증 항목이다. 사용자는 이번 작업의 원격 변경 없이 로컬 커밋만 승인했다.
 
-과거 기능·계약·수치의 원문은 [구현 이력](docs/IMPLEMENTATION-HISTORY.md), 최신 실행 증거는 [Phase 2 검증](docs/PHASE2-VERIFICATION.md)을 참조한다.
+과거 기능·계약·수치의 원문은 [구현 이력](docs/archive/IMPLEMENTATION-HISTORY.md), 과거 실행 증거는 [이전 Phase 2 검증](docs/archive/PHASE2-VERIFICATION.md)을 참조한다.

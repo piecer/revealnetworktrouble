@@ -19,6 +19,18 @@ import org.robolectric.util.ReflectionHelpers;
 @Config(sdk = 35)
 public class AndroidResourceContractTest {
     @Test
+    public void packagedVersionNameMatchesRepositoryVersion() throws Exception {
+        // Check the merged manifest, not a duplicated build-script literal.
+        java.nio.file.Path versionFile = java.nio.file.Paths.get(
+                System.getProperty("user.dir"), "..", "..", "VERSION").normalize();
+        String expected = java.nio.file.Files.readString(versionFile).trim();
+        Application application = RuntimeEnvironment.getApplication();
+        String actual = application.getPackageManager().getPackageInfo(
+                application.getPackageName(), PackageManager.PackageInfoFlags.of(0)).versionName;
+        assertEquals(expected, actual);
+    }
+
+    @Test
     public void manifestDisablesBackupAndReferencesNetworkSecurityConfig() throws Exception {
         Application application = RuntimeEnvironment.getApplication();
         ApplicationInfo info = application.getPackageManager().getApplicationInfo(

@@ -1,6 +1,6 @@
 # 아키텍처
 
-현재 구조와 신뢰 경계를 설명한다. Stage별 당시 수치·승인 전 상태·기존 문구는 [구현 이력](IMPLEMENTATION-HISTORY.md)에 보존한다. 실행 설정은 [운영](OPERATIONS.md), wire schema는 [API](API.md), 검증 범위는 [테스트](TESTING.md)와 [CI](CI.md)를 따른다.
+현재 구조와 신뢰 경계를 설명한다. Stage별 당시 수치·승인 전 상태·기존 문구는 [구현 이력](archive/IMPLEMENTATION-HISTORY.md)에 보존한다. 실행 설정은 [운영](OPERATIONS.md), wire schema는 [API](API.md), 검증 범위는 [테스트](TESTING.md)와 [CI](CI.md)를 따른다.
 
 ## 1. 시스템 구성
 
@@ -71,7 +71,7 @@ Web의 diagnostics와 topology는 독립 request lane이다. owner/signature와 
 
 토폴로지는 기본 2D와 선택 가능한 3D perspective로 같은 검증된 facts를 그린다. mode는 report/analysis/diagnosis를 바꾸지 않는다. nodes 500/links 1,000/routes 1,000, DPR≤4를 적용하고 continuous animation 없이 interaction/resize에 반응한다. Canvas와 동기화된 bounded semantic inspector를 keyboard·screen-reader 경로와 Canvas 불가 시 fallback으로 유지한다. Geo 좌표와 ASN 문맥은 등록 정보/추정치이지 장비 소재지·소유권 증명이 아니다.
 
-현재 `공통 구간`은 최대 64개 IP를 family별 CIDR/범위로 계산하는 로컬 기능이다. CIDR 일치가 실제 공통 route segment 관측을 뜻하지 않는다. 이전 README의 추가 경로 비교 초안은 [이력](IMPLEMENTATION-HISTORY.md)에 별도로 보존했다.
+현재 `공통 구간`은 최대 64개 IP를 family별 CIDR/범위로 계산하는 로컬 기능이다. CIDR 일치가 실제 공통 route segment 관측을 뜻하지 않는다. 이전 README의 추가 경로 비교 초안은 [이력](archive/IMPLEMENTATION-HISTORY.md)에 별도로 보존했다.
 
 Android는 Activity presentation, `core`, `network`, `state`를 분리한다. `RequestCoordinator` owner와 `DiagnosticsSession` state identity가 취소/재생성 후 stale publication을 막는다. detached hierarchy를 검증 후 한 번 교체하고 publication 실패는 rollback한다. raw share는 Application process singleton의 single slot/no queue, off-main I/O, 8 MiB/file, 2 files/16 MiB, bounded reconciliation을 사용한다. non-exported `FileProvider`의 read grant를 쓰며 15분 lease는 프로세스가 관측할 때 revoke/cleanup하는 정책이다. 프로세스 종료 후 이미 열린 descriptor나 수신 앱 복사본의 강제 만료를 보장하지 않는다.
 
@@ -90,4 +90,4 @@ Android는 Activity presentation, `core`, `network`, `state`를 분리한다. `R
 - 기본 CI는 실제 Chrome/Firefox/Safari·screen reader·Android 실기기·TLS reverse proxy·registry 배포 검증을 대신하지 않는다.
 - Docker builder와 offline validator는 CI와 같은 Go 1.26.11을 요구한다. exact image digest 고정과 최종 binary 취약점 검사는 별도 계약이며, source scan만으로 최종 산출물을 승인하지 않는다. [릴리스 경계](CI.md)를 확인한다.
 
-Offline archive validators: API 34 + Web 30 = 64. 이는 archive 검증기 fixture 계층의 수치이며 현재 전체 테스트 합계가 아니다. 실행별 수치는 검증 기록을 기준으로 한다.
+오프라인 archive 검증기는 API/Web 산출물을 별도로 검증한다. 실행별 테스트 개수와 결과는 각 검증 기록을 기준으로 한다.

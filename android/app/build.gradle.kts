@@ -12,7 +12,10 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0.0"
+        // Keep the public app version aligned with the API/release source version.
+        versionName = providers.fileContents(
+            rootProject.layout.projectDirectory.file("../VERSION")
+        ).asText.get().trim()
     }
 
     buildTypes {

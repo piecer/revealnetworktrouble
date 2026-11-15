@@ -1,5 +1,7 @@
 # CheckNetwork 기능 명세
 
+> 과거 스냅샷입니다. 당시의 계획·수치·미검증 상태를 보존하며 현재 완료를 뜻하지 않습니다. 현재 문서는 [README](../../README.md), [API](../API.md), [아키텍처](../ARCHITECTURE.md), 남은 작업은 [로드맵](../../ROADMAP.md)을 참고하세요.
+
 ## 1. 목적
 
 CheckNetwork는 기본 통신, DNS, 네트워크 경로, 해외망 및 특정 서비스의 상태를 한 번에 확인하고 운영자가 비교 가능한 형태로 리포팅하는 애플리케이션이다. 이 문서는 현재 구현된 다중 trace 분석, 목적지 필터, IP 라벨, 런타임 admission, 진단 truth, release identity의 동작 계약을 정의한다.
@@ -225,7 +227,7 @@ Label placement uses at most nine vertical candidates per visible node, conserva
 
 Historical record: - Stage 9 2D/3D Canvas 구현과 production asset closure는 source에 반영되었고 Compose SemVer regression fix 뒤 현재 Web inventory는 298 tests다. 그러나 final canonical gates와 독립 review, immutable candidate release 및 exact-SHA closure가 남아 있으므로 Stage 9은 완료가 아니라 **implementation pending final gates/review** 상태다.
 
-Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](docs/ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](../ASN-CONTEXT.md). Independent review/release remains pending.
 - Physical Chrome/Firefox/Safari에서 interaction·DPR·320/375/400 px를 확인하고 실제 screen reader로 semantic inspector/fallback을 확인하는 수동 acceptance는 자동 Node/jsdom test가 대신하지 않는다.
 
 기존 Stage 8 release sequencing 기록은 아래 acceptance의 선행 이력으로 유지한다.

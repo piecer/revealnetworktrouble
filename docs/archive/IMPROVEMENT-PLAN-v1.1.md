@@ -1,5 +1,7 @@
 # CheckNetwork 개선 실행계획 v1.1
 
+> 이전 실행계획 v1.1의 보관본입니다. 이 파일의 Phase 1~5는 새 [로드맵](../../ROADMAP.md)의 Phase 0~4와 다른 계획입니다.
+
 **대상 저장소:** `piecer/revealnetworktrouble`
 **목표:** 공개 릴리스 가능 상태 달성
 **개발 기간:** 5주, 약 20~25인일(추정)
@@ -7,9 +9,9 @@
 
 ## 진행 기록
 
-원래의 5단계 범위와 완료 조건을 유지한다. 실행 결과·환경·정확한 SHA·실패 원인·미검증 항목은 [Phase 1 검증 기록](docs/PHASE1-VERIFICATION.md)에 분리한다. 작업 트리 검증, HEAD 아카이브 검증, 릴리스 검증은 서로 대체하지 않는다.
+원래의 5단계 범위와 완료 조건을 유지한다. 실행 결과·환경·정확한 SHA·실패 원인·미검증 항목은 [Phase 1 검증 기록](PHASE1-VERIFICATION.md)에 분리한다. 작업 트리 검증, HEAD 아카이브 검증, 릴리스 검증은 서로 대체하지 않는다.
 
-2026-11-07 재개: Phase 1의 실제 startup WARN 회귀를 보완했고, Phase 2 워크플로·Make 진입점·보안 게이트·Dependabot을 추가했다. 독립 리뷰에서 확인한 undici 추가 advisory와 cold runner의 borrowed base 준비 누락도 보완했고, 로컬 Full/Quick/보안 검사를 다시 통과했다. 두 지적의 독립 재검토도 승인됐다. GitHub required check 활성화·원격 실행 확인은 아직 미완료이며 Phase 2 전체 완료로 간주하지 않는다. [CI 운영 절차](docs/CI.md), [Phase 2 검증 기록](docs/PHASE2-VERIFICATION.md)을 참조한다.
+2026-11-07 재개: Phase 1의 실제 startup WARN 회귀를 보완했고, Phase 2 워크플로·Make 진입점·보안 게이트·Dependabot을 추가했다. 독립 리뷰에서 확인한 undici 추가 advisory와 cold runner의 borrowed base 준비 누락도 보완했고, 로컬 Full/Quick/보안 검사를 다시 통과했다. 두 지적의 독립 재검토도 승인됐다. GitHub required check 활성화·원격 실행 확인은 아직 미완료이며 Phase 2 전체 완료로 간주하지 않는다. [CI 운영 절차](../CI.md), [Phase 2 검증 기록](PHASE2-VERIFICATION.md)을 참조한다.
 
 이전 작성 중 들어간 "compose.yaml 누락", "Web 298 tests", "클린 환경 완료" 주장은 잘못된 기록이었다. 최초 실패는 로컬 LAN 바인딩과 기본 loopback 계약의 불일치였고, 당시 Node 테스트 결과는 892개였다. 새 범위로 추가했던 CSP 및 Android INTERNET permission 제거 항목은 원래 계획에 없으므로 제외한다.
 

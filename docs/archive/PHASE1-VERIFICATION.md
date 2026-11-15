@@ -1,5 +1,7 @@
 # Phase 1 검증 기록 — 2026-11-06
 
+> 과거 스냅샷입니다. 당시의 계획·수치·미검증 상태를 보존하며 현재 완료를 뜻하지 않습니다. 현재 문서는 [README](../../README.md), [API](../API.md), [아키텍처](../ARCHITECTURE.md), 남은 작업은 [로드맵](../../ROADMAP.md)을 참고하세요.
+
 ## 범위와 상태
 
 원본 PLAN.md의 작업 1-1(기준선)과 1-2(배포 안전성)를 진행했다. Phase 2~5, 라이선스 선택, commit/push/tag 및 새 바이너리의 운영 배포는 완료 범위가 아니다.
@@ -122,7 +124,7 @@ Public의 사설·metadata·IPv4/IPv6 차단, mixed DNS 응답 거부, 검증한
 
 `cmd/checknetwork-api/exposure_startup_test.go`는 별도 자식 프로세스에서 실제 `runMain()`을 실행하고 노출 WARN의 정확한 메시지·주소·단일 기록을 검증한다. `localhost:0`으로 로컬 임시 포트만 사용하며 테스트가 만든 자식만 종료·회수한다. `go test -race ./cmd/checknetwork-api -run '^TestExposureStartupProcess$' -count=10`이 통과했다. 기존 reviewer가 지적한 helper 단독 테스트의 호출 경로 누락을 보완하며, 운영 서버를 시작하거나 재시작하지 않는다.
 
-이어지는 Phase 2에서 보안 게이트를 실제 실행하자 Go 1.26.8 표준 라이브러리와 npm lock 의존성의 취약점이 검출됐다. 위 Phase 1 테스트 통과는 취약점 없음의 보장이 아니며, 수정과 현재 검사 범위는 [CI 운영 문서](CI.md) 및 Phase 2 검증 기록으로 별도 관리한다.
+이어지는 Phase 2에서 보안 게이트를 실제 실행하자 Go 1.26.8 표준 라이브러리와 npm lock 의존성의 취약점이 검출됐다. 위 Phase 1 테스트 통과는 취약점 없음의 보장이 아니며, 수정과 현재 검사 범위는 [CI 운영 문서](../CI.md) 및 Phase 2 검증 기록으로 별도 관리한다.
 
 ## 원본 증거 위치 (Phase 1)
 

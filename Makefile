@@ -50,7 +50,7 @@ export ANDROID_HOME ANDROID_SDK_ROOT
 
 REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
 
-.PHONY: test test-race vet frontend-deps web-test web-test-syntax web-test-browser web-test-cors-browser run build \
+.PHONY: test test-integration test-race vet frontend-deps web-test web-test-syntax web-test-browser web-test-cors-browser run build \
 	android-wrapper-verify android-env-bootstrap-test android-env android-test android-lint \
 	android-assemble android-check ci-inner ci ci-clean-archive release verify-release \
 	verify-release-real verify-api-archive-real verify-web-archive-real verify-archives-real
@@ -60,6 +60,9 @@ REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
 test: android-env-bootstrap-test ci-policy
 	go test ./...
 	$(MAKE) web-test
+
+test-integration:
+	CHECKNETWORK_RUN_COMPOSE_TESTS=1 go test -count=1 ./cmd/checknetwork-api -run '^TestComposeResolved'
 
 frontend-deps:
 	npm --prefix frontend ci

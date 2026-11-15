@@ -1,12 +1,14 @@
 # README에서 분리한 기술 계약과 검증 기록
 
-처음 실행하는 방법과 화면 사용법은 [README](../README.md)를 참고하세요.
+> 과거 스냅샷입니다. 당시의 계획·수치·미검증 상태를 보존하며 현재 완료를 뜻하지 않습니다. 현재 문서는 [README](../../README.md), [API](../API.md), [아키텍처](../ARCHITECTURE.md), 남은 작업은 [로드맵](../../ROADMAP.md)을 참고하세요.
+
+처음 실행하는 방법과 화면 사용법은 [README](../../README.md)를 참고하세요.
 이 문서는 README 앞부분에 섞여 있던 개발자용 계약과 과거 검증 기록을 보존합니다.
-문서 계약 테스트도 이 파일을 계속 검사합니다.
+문서 테스트는 이 기록의 파일 존재와 상대 링크를 검사하며 과거 산문·테스트 개수는 고정하지 않습니다.
 
 아래의 Stage 번호, 테스트 개수, `pending` 및 미커밋 표기는 기록 당시의 상태입니다.
 현재 테스트 결과나 배포 완료를 뜻하지 않습니다. 실제 기능은 현재 소스와 테스트를,
-운영 설정은 [운영 문서](OPERATIONS.md)를, 검증 방법은 [테스트 문서](TESTING.md)를 확인하세요.
+운영 설정은 [운영 문서](../OPERATIONS.md)를, 검증 방법은 [테스트 문서](../TESTING.md)를 확인하세요.
 
 ## 버전과 개발 빌드 식별자
 
@@ -20,7 +22,7 @@ Stage 9은 Stage 8에서 semantic node/link/route를 각각 단일 텍스트 요
 
 ## 서버 자원 및 traceroute 실행 경계
 
-운영 경계는 pre-handler accepted connection 기본 128(설정 hard max 256), 동시 report 기본 4(hard max 16), body decode 기본 effective report limit(hard max 64), checker 기본 80(hard max 1,024), 프로세스 전체 GeoIP active 8/queued 64, GeoIP LRU 2,048개, 동시 response write 최대 16이다. connection 초과분은 handler 생성 전에 즉시 close되고 interruptible 5 ms backoff가 적용된다. body slot은 인증·rate limit 뒤 JSON decode 동안만 소유하며 포화 시 고정 `503 body_decode_capacity_unavailable`을 반환한다. request body는 1 MiB, header는 64 KiB, full response는 newline 포함 8 MiB 이하, compact response는 1 MiB 미만이다. Web/Android report deadline은 요청 시작부터 315초이며 Android는 capability discovery와 report POST가 이 하나의 deadline을 공유한다. Compose는 6분 graceful stop과 CPU/memory/PID 제한을 적용한다. 자세한 과부하 결과와 관측 필드는 [운영 문서](OPERATIONS.md)에 있다.
+운영 경계는 pre-handler accepted connection 기본 128(설정 hard max 256), 동시 report 기본 4(hard max 16), body decode 기본 effective report limit(hard max 64), checker 기본 80(hard max 1,024), 프로세스 전체 GeoIP active 8/queued 64, GeoIP LRU 2,048개, 동시 response write 최대 16이다. connection 초과분은 handler 생성 전에 즉시 close되고 interruptible 5 ms backoff가 적용된다. body slot은 인증·rate limit 뒤 JSON decode 동안만 소유하며 포화 시 고정 `503 body_decode_capacity_unavailable`을 반환한다. request body는 1 MiB, header는 64 KiB, full response는 newline 포함 8 MiB 이하, compact response는 1 MiB 미만이다. Web/Android report deadline은 요청 시작부터 315초이며 Android는 capability discovery와 report POST가 이 하나의 deadline을 공유한다. Compose는 6분 graceful stop과 CPU/memory/PID 제한을 적용한다. 자세한 과부하 결과와 관측 필드는 [운영 문서](../OPERATIONS.md)에 있다.
 
 백엔드는 시작 시 trusted deployment input인 `PATH`의 platform traceroute를 `127.0.0.1`에서 bounded 기능 probe하고 성공한 exact path+argument grammar를 readiness와 실행에 함께 캐시한다. Linux common/iputils, Alpine BusyBox, Darwin 및 `-n`을 지원하지 않는 GNU inetutils-compatible Unix grammar를 version parsing 없이 선택한다. 후보 전체가 2초/combined 32 KiB 경계 안에서 성공하지 않으면 capability는 nil로 fail closed하고 `/readyz`는 `traceroute_unavailable`이다. nil capability에서 runtime path lookup이나 다른 grammar fallback은 없다. 이 probe는 executable을 실제 시작하므로 production image와 `PATH`는 trusted input이어야 하며 process cleanup 경계도 악성 binary의 side effect를 sandbox하지 않는다. Web/Android의 exact fixed presentation은 `Traceroute capability was unavailable, so no route observation was established.`이고 server의 `traceroute is unavailable` prose나 target은 반사하지 않는다.
 
@@ -43,7 +45,7 @@ Stage 8의 구현 계약은 다음과 같다.
 
 Historical record: Compose SemVer regression fix 뒤 현재 Stage 9 Web source inventory는 298 tests다. Producer findings 23, result shapes 31과 expanded result matrix 136, presentation `6/10/21/23/33`, API errors 16와 structural mutations 85, Android debug/release 각각 direct-child XML 297 tests + variant canaries 2, API/Web offline archive validator 28+25=53 tests, exact real release-gate fake cases 12는 유지된다. Production exact gate는 canonical inventory를 기준으로 umask 077/027/000 세 pass를 비교한다. Stage 9 final canonical gates와 독립 review, 새 external manifest, manifest-derived temporary release, commit과 exact-SHA closure는 아직 pending이다. 실제 브라우저와 screen reader 수동 검증도 pending이며 자동 test count로 완료를 주장하지 않는다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest와 검증 증거에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. 이를 final artifact-cleanup 또는 release 성공으로 해석하지 않는다.
 
-Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](../ASN-CONTEXT.md). Independent review/release remains pending.
 
 ## Android 요청 및 공유 경계
 

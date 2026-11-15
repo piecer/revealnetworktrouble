@@ -147,13 +147,14 @@ curl --fail -X POST http://localhost:8080/api/v1/reports \
 
 ## 개발 및 테스트
 
-Go/Web 테스트에는 Go와 Node.js 22 이상, npm, `make`가 필요합니다. 아래 명령은 저장소 루트에서 실행합니다.
+Go/Web 기본 테스트에는 Go 1.22 이상, Node.js 22 이상, npm, Python 3, Git, `make`가 필요합니다. 개발 의존성 설치 후 `make test`는 Docker·외부망·Android SDK 없이 실행할 수 있습니다. 오프라인에서는 설치된 Go 1.22+로 `GOTOOLCHAIN=local make test`를 실행하세요. 아래 명령은 저장소 루트에서 실행합니다.
 
 ```bash
 # CI와 같은 보안 수정 툴체인을 사용한다.
 export GOTOOLCHAIN=go1.26.11
 npm --prefix frontend ci
 make test             # Go/Web 테스트 및 Android 환경 탐색 스크립트 검사
+make test-integration # Docker Compose config 검사; daemon·컨테이너 시작 없음
 make web-test-syntax  # JavaScript 문법 검사
 make test-race        # Go 동시성 검사
 make vet              # Go 정적 검사
@@ -175,8 +176,8 @@ Android 환경까지 준비했다면 `make android-check`로 Android 테스트·
 | 지도 사용과 GeoIP 정보의 한계 | [Geo 지도](docs/GEO-MAP.md), [Geo 상세 계약](docs/GEO-DETAILS.md) |
 | IP 추가 정보 조회의 동작과 개인정보 처리 | [Web](docs/IP-CONTEXT-WEB.md), [Android](docs/IP-CONTEXT-ANDROID.md), [백엔드 계약](docs/IP-CONTEXT.md) |
 | 테스트 실행과 아직 검증하지 않은 범위 | [테스트 기준](docs/TESTING.md) |
-| 구현 이력과 남은 검증·개선 항목 | [구현 이력](docs/IMPLEMENTATION-HISTORY.md) |
-| 이전 README의 내부 계약·검증 기록 | [기술 참고 문서](docs/README-TECHNICAL-NOTES.md) |
+| 구현 이력과 남은 검증·개선 항목 | [구현 이력](docs/archive/IMPLEMENTATION-HISTORY.md) |
+| 이전 README의 내부 계약·검증 기록 | [기술 참고 문서](docs/archive/README-TECHNICAL-NOTES.md) |
 [English](README.en.md) · [사용/운영](docs/OPERATIONS.md) · [API](docs/API.md) · [기여](CONTRIBUTING.md) · [보안](SECURITY.md)
 
 [![CI](https://github.com/piecer/revealnetworktrouble/actions/workflows/ci.yml/badge.svg)](https://github.com/piecer/revealnetworktrouble/actions/workflows/ci.yml)
@@ -249,7 +250,7 @@ curl --fail -X POST http://127.0.0.1:8080/api/v1/reports \
 
 ![브라우저에서 로컬 계산한 IPv4/IPv6 공통 CIDR 화면](docs/images/common-prefix.png)
 
-그림의 실행 출처·해시·재현 조건은 [화면 검증 기록](docs/images/PROVENANCE.md)에 있다. fixture 재생 화면은 UI 예시이지 외부 네트워크 진단 성공이나 운영 이미지 검증 증거가 아니다. 사전 README의 추가 공통 경로 알고리즘 설명과 Stage별 수치는 [구현 이력](docs/IMPLEMENTATION-HISTORY.md)에 보존했다.
+그림의 실행 출처·해시·재현 조건은 [화면 검증 기록](docs/images/PROVENANCE.md)에 있다. fixture 재생 화면은 UI 예시이지 외부 네트워크 진단 성공이나 운영 이미지 검증 증거가 아니다. 사전 README의 추가 공통 경로 알고리즘 설명과 Stage별 수치는 [구현 이력](docs/archive/IMPLEMENTATION-HISTORY.md)에 보존했다.
 
 ## Android 빠른 시작
 
@@ -283,6 +284,6 @@ make ci-security
 make ci
 ```
 
-Offline archive validators: API 34 + Web 30 = 64. 이 수치는 archive fixture 계층이며 전체 테스트 수가 아니다. 실행 결과와 미검증 범위는 [Phase 2 검증](docs/PHASE2-VERIFICATION.md), [테스트 기준](docs/TESTING.md), [CI 절차](docs/CI.md)를 따른다. 로컬 자동화는 실제 브라우저·screen reader·Android 실기기·TLS proxy·정확한 SHA의 릴리스를 대신하지 않는다.
+오프라인 archive 검증기는 API/Web 산출물을 각각 검사한다. 실행 결과와 미검증 범위는 [이전 Phase 2 검증 기록](docs/archive/PHASE2-VERIFICATION.md), [테스트 기준](docs/TESTING.md), [CI 절차](docs/CI.md)를 따른다. 로컬 자동화는 실제 브라우저·screen reader·Android 실기기·TLS proxy·정확한 SHA의 릴리스를 대신하지 않는다.
 
-[현재 아키텍처](docs/ARCHITECTURE.md) · [실행 계획](PLAN.md) · [구현 이력](docs/IMPLEMENTATION-HISTORY.md) · [변경 기록](CHANGELOG.md)
+[현재 아키텍처](docs/ARCHITECTURE.md) · [실행 계획](ROADMAP.md) · [구현 이력](docs/archive/IMPLEMENTATION-HISTORY.md) · [변경 기록](CHANGELOG.md)

@@ -35,6 +35,7 @@ run_gate() {
 }
 
 run_gate go-test "$CI_EVIDENCE_DIR/go-test.json" go test -count=1 -json ./...
+run_gate compose-config "$CI_EVIDENCE_DIR/compose-config.log" make test-integration
 run_gate web-test "$CI_EVIDENCE_DIR/web-test.tap" npm --prefix frontend test
 run_gate web-syntax "$CI_EVIDENCE_DIR/web-syntax.log" npm --prefix frontend run test:syntax
 run_gate go-race "$CI_EVIDENCE_DIR/go-race.log" go test -count=1 -race ./...

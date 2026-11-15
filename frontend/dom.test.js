@@ -1956,7 +1956,9 @@ test('cancelled diagnostics and topology explain missing completion and permit e
   for (const purpose of ['diagnostics', 'topology']) {
     const { dom, app, document } = setup((_url, init) => new Promise((_, reject) => {
       init.signal.addEventListener('abort', () => reject(Object.assign(new Error('private-abort'), { name: 'AbortError' })));
-    }));
+    }), { url: `https://ui.example.test/#${purpose}` });
+    // Focus recovery is meaningful only in the visible workspace.
+    assert.equal(document.querySelector(`#${purpose}-view`).hidden, false);
     const pending = app.start(purpose); await flush(); app.cancel(purpose); await pending;
     assert.equal(app.getState()[purpose].phase, 'cancelled');
     for (const selector of [`#${purpose}-state-message`, '#request-live']) {
@@ -2635,9 +2637,17 @@ test('credential reflection in a report property name is rejected without disclo
 });
 
 test('shared fullscreen controller reports failures, tracks exit, and restores invoker focus', async () => {
-  const { dom, document } = setup();
+  // Enter fullscreen from an actually published, visible topology report.
+  const observed = report('fullscreen', { results: [compactTraceResult('example.test')], compact_topology: compactTopology() });
+  const { dom, app, document } = setup(async () => response(JSON.stringify(observed)), {
+    url: 'https://ui.example.test/#topology',
+    configureWindow(win) { win.HTMLCanvasElement.prototype.getContext = () => null; }
+  });
+  await app.start('topology'); await flush();
+  assert.equal(document.querySelector('#topology-view').hidden, false);
   const topologyButton = document.querySelector('#topology-fullscreen');
   const topologyTarget = document.querySelector('#topology-report-section');
+  assert.equal(topologyTarget.hidden, false);
   assert.equal(topologyButton.getAttribute('aria-pressed'), 'false');
   topologyTarget.requestFullscreen = async () => { throw new Error('denied'); };
   topologyButton.click(); await flush();

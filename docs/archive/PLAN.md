@@ -1,5 +1,7 @@
 # CheckNetwork 전체 구현 계획
 
+> 과거 스냅샷입니다. 당시의 계획·수치·미검증 상태를 보존하며 현재 완료를 뜻하지 않습니다. 현재 문서는 [README](../../README.md), [API](../API.md), [아키텍처](../ARCHITECTURE.md), 남은 작업은 [로드맵](../../ROADMAP.md)을 참고하세요.
+
 단계별 구현 이력, 이전 수용 상태와 남은 개선 항목은 [구현 이력](IMPLEMENTATION-HISTORY.md)에 정리했습니다.
 
 ## 1. 목표
@@ -43,7 +45,7 @@ Stage 8의 semantic renderer가 node/link/route마다 단일 텍스트 요소만
 - Historical Stage 9 plan/closure record: current source inventory was Web 283 tests; synthetic archive validator 25도 당시 closure에 반영했다.
 Historical record: - [x] Compose SemVer fix 뒤 current source-level Web inventory 298 반영
 
-Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](../ASN-CONTEXT.md). Independent review/release remains pending.
 - Historical Stage 9 record: Compose SemVer 직후 Web inventory는 284 tests였다. Graph-first slice는 collapsed native inspector, projected-bounds fit과 overflow 회귀를 추가하며 isolated Chromium replay만 검증한다. 배포·physical browser·screen-reader 및 independent parent review는 별도 acceptance다.
 ### Rich topology restoration slice
 

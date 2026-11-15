@@ -70,7 +70,7 @@ The UI provides integrated diagnostics, 2D/optional 3D topology, an offline Geo 
 
 ![IPv4/IPv6 common prefixes calculated locally in the browser](docs/images/common-prefix.png)
 
-Screenshot sources, hashes and reproduction conditions are recorded in [screenshot provenance](docs/images/PROVENANCE.md). Fixture replay screenshots demonstrate the UI, not successful live external diagnostics or a deployed release. Earlier stage counts and the pre-existing common-route draft are preserved in [implementation history](docs/IMPLEMENTATION-HISTORY.md).
+Screenshot sources, hashes and reproduction conditions are recorded in [screenshot provenance](docs/images/PROVENANCE.md). Fixture replay screenshots demonstrate the UI, not successful live external diagnostics or a deployed release. Earlier stage counts and the pre-existing common-route draft are preserved in [implementation history](docs/archive/IMPLEMENTATION-HISTORY.md).
 
 ## Android
 
@@ -94,7 +94,7 @@ A device's localhost is the device itself: configure a reachable API explicitly.
 ## Development
 
 ```sh
-# Node 22+, Go and Docker Compose CLI are required; Full also needs Android tooling.
+# Node 22+, Go, Python 3, Git and make are required; Full also needs Android tooling.
 export GOTOOLCHAIN=go1.26.11
 make ci-quick
 make ci-workflows
@@ -102,4 +102,6 @@ make ci-security
 make ci
 ```
 
-See [CI](docs/CI.md), [testing](docs/TESTING.md), [verification evidence](docs/PHASE2-VERIFICATION.md), [plan](PLAN.md) and [changelog](CHANGELOG.md). Local automation does not establish hosted required-check enforcement, exact-SHA release reproducibility or physical Chrome/Firefox/Safari, screen-reader, Android and TLS-proxy acceptance.
+After installing frontend dependencies, `make test` needs neither Docker nor internet access. For offline use, select an installed Go 1.22+ with `GOTOOLCHAIN=local make test`. `make test-integration` separately requires the Docker Compose CLI; it resolves configuration without starting containers or using a daemon.
+
+See [CI](docs/CI.md), [testing](docs/TESTING.md), [verification evidence](docs/archive/PHASE2-VERIFICATION.md), [plan](ROADMAP.md) and [changelog](CHANGELOG.md). Local automation does not establish hosted required-check enforcement, exact-SHA release reproducibility or physical Chrome/Firefox/Safari, screen-reader, Android and TLS-proxy acceptance.

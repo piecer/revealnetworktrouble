@@ -1,8 +1,10 @@
 # 구현 이력과 남은 검증
 
+> 과거 스냅샷입니다. 당시의 계획·수치·미검증 상태를 보존하며 현재 완료를 뜻하지 않습니다. 현재 문서는 [README](../../README.md), [API](../API.md), [아키텍처](../ARCHITECTURE.md), 남은 작업은 [로드맵](../../ROADMAP.md)을 참고하세요.
+
 개별 작업 계획에서 계속 필요한 구현 순서, 계약과 미완료 항목을 모은 문서입니다.
 과거 체크포인트를 보존한 것이며, 문서 정리나 테스트 통과만으로 미수행 검증을 완료 처리하지 않습니다.
-현재 사용법은 [README](../README.md), 상세 검증 방법은 [테스트 기준](TESTING.md)을 참고하세요.
+현재 사용법은 [README](../../README.md), 상세 검증 방법은 [테스트 기준](../TESTING.md)을 참고하세요.
 
 ## Stage 1: 실행 경계와 HTTPS 판정 복구
 
@@ -111,7 +113,7 @@ capability 입력 검사 분리의 다섯 제한된 개선 단계를 통합했�
 
 Historical snapshot — 2026-11-07, Phase 1/2 commit `734885a` 직후의 문서다.
 
-아래 원문은 Stage별 당시 설명과 검증 전 상태를 보존한 기록이며, 현재 지원·검증 완료 선언이 아니다. 최신 구조는 [아키텍처](ARCHITECTURE.md), 실제 실행 결과는 [Phase 2 검증 기록](PHASE2-VERIFICATION.md), 남은 작업은 [실행 계획](../PLAN.md)을 따른다.
+아래 원문은 Stage별 당시 설명과 검증 전 상태를 보존한 기록이며, 현재 지원·검증 완료 선언이 아니다. 최신 구조는 [아키텍처](../ARCHITECTURE.md), 실제 실행 결과는 [Phase 2 검증 기록](PHASE2-VERIFICATION.md), 남은 작업은 [실행 계획](../../ROADMAP.md)을 따른다.
 
 README에 사전부터 있던 공통 traceroute segment·청록 halo·유사 인터페이스 후보 설명도 원문으로 남긴다. 현재 소스에서 확인한 `공통 구간`은 IP 비트/CIDR 로컬 계산이며, 이 초안의 추가 알고리즘을 지원 완료로 간주하지 않는다.
 
@@ -125,7 +127,7 @@ Web UI는 진단과 토폴로지를 독립 request lane으로 실행하며 stale
 
 Stage 9은 Stage 8에서 semantic node/link/route를 각각 단일 텍스트 요소로만 렌더링해 데이터는 남았지만 시각 레이어가 사라진 회귀를 복구한다. 토폴로지는 기본 2D와 선택 가능한 3D perspective를 외부 의존성 없는 Canvas로 그리며, 두 모드는 같은 검증된 facts의 view projection일 뿐 report, analysis 또는 diagnosis를 바꾸지 않는다. Pointer drag/wheel, 키보드 화살표·`+`/`-`·`Home`, reset과 fullscreen을 지원하고 interaction/resize 때만 다시 그려 continuous animation을 하지 않는다. 동기화된 bounded semantic inspector는 screen-reader/키보드 탐색과 Canvas 불가 시 fallback으로 계속 남는다. Visual bounds는 nodes 500, links 1,000, routes 1,000, document DOM 1,200, DPR 최대 4이며 현재 자동 Web inventory는 283 tests, 측정된 최대 DOM은 1,152이다. Source 구현은 반영됐지만 final canonical gates와 독립 review 전이므로 Stage 9 상태는 **implementation pending final gates/review**이며, 실제 브라우저와 screen reader 수동 검증도 pending이다.
 
-운영 경계는 pre-handler accepted connection 기본 128(설정 hard max 256), 동시 report 기본 4(hard max 16), body decode 기본 effective report limit(hard max 64), checker 기본 80(hard max 1,024), 프로세스 전체 GeoIP active 8/queued 64, GeoIP LRU 2,048개, 동시 response write 최대 16이다. connection 초과분은 handler 생성 전에 즉시 close되고 interruptible 5 ms backoff가 적용된다. body slot은 인증·rate limit 뒤 JSON decode 동안만 소유하며 포화 시 고정 `503 body_decode_capacity_unavailable`을 반환한다. request body는 1 MiB, header는 64 KiB, full response는 newline 포함 8 MiB 이하, compact response는 1 MiB 미만이다. Web/Android report deadline은 요청 시작부터 315초이며 Android는 capability discovery와 report POST가 이 하나의 deadline을 공유한다. Compose는 6분 graceful stop과 CPU/memory/PID 제한을 적용한다. 자세한 과부하 결과와 관측 필드는 [운영 문서](OPERATIONS.md)에 있다.
+운영 경계는 pre-handler accepted connection 기본 128(설정 hard max 256), 동시 report 기본 4(hard max 16), body decode 기본 effective report limit(hard max 64), checker 기본 80(hard max 1,024), 프로세스 전체 GeoIP active 8/queued 64, GeoIP LRU 2,048개, 동시 response write 최대 16이다. connection 초과분은 handler 생성 전에 즉시 close되고 interruptible 5 ms backoff가 적용된다. body slot은 인증·rate limit 뒤 JSON decode 동안만 소유하며 포화 시 고정 `503 body_decode_capacity_unavailable`을 반환한다. request body는 1 MiB, header는 64 KiB, full response는 newline 포함 8 MiB 이하, compact response는 1 MiB 미만이다. Web/Android report deadline은 요청 시작부터 315초이며 Android는 capability discovery와 report POST가 이 하나의 deadline을 공유한다. Compose는 6분 graceful stop과 CPU/memory/PID 제한을 적용한다. 자세한 과부하 결과와 관측 필드는 [운영 문서](../OPERATIONS.md)에 있다.
 
 백엔드는 시작 시 trusted deployment input인 `PATH`의 platform traceroute를 `127.0.0.1`에서 bounded 기능 probe하고 성공한 exact path+argument grammar를 readiness와 실행에 함께 캐시한다. Linux common/iputils, Alpine BusyBox, Darwin 및 `-n`을 지원하지 않는 GNU inetutils-compatible Unix grammar를 version parsing 없이 선택한다. 후보 전체가 2초/combined 32 KiB 경계 안에서 성공하지 않으면 capability는 nil로 fail closed하고 `/readyz`는 `traceroute_unavailable`이다. nil capability에서 runtime path lookup이나 다른 grammar fallback은 없다. 이 probe는 executable을 실제 시작하므로 production image와 `PATH`는 trusted input이어야 하며 process cleanup 경계도 악성 binary의 side effect를 sandbox하지 않는다. Web/Android의 exact fixed presentation은 `Traceroute capability was unavailable, so no route observation was established.`이고 server의 `traceroute is unavailable` prose나 target은 반사하지 않는다.
 
@@ -146,7 +148,7 @@ Stage 8의 구현 계약은 다음과 같다.
 
 Historical record: Compose SemVer regression fix 뒤 현재 Stage 9 Web source inventory는 298 tests다. Producer findings 23, result shapes 31과 expanded result matrix 136, presentation `6/10/21/23/33`, API errors 16와 structural mutations 85, Android debug/release 각각 direct-child XML 297 tests + variant canaries 2, API/Web offline archive validator 28+25=53 tests, exact real release-gate fake cases 12는 유지된다. Production exact gate는 canonical inventory를 기준으로 umask 077/027/000 세 pass를 비교한다. Stage 9 final canonical gates와 독립 review, 새 external manifest, manifest-derived temporary release, commit과 exact-SHA closure는 아직 pending이다. 실제 브라우저와 screen reader 수동 검증도 pending이며 자동 test count로 완료를 주장하지 않는다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest와 검증 증거에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. 이를 final artifact-cleanup 또는 release 성공으로 해석하지 않는다.
 
-Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](../ASN-CONTEXT.md). Independent review/release remains pending.
 
 신규 리포트는 단순 PASS/FAIL과 함께 원인 후보, 그 판단을 지지하는 관측 증거, 안전한 다음 확인 단계와 분석 한계를 구조화된 `analysis`로 제공한다. 분석 confidence는 장애 확률이 아니며 현재 수집한 telemetry의 근거 수준을 뜻한다.
 
@@ -175,7 +177,7 @@ Android 앱도 `/checks` capability와 13종 검사, HTTPS-only public credentia
 
 공인 IP 홉에는 GeoIP 위치와 ASN/사업자 정보를 보강한다. `Geo 경로 지도`는 같은 bounded selection을 외부 tile/credential 없는 Natural Earth 해안선·국경·국가명·주요 도시 기반 오프라인 Canvas 지도(드래그/확대/경로 맞춤)와 접근 가능한 위치 목록으로 표시한다. 지명은 확대 수준에 맞춰 겹치지 않게 표시하고, 정확히 같은 좌표의 IP는 개수 배지와 반복 선택으로 구분한다. 경로는 토폴로지와 같은 색을 사용하며 선택한 노드의 경로를 강조한다. 위치는 실제 장비 소재지가 아닌 IP 등록 정보 기반 추정치이며, 같은 좌표도 같은 장비를 뜻하지 않는다.
 
-지도 점 또는 위치 목록을 선택하면 전체 IP/별칭, 위치·ASN·관측 RTT·홉 범위·경로/시도 소속을 지속 상세 패널에서 확인한다. 기존 공급자가 반환한 대륙·지역 코드·우편번호·시간대·별도 ISP·조직 도메인과 조회/캐시 출처도 Web/Android에 보존한다. 추가 정보는 `POST /api/v1/reports?geo_details=1`로 요청하며 구서버도 재진단 없이 호환된다. 좌표 없는 정보는 지도에 추측하여 배치하지 않고, 조회 시각은 공급자 DB 갱신 시각이 아니다. [확장 계약](GEO-DETAILS.md)과 [지도 설명](GEO-MAP.md)을 참고한다.
+지도 점 또는 위치 목록을 선택하면 전체 IP/별칭, 위치·ASN·관측 RTT·홉 범위·경로/시도 소속을 지속 상세 패널에서 확인한다. 기존 공급자가 반환한 대륙·지역 코드·우편번호·시간대·별도 ISP·조직 도메인과 조회/캐시 출처도 Web/Android에 보존한다. 추가 정보는 `POST /api/v1/reports?geo_details=1`로 요청하며 구서버도 재진단 없이 호환된다. 좌표 없는 정보는 지도에 추측하여 배치하지 않고, 조회 시각은 공급자 DB 갱신 시각이 아니다. [확장 계약](../GEO-DETAILS.md)과 [지도 설명](../GEO-MAP.md)을 참고한다.
 
 웹 UI는 정적 파일 서버로 별도 실행합니다.
 
@@ -228,7 +230,7 @@ make verify-archives-real
 
 JVM/Node/Go 자동화는 physical Chrome/Firefox/Safari의 320/375/400 px viewport와 screen reader, Android emulator/physical device의 TalkBack/Switch Access·OEM share sheet·process-death descriptor 동작, TLS reverse proxy의 HTTP/2 deadline/cancellation, registry push/signing/SBOM, hosted CI를 대신하지 않는다. 이 acceptance와 postcommit-only `make ci-clean-archive`는 별도 gate다.
 
-자세한 내용은 [구현 계획](PLAN.md), [아키텍처](ARCHITECTURE.md), [API 명세](API.md), [테스트 기준](TESTING.md)을 참고하세요.
+자세한 내용은 [구현 계획](PLAN.md), [아키텍처](../ARCHITECTURE.md), [API 명세](../API.md), [테스트 기준](../TESTING.md)을 참고하세요.
 
 ## Historical snapshot: docs/ARCHITECTURE.md
 
@@ -298,7 +300,7 @@ Release identity는 tracked `VERSION=0.1.0`, exact revision ldflags, startup log
 
 Stage 8 release review source는 base parent `36dc1dca9838337a5b5d1cf6ebc76bb35f5a4243`에 대한 future external canonical manifest다. 최신 parent focused gates와 Task 1~15 task-level reviews는 blocker 0 / major 0이다. Stage 8 historical source cardinality는 findings 23/result shapes 31/expanded result matrix 136, presentation `6/10/21/23/33`, Web 260(456 semantic mutations including 13 generic cancelled-detail rejections), Android debug/release 각각 direct-child XML 297 + variant canaries 2, archive validators API 28 + Web 25 = 53, exact real release-gate fake cases 12다. Compose SemVer fix 뒤 현재 Web source inventory는 298 tests다. Production exact gate는 umask 077/027/000 세 pass와 canonical Docker inventory equality를 요구한다. 이 documentation edit 뒤 final clean-environment `make ci`는 pending이다. Repository root의 ignored `checknetwork-api` binary는 candidate manifest/검증에서 제외되어 있으나 비파괴 요청 때문에 제거하지 않고 retained 상태다. 그 뒤의 new manifest, manifest-derived temporary release, five-way review, Stage 8 commit, exact-SHA closure도 pending이다. 이전 임시 manifest version/record count/hash를 current evidence로 사용하지 않으며 worktree에서 final commit/SHA를 선제 주장하지 않는다.
 
-Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](ASN-CONTEXT.md). Independent review/release remains pending.
+Historical route-visual slice source inventory: **Web 328 tests** (pre-density route-visual 326 and ASN-context 320 are historical). Merged Geo/shared-prefix source inventory: **Web 620 tests**, plus two separate contract scripts (`app.test.js` and `common-prefix.test.js`). Geo inventories 308/304 and pre-Geo 298 are historical. Offline archive validators: API 33 + Web 30 = 63; production Web closure now contains **ten assets**, including self-contained `geo-map.js` and `common-prefix.js`. ASN context is presentation-only inference, never private-IP ownership or Geo enrichment. See [ASN context evidence](../ASN-CONTEXT.md). Independent review/release remains pending.
 
 ## 일관성 기준
 

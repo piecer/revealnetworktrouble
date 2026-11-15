@@ -36,8 +36,17 @@ class PipelineDefinitionTests(unittest.TestCase):
         # Audit feeds may lag a vendor advisory; keep the reviewed floor explicit.
         packages = json.loads((ROOT / "frontend/package-lock.json").read_text())["packages"]
         for name, minimum in (("source-map-js", (1, 2, 2)), ("undici", (8, 12, 4))):
-            version = tuple(int(part) for part in packages["node_modules/" + name]["version"].split("."))
-            self.assertGreaterEqual(version, minimum, name)
+            # Removed transitive dependencies need no floor; every installed copy,
+            # including nested npm trees, must still meet the reviewed minimum.
+            suffix = "node_modules/" + name
+            for path, package in packages.items():
+                if path != suffix and not path.endswith("/" + suffix):
+                    continue
+                with self.subTest(package=path):
+                    value = package["version"]
+                    self.assertRegex(value, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+                    version = tuple(int(part) for part in value.split("."))
+                    self.assertGreaterEqual(version, minimum, path)
 
     def test_workflows_are_read_only_pinned_and_keep_failure_evidence(self):
         workflows = [ROOT / ".github/workflows/ci.yml", ROOT / ".github/workflows/release.yml"]

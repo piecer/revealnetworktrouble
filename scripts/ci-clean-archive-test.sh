@@ -28,7 +28,7 @@ make_fixture() {
     cat >"$fixture_repo/go.mod" <<'EOF'
 module example.com/cleanarchive
 
-go 1.25
+go 1.22
 EOF
     cat >"$fixture_repo/main.go" <<'EOF'
 package main

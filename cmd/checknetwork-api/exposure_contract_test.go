@@ -140,6 +140,7 @@ print(json.dumps([c for c in state["calls"] if c[:2] == ["container", "create"]]
 }
 
 func TestComposeResolvedExposureBoundary(t *testing.T) {
+	requireComposeIntegration(t)
 	// Only resolve configuration. Never start or replace a user's Compose stack.
 	command := exec.Command("docker", "compose", "-f", "compose.yaml", "config", "--format", "json")
 	command.Dir = "../.."

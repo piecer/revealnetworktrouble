@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -82,6 +83,19 @@ func readTestPID(t *testing.T, path string) int {
 }
 
 func processPIDExists(pid int) bool {
+	if runtime.GOOS == "linux" {
+		// kill(pid, 0) also succeeds for zombies that PID 1 has not reaped.
+		// comm may contain spaces or ')', so the final ") " ends that field.
+		if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+			if end := strings.LastIndex(string(stat), ") "); end >= 0 {
+				fields := strings.Fields(string(stat)[end+2:])
+				if len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X") {
+					return false
+				}
+			}
+		}
+	}
+	// Other platforms, unavailable procfs and unknown states stay conservative.
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }

@@ -56,6 +56,7 @@ func TestCIIsFreshSelfContainedAndNonRecursive(t *testing.T) {
 	inner := repositoryFile(t, "scripts/ci-inner.sh")
 	for _, command := range []string{
 		"go test -count=1 -json ./...",
+		"run_gate compose-config", "make test-integration",
 		"npm --prefix frontend test",
 		"npm --prefix frontend run test:syntax",
 		"go test -count=1 -race ./...",
@@ -97,13 +98,23 @@ func TestCIIsFreshSelfContainedAndNonRecursive(t *testing.T) {
 	}
 }
 
+func TestCleanArchiveFixtureUsesMinimumGoVersion(t *testing.T) {
+	// The regression fixture must exercise VCS behavior, not toolchain upgrades.
+	minimum := regexp.MustCompile(`(?m)^go ([0-9.]+)$`).FindStringSubmatch(repositoryFile(t, "go.mod"))
+	fixture := regexp.MustCompile(`(?m)^go ([0-9.]+)$`).FindStringSubmatch(repositoryFile(t, "scripts/ci-clean-archive-test.sh"))
+	if len(minimum) != 2 || len(fixture) != 2 || fixture[1] != minimum[1] {
+		t.Fatalf("archive fixture Go requirement %v must match module minimum %v", fixture, minimum)
+	}
+}
+
 func TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS(t *testing.T) {
 	command := exec.Command("sh", filepath.Join("..", "..", "scripts", "ci-clean-archive-test.sh"))
 	tempRoot := filepath.Join(t.TempDir(), "test tmp with spaces")
 	if err := os.Mkdir(tempRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	command.Env = append(os.Environ(), "TMPDIR="+tempRoot)
+	// Fixture compilation must stay on the installed compiler and work offline.
+	command.Env = append(os.Environ(), "TMPDIR="+tempRoot, "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("clean archive adversarial regression: %v\n%s", err, output)
@@ -243,6 +254,7 @@ func TestComposeRuntimeContract(t *testing.T) {
 }
 
 func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) {
+	requireComposeIntegration(t)
 	type composeConfig struct {
 		Services map[string]struct {
 			Build struct {

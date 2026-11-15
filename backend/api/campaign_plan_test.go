@@ -8,7 +8,7 @@ import (
 )
 
 func TestImplementationHistoryKeepsStageOrder(t *testing.T) {
-	content, err := os.ReadFile("../../docs/IMPLEMENTATION-HISTORY.md")
+	content, err := os.ReadFile("../../docs/archive/IMPLEMENTATION-HISTORY.md")
 	if err != nil {
 		t.Fatalf("read implementation history: %v", err)
 	}
