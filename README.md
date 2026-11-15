@@ -40,6 +40,8 @@ curl --fail http://localhost:8090/readyz
 
 이 Compose 구성으로 시작한 서비스를 종료하려면 `docker compose down`을 실행합니다.
 
+기존 로컬 배포 설정은 Git에서 제외되는 `compose.local.yaml`에 별도로 보존합니다. 이 파일은 공통 `compose.yaml`의 override가 아니라 독립 구성입니다. 로컬 배포를 확인하거나 관리할 때는 `docker compose -f compose.local.yaml ...`로 명시하고 두 파일을 함께 merge하지 마세요. 파일 선택과 안전한 확인 명령은 [운영 문서](docs/OPERATIONS.md#로컬-compose-설정-보존)를 참고하세요.
+
 ### 소스에서 직접 실행
 
 Go 1.22 이상과 Python 3가 필요합니다. 경로 추적에는 운영체제의 `traceroute` 계열 도구도 필요합니다. 웹 화면을 실행하는 데 Node.js나 별도 프론트엔드 빌드는 필요하지 않습니다.

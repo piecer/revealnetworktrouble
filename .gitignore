@@ -8,6 +8,9 @@ coverage.out
 /frontend/node_modules/
 /scripts/__pycache__/
 
+# Machine-local deployment settings may contain private ports or credentials.
+/compose.local.yaml
+
 # Android/Gradle local state and generated outputs.
 /android/.gradle/
 /android/.idea/

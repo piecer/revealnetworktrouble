@@ -6,9 +6,10 @@
 
 - 로컬 구현·검증: M-1, DOC-1 + M-2 일부, Android versionName 단일 출처화. 반영된 의존성 갱신의 CI/DOM/이미지 pin 불일치도 보완했다.
 - 별도 후보에서 Docker 없는 `make test`, Compose Go/Web 통합 검사, race, syntax/vet/build와 독립 리뷰 통과. 후보에서만 기본 Compose 설정을 사용했으며 사용자 로컬 설정은 보존했다.
-- 기존 작업 트리는 로컬 Compose 계약 충돌로 Go 전체 테스트가 실패한다. Android 전체 gate는 compileSdk/의존성 충돌 및 JDK 환경으로 차단됐고, 실제 바이너리 readiness는 호스트 traceroute 부재로 503이었다.
+- 앞선 작업 트리의 Go 전체 테스트를 막던 로컬 Compose 계약 충돌은 사용자 승인에 따라 공통 파일을 복구해 해소했다. 기존 로컬 파일과 컨테이너는 별도로 보존한다. Android 추가 작업·검증은 사용자 요청으로 제외한다. 이전 Android 환경 차단과 traceroute 부재의 readiness 503을 이번 수정으로 해결했다고 표시하지 않는다.
 - 기반 작업은 `857e67d`로 로컬 커밋했고 실제 커밋의 새 로컬 클론도 검증했다. 기존 Dependabot 7건은 모두 병합 상태였으며 추가 병합은 하지 않았다. Wrapper 검증기의 버전 불일치와 Java Properties/BusyBox NUL 파싱 우회를 보완하고 독립 재리뷰를 통과했다. [커밋·후속 확인](docs/archive/PHASE0-FOLLOWUP-2026-11-15.md)에 원격 조회 시점과 검증 범위를 기록했다.
-- 이름·모듈 경로·주 배포 방향과 사용자 Compose 재배치는 결정 대기다. 원격 설정·릴리스 발행과 Phase 1~4는 미완료다. **Phase 0 전체 완료로 표시하지 않는다.**
+- 사용자 승인 범위의 GitHub description/topics 변경은 적용 후 재조회했다. 비공개 신고는 이번 쓰기 전부터 활성화돼 있었고 브랜치 보호는 없는 상태임을 확인했으며 두 설정은 변경하지 않았다. 로컬 Compose 분리와 비Android 후속 검증은 [승인 범위 후속 기록](docs/archive/PHASE0-GO-WEB-FOLLOWUP-2026-11-15.md)에 남긴다.
+- 이름·모듈 경로·주 배포 방향 확정은 사용자 요청으로 나중에 결정한다. Android는 현 작업 범위에서 제외하고 릴리스 발행과 Phase 1~4는 미완료다. 모듈 경로 일치 등의 원래 수용 조건이 남으므로 **Phase 0 전체 완료로 표시하지 않는다.**
 - 실행 범위·원본 로그·보관 경로: [Phase 0 구현·검증 기록](docs/archive/PHASE0-VERIFICATION-2026-11-15.md). 과거 기록 목록은 [보관 안내](docs/archive/README.md)를 따른다.
 
 ## 분석 당시의 로드맵
@@ -214,11 +215,11 @@
 목표: 기여자·사용자가 클론 직후 막히지 않고, 이후 변경이 싸지는 상태.
 
 - [x] M-1: Docker·외부망 의존 테스트 skip/태그 분리, 좀비 판정 수정, `GOTOOLCHAIN` 안내
-- [ ] R-1: 이름·모듈 경로 확정 및 일괄 치환(결정 1)
+- [ ] R-1: 이름·모듈 경로 확정 및 일괄 치환(결정 1) — 사용자 요청으로 보류
 - [x] DOC-1 + M-2(일부): `docs/archive/` 이동, 루트 문서 정리, 문서 계약 테스트 축소(같은 변경 묶음, PR 미생성)
 - [x] R-3: Dependabot 7건 상태·위험 분류 — 모두 기존 병합 확인, #1/#4 회귀 및 #5 Wrapper 검증기 보완. Android 전체 통합 검증은 별도 미완료
-- [ ] S-3·R-5: private vulnerability reporting 활성화, Description·Topics, 브랜치 보호 확인
-- [x] M-5(일부): Android 버전 단일 출처화 — 패키징 manifest 검증, JVM/전체 빌드는 별도 차단
+- [x] S-3·R-5: private vulnerability reporting 활성 상태·브랜치 보호 현황 확인, 승인된 Description·Topics 적용 후 재조회. 보안 신고/브랜치 보호 자체의 변경은 없음
+- [x] M-5(일부): 이전 Android 버전 단일 출처화 — 패키징 manifest 검증. 이후 Android 작업·검증은 사용자 요청으로 제외
 
 **완료 기준:** Docker·외부망이 없는 새 머신에서 `git clone && make test`가 통과하고, 루트 마크다운이 6개 이내이며, 모듈 경로가 저장소와 일치.
 

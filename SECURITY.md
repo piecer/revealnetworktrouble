@@ -2,9 +2,9 @@
 
 ## 지원과 신고
 
-현재 정식 공개 릴리스의 지원 기간이나 보안 지원 버전 표는 확정하지 않았다. `VERSION=0.1.0`은 소스 identity이며 release 발행·보안 인증을 뜻하지 않는다. 프로젝트 라이선스는 [Apache-2.0](LICENSE)으로 결정했다. 공개 배포 전 비공개 신고 창구 및 지원 범위는 추가로 확정해야 한다.
+현재 정식 공개 릴리스의 지원 기간이나 보안 지원 버전 표는 확정하지 않았다. `VERSION=0.1.0`은 소스 identity이며 release 발행·보안 인증을 뜻하지 않는다. 프로젝트 라이선스는 [Apache-2.0](LICENSE)으로 결정했다. 공개 배포 전 지원 범위는 추가로 확정해야 한다.
 
-비공개 신고 채널의 활성화·담당자는 아직 확정되지 않았다. 저장소 Security 탭에 private vulnerability reporting이 활성화돼 있는지 먼저 확인한다. 없으면 기존에 확인한 maintainer의 비공개 연락 경로를 사용한다. 그러한 경로도 없다면 공개 이슈에는 비공개 연락 방법 요청만 남기고 exploit·재현 대상·IP·토큰·원본 report를 게시하지 않는다. 아직 존재가 확인되지 않은 이메일 주소나 신고 기능을 안내하지 않는다.
+2026-11-15 GitHub REST 조회에서 이 저장소의 private vulnerability reporting 활성화를 확인했다. 저장소의 Security / Security and quality 탭에서 **Report a vulnerability**로 비공개 신고한다. 담당자·응답 SLA·지원 기간을 보장하지 않는다. 향후 해당 기능을 사용할 수 없다면 기존에 확인한 maintainer의 비공개 연락 경로를 사용한다. 그러한 경로도 없다면 공개 이슈에는 비공개 연락 방법 요청만 남기고 exploit·재현 대상·IP·토큰·원본 report를 게시하지 않는다. 존재가 확인되지 않은 이메일 주소를 안내하지 않는다.
 
 비공개 보고에는 영향 범위, 해당 source revision, 최소 재현과 예상/실제 결과, 필요한 권한, 익명화한 로그 및 제안된 완화책을 포함한다. 응답 SLA나 패치 일정을 보장하지 않는다. 실제 key/token이 노출되면 먼저 폐기·교체하고, 이력 재작성과 공개 disclosure는 maintainer와 별도 협의한다.
 

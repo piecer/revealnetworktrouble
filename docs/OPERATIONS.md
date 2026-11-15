@@ -129,6 +129,19 @@ Compose API는 host의 `127.0.0.1:8090`, 웹은 `localhost:3000`에서 접근한
 
 API image는 non-root `65532:65532`로 실행하고 Web image는 nginx `worker_processes 2`를 사용한다. 두 service 모두 exec-form healthcheck가 있으며 Web은 API `/readyz` health를 기다린다. 운영 smoke는 `docker compose config`, `docker compose build api web`, `docker compose up -d --wait`, API `/readyz`와 Web URL 확인, `docker compose down` 순서로 수행한다.
 
+### 로컬 Compose 설정 보존
+
+공통 `compose.yaml`은 저장소의 loopback 기본값과 환경 변수 override 계약을 유지한다. 호스트별 포트·네트워크·인증 설정은 Git에서 제외되는 `compose.local.yaml`에 보관한다. 이 파일은 독립 구성으로, 공통 파일과 함께 `-f` 두 개로 merge하지 않는다. 로컬 파일에는 민감 설정이 포함될 수 있으므로 원문이나 resolved config 전체를 로그·이슈·커밋에 넣지 않는다.
+
+```sh
+# 저장소 루트에서 로컬 파일만 해석한다. resolved 값은 출력하지 않는다.
+docker compose -f compose.local.yaml config --quiet
+# 기존 로컬 스택의 상태만 조회한다. 컨테이너를 재생성하지 않는다.
+docker compose -f compose.local.yaml ps
+```
+
+로컬 배포의 `up`·`stop`·`down`에도 같은 `-f compose.local.yaml` 선택을 유지한다. 기본 `docker compose ...`는 공통 파일을 선택하므로 기존 로컬 배포 관리에 대신 사용하지 않는다. 공통 파일 복구는 기존 로컬 파일이나 실행 중인 컨테이너를 갱신하지 않으며, 운영 재시작·재배포는 별도 승인 대상이다. 보존된 파일을 자동 생성하거나 덮어쓰지 않는다.
+
 ## Release identity와 재현성
 
 tracked `VERSION`은 `0.1.0`이다. release binary는 `-trimpath -buildvcs=false -buildid=`와 ldflags로 version 및 exact 40자리 lowercase revision을 주입한다. `/api/v1/health`의 exact schema `{"status":"ok","version":"0.1.0","revision":"<revision>"}`, `server started` JSON log, OCI `org.opencontainers.image.version`/`revision` labels가 일치해야 한다.

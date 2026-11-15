@@ -4,6 +4,7 @@
 
 현재 사용법은 [README](../../README.md), 동작 계약은 [API](../API.md)와 [아키텍처](../ARCHITECTURE.md), 남은 작업은 [ROADMAP](../../ROADMAP.md)을 참고하세요.
 
+- [Phase 0 Go/Web·승인 설정 후속 — 2026-11-15](PHASE0-GO-WEB-FOLLOWUP-2026-11-15.md)
 - [Phase 0 커밋·후속 확인 — 2026-11-15](PHASE0-FOLLOWUP-2026-11-15.md)
 - [새 로드맵 Phase 0 구현·검증 — 2026-11-15](PHASE0-VERIFICATION-2026-11-15.md)
 - [이전 개선 실행계획 v1.1](IMPROVEMENT-PLAN-v1.1.md): 과거 Phase 1~5의 기준
