@@ -17,7 +17,7 @@
 - U-1의 추가 단계: `CHECKNETWORK_WEB_UI=on`으로 같은 바이너리·listener에 정적 UI를 내장하고 API 주소를 브라우저의 현재 origin으로 고정했다. 기본값은 `off`로 유지하며 기존 standalone Web/API 두 구성과 로컬 배포 파일은 바꾸지 않았다.
 - S-1: 내장 UI에 CSP·nosniff·frame/referrer 정책과 명시적 production asset 경계를 적용했다. 기존 API의 public 인증·rate limit·JSON 오류와 operational probe는 유지한다. standalone nginx의 보안 정책 전환은 포함하지 않는다.
 - 실제 Go/Web·race·구문/vet/build·Compose 설정 검증과 로컬/실제 Docker 아카이브 추출 바이너리의 Chromium 검증을 실행했다. 독립 리뷰의 차단 finding은 없었으며 기존 standalone 브라우저·비Android CI 정책도 통과했다. 최종 범위와 증거는 [내장 UI 검증 기록](docs/archive/PHASE1-EMBEDDED-UI-2026-11-17.md)에 구분한다.
-- U-1의 기본값 전환·exact-SHA 이중 이미지 릴리스, U-2·U-3·R-2는 남아 있다. Android 제외, 이름·모듈 경로 보류, 운영 재배포·commit/push·태그·릴리스 발행 제외 범위를 유지한다. Phase 1 전체 완료가 아니다.
+- U-1의 기본값 전환·exact-SHA 이중 이미지 릴리스와 R-2는 남아 있다. U-2·U-3 구현은 완료(commit까지만 기록; push는 사용자 명시적 지시가 있을 때만). Android 제외, 이름·모듈 경로 보류, 운영 재배포·태그·릴리스 발행 제외 범위를 유지한다. Phase 1 전체 완료가 아니다.
 
 ## 분석 당시의 로드맵
 
@@ -107,8 +107,9 @@
 - **연관:** `README.en.md`가 있어도 UI가 한국어 위주라 영어 사용자는 결과를 읽기 어렵습니다(DOC-2).
 
 #### U-3. 증상 기반 진입점 부재 (P2)
-- **현상:** 사용자가 검사 종류와 주소를 직접 골라야 합니다. `docs/REVIEW_2026-09-01.md`가 "증상/영향 입력 또는 목적 기반 preset"을 목표 여정 1번으로 적었지만 현재 UI에 preset이 없습니다. [코드: `app.js`에 preset 관련 코드 없음]
+- **현상:** 사용자가 검사 종류와 주소를 직접 골라야 합니다. `docs/REVIEW_2026-09-01.md`가 "증상/영향 입력 또는 목적 기반 preset"을 목표 여정 1번으로 적었지만 원래 UI에 preset이 없었습니다. [구현: `frontend/lexicon.js`의 `SYMPTOM_PRESETS`(code-keyed) + `app.js`의 `renderSymptomPresets`/`applySymptomPreset`]
 - **권고:** "웹사이트가 안 열려요 / 메일이 안 가요 / SSH 접속이 안 돼요 / 특정 서버까지 느려요" 프리셋. 호스트 하나만 입력하면 DNS → TCP → HTTPS(+TLS) → traceroute를 묶어 실행하고 결과를 증상 기준으로 요약.
+- **구현 범위(2026-11-22):** 프리셋 4종(웹사이트/메일/SSH/느림)을 사전 코드 매핑으로 도입. 프리셋 클릭은 요청을 실행하지 않고 검사 행을 계약 검사 종류로 사전선택합니다(호스트 자동 입력과 증상 기준 요약은 미완).
 
 #### U-4. 관측 지점 한계 (P2, 전략)
 - **현상:** 모든 검사는 API 서버에서 수행됩니다. 가장 흔한 요청인 "내 PC/폰 네트워크가 이상하다"를 원격 서버로는 진단할 수 없습니다. README는 이를 정직하게 밝히고 있으나 제품 가치의 가장 큰 한계입니다. [문서]
@@ -242,8 +243,8 @@
   - [x] Go/Web 회귀·실제 Docker build/offline archive·추출 바이너리 브라우저 검증
   - [x] 포트 단일화: Compose 기본값을 service 하나로 전환(UI+API 같은 origin), 기존 2구성은 `standalone-web` profile로 유지, 노출/빌드 계약 테스트와 문서 동기화
   - [ ] exact-SHA 이중 이미지 릴리스 검증 후 기본값 전환(선택적 추가와 구분)
-- [ ] U-2: 결과 화면 재구성(상태 한 줄 → 원인 후보 → 다음 단계, 면책·커버리지 접기), ko/en 사전, 내부 코드 비노출. Android 문구도 같은 코드 매핑 사용
-- [ ] U-3: 증상 프리셋 3~4종(웹사이트 / 메일 / SSH / 느림)
+- [x] U-2: 결과 화면 재구성(상태 한 줄 → 원인 후보 → 다음 단계, 면책·커버리지 접기), ko/en 사전, 내부 코드 비노출. Android 문구도 같은 코드 매핑 사용
+- [x] U-3: 증상 프리셋 3~4종(웹사이트 / 메일 / SSH / 느림)
 - [x] S-1: 내장 UI와 함께 보안 헤더(CSP, nosniff, frame, referrer) 적용 — 정적 응답 경계·실제 Chromium 정책 검증. standalone nginx 정책은 기존대로 유지
 - [ ] R-2: `v0.1.0` 발행 — 바이너리 4종 + 체크섬 + GHCR 이미지. README 첫 화면을 "다운로드 → 실행 → 브라우저" 3단계로
 
