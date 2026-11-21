@@ -15,13 +15,13 @@ RUN test -n "${SOURCE_DATE_EPOCH}" && \
     test "$(go version -m /checknetwork-api | sed -n '1p')" = '/checknetwork-api: go1.26.11' && \
     touch -d "@${SOURCE_DATE_EPOCH}" /checknetwork-api
 
-FROM alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS traceroute
+FROM alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS traceroute
 ADD --checksum=sha256:0409f348956dc74b83701cf48294f58ab6424e6f717e0f912687bb89d09026de https://dl-cdn.alpinelinux.org/alpine/v3.20/community/x86_64/traceroute-2.1.5-r0.apk /tmp/traceroute.apk
 RUN tar -xzf /tmp/traceroute.apk -C / usr/bin/traceroute && \
     rm -f /tmp/traceroute.apk && \
     test -x /usr/bin/traceroute
 
-FROM alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 ARG VERSION
 ARG REVISION
 ARG SOURCE_DATE_EPOCH

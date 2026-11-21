@@ -50,21 +50,21 @@ class ProjectedFile:
     mode: int
 
 
-PINNED_ALPINE_IMAGE_DIGEST = "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+PINNED_ALPINE_IMAGE_DIGEST = "sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
 PINNED_ALPINE_LAYER_DIGESTS = (
-    "sha256:25f1d6b1951ac8eb3740558fe94cb83d377bdadf95fd9f98b50d2e1b96130471",
+    "sha256:881fc932939efef04ca120ad44bbd2c0917851eb247aa4995428afb1e80ede17",
 )
 PINNED_ALPINE_DIFF_IDS = (
-    "sha256:08bc4e534116aa76b16015484b82eac51f9a593416feae9296c8a2d4bb7aa4a2",
+    "sha256:75f1d9657d880da5f75298e8f40e9928bb6e260c50d26f97af196845307e3064",
 )
 PINNED_ALPINE_HISTORY = (
     {
-        "created": "2026-04-16T23:53:26.803599608Z",
-        "created_by": "ADD alpine-minirootfs-3.20.10-x86_64.tar.gz / # buildkit",
+        "created": "2026-11-05T18:00:28.583714131Z",
+        "created_by": "ADD alpine-minirootfs-3.24.4-x86_64.tar.gz / # buildkit",
         "comment": "buildkit.dockerfile.v0",
     },
     {
-        "created": "2026-04-16T23:53:26.803599608Z",
+        "created": "2026-11-05T18:00:28.583714131Z",
         "created_by": "CMD [\"/bin/sh\"]",
         "comment": "buildkit.dockerfile.v0",
         "empty_layer": True,

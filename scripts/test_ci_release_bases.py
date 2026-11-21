@@ -27,7 +27,7 @@ class ReleaseBaseTests(unittest.TestCase):
         mod = module()
         # These config IDs are the linux/amd64 descriptors of the pinned indexes.
         config_ids = (
-            "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731",
+            "sha256:3ea06e4cb95e726ea6c6cc4377570ac4c4050d78710004cbd631ca809daf7e8e",
             "sha256:6769dc3a703c719c1d2756bda113659be28ae16cf0da58dd5fd823d6b9a050ea",
         )
         values = []
@@ -77,7 +77,7 @@ class ReleaseBaseTests(unittest.TestCase):
     def test_classic_identity_cannot_bypass_reference_platform_or_shape_checks(self):
         mod = module()
         config_ids = (
-            "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731",
+            "sha256:3ea06e4cb95e726ea6c6cc4377570ac4c4050d78710004cbd631ca809daf7e8e",
             "sha256:6769dc3a703c719c1d2756bda113659be28ae16cf0da58dd5fd823d6b9a050ea",
         )
         for index, ref in enumerate(mod.BASES):

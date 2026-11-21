@@ -83,10 +83,10 @@ if args == ["info"]:
     raise SystemExit(0)
 if args[:2] == ["image", "inspect"]:
     ref = inspect_ref()
-    if ref == "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc":
-        image_id = "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+    if ref == "alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf":
+        image_id = "sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
         if os.environ.get("FAKE_BASE_STORE") == "classic":
-            image_id = "sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731"
+            image_id = "sha256:3ea06e4cb95e726ea6c6cc4377570ac4c4050d78710004cbd631ca809daf7e8e"
         if option("--format") == "{{.Id}}":
             print(image_id)
         else:

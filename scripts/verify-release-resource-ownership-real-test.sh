@@ -7,7 +7,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 root=$(mktemp -d "${TMPDIR:-/tmp}/checknetwork-release-ownership-real.XXXXXX")
 nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 owner=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-base=alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+base=alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 base_id=$("$real_docker" image inspect "$base" --format '{{.Id}}')
 owned_ids=$root/owned.ids
 : >"$owned_ids"

@@ -592,9 +592,9 @@ class APIArchiveValidatorTest(unittest.TestCase):
             validator.scan_layer(second, limits, projection, selected_consumed=consumed)
 
     def test_default_policy_is_exactly_the_final_pinned_alpine_and_apk_contract(self):
-        self.assertEqual(validator.PINNED_ALPINE_IMAGE_DIGEST, "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc")
-        self.assertEqual(validator.PINNED_ALPINE_LAYER_DIGESTS, ("sha256:25f1d6b1951ac8eb3740558fe94cb83d377bdadf95fd9f98b50d2e1b96130471",))
-        self.assertEqual(validator.PINNED_ALPINE_DIFF_IDS, ("sha256:08bc4e534116aa76b16015484b82eac51f9a593416feae9296c8a2d4bb7aa4a2",))
+        self.assertEqual(validator.PINNED_ALPINE_IMAGE_DIGEST, "sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf")
+        self.assertEqual(validator.PINNED_ALPINE_LAYER_DIGESTS, ("sha256:881fc932939efef04ca120ad44bbd2c0917851eb247aa4995428afb1e80ede17",))
+        self.assertEqual(validator.PINNED_ALPINE_DIFF_IDS, ("sha256:75f1d9657d880da5f75298e8f40e9928bb6e260c50d26f97af196845307e3064",))
         self.assertEqual(len(validator.PINNED_ALPINE_HISTORY), 2)
         self.assertEqual(validator.DEFAULT_POLICY.traceroute_sha256, "f10fa4938a33f3b11350eb4930f4aa75aebf810264f9b7a98597788f49d1d956")
 

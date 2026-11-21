@@ -382,7 +382,7 @@ func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) 
 
 func TestReleaseDockerfileIsImmutableAndCarriesExactIdentity(t *testing.T) {
 	dockerfile := repositoryFile(t, "Dockerfile")
-	const alpineDigest = "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+	const alpineDigest = "sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
 	if count := strings.Count(dockerfile, "alpine@"+alpineDigest); count != 2 {
 		t.Fatalf("Dockerfile must use the exact audited Alpine digest for traceroute and final runtime stages, got %d", count)
 	}
@@ -1491,7 +1491,7 @@ case "${FAKE_BINARY_MISMATCH:-}:$out" in true:*-2) printf two >"$out" ;; *) prin
 			t.Fatalf("derived API daemon action %q was attempted:\n%s", forbidden, calls)
 		}
 	}
-	if strings.Count(calls, "ARGS=image inspect alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc\n") != 1 {
+	if strings.Count(calls, "ARGS=image inspect alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf\n") != 1 {
 		t.Fatalf("borrowed-base inspection was not exact:\n%s", calls)
 	}
 	successLines := regexp.MustCompile(`(?m)^release verified: api_archive=[0-9a-f]{64} api_config=sha256:[0-9a-f]{64} api_manifest=sha256:[0-9a-f]{64} api_rootfs=sha256:[0-9a-f]{64} api_binary=[0-9a-f]{64} api_traceroute=[0-9a-f]{64}$`).FindAllString(output, -1)
