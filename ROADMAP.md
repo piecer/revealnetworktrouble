@@ -163,6 +163,7 @@
 #### M-5. Android 정리 (P3)
 - **현상:** `versionName "1.0.0"`이 저장소 `VERSION 0.1.0`과 불일치합니다. Dependabot의 Android 업데이트 PR 4건(AGP 8.9.1→9.5.1, Gradle wrapper 8.11.1→9.9.0, androidx.core 1.15.0→1.19.1, Robolectric 4.14.1→4.17)이 방치돼 있습니다. CI는 통과했지만 AGP·Gradle은 메이저 업데이트입니다. 실기기·에뮬레이터 수용 검증은 문서상 미완료입니다. [코드·원격·문서] (이번 분석에서 Android는 빌드·실행하지 못했습니다.)
 - **권고:** 버전 단일 출처화, 메이저 업데이트는 한 번에 하나씩 검증 후 병합, 릴리스 전 에뮬레이터 1종 + 실기기 1종 체크리스트 수행.
+- **업데이트 [실행 2026-11-21]:** Full gate `android-test` 실패를 두 layer로 진단. Layer 1: AGP 9 기본값 `android.onlyEnableUnitTestForTheTestedBuildType=true`가 `:app:testReleaseUnitTest` task를 없앰 — gate가 debug·release 결과를 모두 세므로 `android/gradle.properties`에 explicit pin + `scripts/test_ci_definition.py` 회귀 test로 해결(run 44904791766에서 Layer 1 통과 확인). Layer 2: `androidx.core 1.19.1`(이미 병합)이 compileSdk ≥ 37을 요구하는데 프로젝트는 `compileSdk = 35`와 gates(platform android-35, build-tools 35.0.0, env script·bootstrap fixtures·README)에 고정. 방향 결정 대기(compileSdk 상향 동기화 / bump 롤백 / Full gate에서 android-test 제외).
 
 ### 4.4 보안·운영
 
@@ -228,6 +229,7 @@
   - [x] R-3 2차 triage (2026-11-21): #10(robolectric 4.18)·#11(jsdom 31.0.1) 병합. #12(Gradle 9.9.1)는 checksum을 Gradle 공식 endpoint에서 독립 확인(9.9.1 bin `d8a18a7a…`=CI 실제값; wrapper jar `621008…`은 버전 독립이라 불변) 후 pin·검증기·test·provenance README 동기화로 content already reflected 처리. #9(Alpine)는 `d9e853e`=3.20.10 → `f59abe6`=3.24.4의 major 라인 Upgrade로 독립 재감사(amd64 layer `881fc932…`, diff-ID `75f1d965…`, history created 2026-11-05, config `3ea06e4c…` 확인) 후 재감사 값 반영으로 처리. pin 기반 identity bump은 같은 변경 묶음의 mirror 변경(검증기·contract test)이 필요 — 단파일 PR은 설계상 통과 불가
 - [x] S-3·R-5: private vulnerability reporting 활성 상태·브랜치 보호 현황 확인, 승인된 Description·Topics 적용 후 재조회. 보안 신고/브랜치 보호 자체의 변경은 없음
 - [x] M-5(일부): 이전 Android 버전 단일 출처화 — 패키징 manifest 검증. 이후 Android 작업·검증은 사용자 요청으로 제외
+- [ ] M-5 잔여(Full gate red): Layer 1(task model)은 pin + 회귀 test로 해결·push 완료. Layer 2(compileSdk)는 방향 결정 대기
 
 **완료 기준:** Docker·외부망이 없는 새 머신에서 `git clone && make test`가 통과하고, 루트 마크다운이 6개 이내이며, 모듈 경로가 저장소와 일치.
 
