@@ -7,6 +7,7 @@ frontend/*
 !frontend/index.html
 !frontend/styles.css
 !frontend/app.js
+!frontend/lexicon.js
 !frontend/common-prefix.js
 !frontend/state.js
 !frontend/topology-model.js

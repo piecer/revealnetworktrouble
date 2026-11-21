@@ -5,7 +5,7 @@ const fs = require('node:fs'), path = require('node:path'), http = require('node
 const assert = require('node:assert/strict'), crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const out = process.argv[2]; assert.ok(out, 'owned evidence directory required'); fs.mkdirSync(out, { recursive: true });
-const assets = ['index.html', 'styles.css', 'app.js', 'common-prefix.js', 'state.js', 'topology-model.js', 'topology-presentation.js', 'topology-visualizer.js', 'topology-renderer.js', 'geo-map.js'];
+const assets = ['index.html', 'styles.css', 'app.js', 'lexicon.js', 'common-prefix.js', 'state.js', 'topology-model.js', 'topology-presentation.js', 'topology-visualizer.js', 'topology-renderer.js', 'geo-map.js'];
 const stats = total => ({ total, displayed: total, omitted: 0 });
 const routeStats = total => ({ ...stats(total), complete: total, partial: 0 });
 function fixture(maximum = false, unlocated = false) {

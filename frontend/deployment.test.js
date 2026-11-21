@@ -9,7 +9,7 @@ import { JSDOM } from 'jsdom';
 import { createApp } from './app.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const assets = ['app.js', 'common-prefix.js', 'geo-map.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js', 'topology-presentation.js', 'topology-renderer.js', 'topology-visualizer.js'];
+const assets = ['app.js', 'common-prefix.js', 'geo-map.js', 'index.html', 'lexicon.js', 'state.js', 'styles.css', 'topology-model.js', 'topology-presentation.js', 'topology-renderer.js', 'topology-visualizer.js'];
 const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
 const instructions = dockerfile.replace(/\\\r?\n/g, '').split(/\r?\n/);
 

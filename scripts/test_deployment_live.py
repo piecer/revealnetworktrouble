@@ -18,7 +18,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ('app.js', 'common-prefix.js', 'index.html', 'state.js', 'styles.css', 'topology-model.js',
+ASSETS = ('app.js', 'common-prefix.js', 'index.html', 'lexicon.js', 'state.js', 'styles.css', 'topology-model.js',
           'topology-renderer.js', 'geo-map.js', 'topology-presentation.js', 'topology-visualizer.js')
 
 
@@ -139,7 +139,7 @@ def run(receipts):
     html.mkdir(mode=0o755)
     for name in ASSETS:
         shutil.copyfile(ROOT / 'frontend' / name, html / name)
-    paths = {'/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js',
+    paths = {'/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/lexicon.js': 'lexicon.js',
              '/styles.css': 'styles.css', '/state.js': 'state.js', '/spa/route': 'index.html'}
     before = {}
     for name in set(paths.values()):

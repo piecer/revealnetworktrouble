@@ -14,7 +14,7 @@ import (
 )
 
 func TestEmbeddedAssetsMatchStandaloneProductionInventory(t *testing.T) {
-	want := []string{"app.js", "common-prefix.js", "geo-map.js", "index.html", "state.js", "styles.css", "topology-model.js", "topology-presentation.js", "topology-renderer.js", "topology-visualizer.js"}
+	want := []string{"app.js", "common-prefix.js", "geo-map.js", "index.html", "lexicon.js", "state.js", "styles.css", "topology-model.js", "topology-presentation.js", "topology-renderer.js", "topology-visualizer.js"}
 	entries, err := fs.ReadDir(assets, ".")
 	if err != nil {
 		t.Fatal(err)

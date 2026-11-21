@@ -8,6 +8,13 @@ import { TopologyRenderCoordinator } from './topology-renderer.js';
 import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport, routeColor } from './topology-visualizer.js';
 import { commonPrefix, COMMON_MAX_ADDRESSES, COMMON_MAX_INPUT_CHARS } from './common-prefix.js';
 import { canonicalPublicIP } from './topology-presentation.js';
+import { label as lexLabel, findingLabel, resolveLang } from './lexicon.js';
+
+// U-2: display strings resolve through the ko/en lexicon; contract codes and
+// canonical English sentences stay intact (dataset values, human export, guide).
+function langFor(doc) {
+  return resolveLang(doc?.defaultView?.location?.search ?? '');
+}
 
 const IP_LABEL_STORAGE_KEY = 'checknetwork.ip-labels.v1';
 export const LABEL_FILE = 1024 * 1024;
@@ -461,7 +468,7 @@ function validatePresentationContract(report) {
 
 function semanticBlock(doc, key, text, tag = 'div') {
   const block = makeNode(doc, tag); block.dataset.semanticKey = key;
-  block.append(makeNode(doc, 'h5', key), makeNode(doc, 'p', text));
+  block.append(makeNode(doc, 'h5', lexLabel(key, langFor(doc))), makeNode(doc, 'p', text));
   return block;
 }
 
@@ -497,12 +504,13 @@ const UNAVAILABLE_ANALYSIS_GUIDANCE = Object.freeze([
 ]);
 function findingPanel(doc, index, detail) {
   const { presentation, facts, directness } = detail;
+  const lang = langFor(doc);
   const panel = makeNode(doc, 'div', undefined, 'finding-panel'); panel.id = `finding-panel-${index}`;
-  const evidenceRegion = analysisSection(doc, 'evidence', 'supporting_evidence');
+  const evidenceRegion = analysisSection(doc, 'evidence', lexLabel('supporting_evidence', lang));
   const evidenceTitle = evidenceRegion.querySelector('h3'); evidenceTitle.id = `finding-evidence-title-${index}`;
   const evidenceBlock = semanticBlock(doc, 'supporting_evidence', facts.length ? facts.join(' ') : 'No allowlisted bounded evidence value was available for display.');
   const scroll = makeNode(doc, 'div', undefined, 'evidence-scroll'); scroll.tabIndex = 0; scroll.setAttribute('aria-labelledby', evidenceTitle.id);
-  const table = makeNode(doc, 'table'); table.append(makeNode(doc, 'caption', `${presentation.key} supporting_evidence`));
+  const table = makeNode(doc, 'table'); table.append(makeNode(doc, 'caption', `${lexLabel('supporting_evidence', lang)} [${findingLabel(presentation.key.replace('finding.', ''), lang)}]`));
   const head = makeNode(doc, 'thead'); const headRow = makeNode(doc, 'tr'); const th = makeNode(doc, 'th', 'Safe bounded fact'); th.scope = 'col'; headRow.append(th); head.append(headRow); table.append(head);
   const body = makeNode(doc, 'tbody');
   for (const fact of facts) { const row = makeNode(doc, 'tr'); row.append(makeNode(doc, 'td', fact)); body.append(row); }
@@ -510,10 +518,6 @@ function findingPanel(doc, index, detail) {
   panel.append(semanticBlock(doc, 'expectation', presentation.expectation));
   panel.append(semanticBlock(doc, 'evidence_directness', directness));
   panel.append(semanticBlock(doc, 'coverage_limitation', presentation.limitation));
-  const actionsRegion = analysisSection(doc, 'actions', 'next_action');
-  const actionBlock = semanticBlock(doc, 'next_action', presentation.action);
-  const list = makeNode(doc, 'ol'); const li = makeNode(doc, 'li'); const checkbox = makeNode(doc, 'input'); checkbox.type = 'checkbox'; checkbox.id = `action-${index}`;
-  const label = makeNode(doc, 'label', presentation.action); label.htmlFor = checkbox.id; li.append(checkbox, label); list.append(li); actionBlock.append(list); actionsRegion.append(actionBlock); panel.append(actionsRegion);
   return panel;
 }
 
@@ -542,25 +546,33 @@ function toggleFindingPanel(root, toggle) {
 function renderAnalysisWorkspace(doc, report, root = doc.querySelector('#analysis-report')) {
   root.replaceChildren();
   root.hidden = false;
+  const lang = langFor(doc);
   const accordion = { details: [], toggles: [], panel: null, openToggle: null };
   const analysis = report.analysis;
-  const verdict = analysisSection(doc, 'verdict');
+  const verdict = analysisSection(doc, 'verdict', lexLabel('section.verdict', lang));
   const verdictText = analysis ? OVERALL_VERDICT_TEXT[analysis.verdict] : OVERALL_VERDICT_TEXT.inconclusive;
   const header = makeNode(doc, 'div', undefined, `analysis-verdict verdict-${analysis?.verdict || 'inconclusive'}`);
-  header.append(makeNode(doc, 'strong', verdictText), makeNode(doc, 'time', new Date(report.started_at).toISOString()), makeNode(doc, 'span', `${report.duration_ms} ms`));
-  verdict.append(header, makeNode(doc, 'p', INTERPRETATION_GUIDE));
+  header.append(makeNode(doc, 'strong', lexLabel(`verdict.${analysis?.verdict || 'inconclusive'}`, lang)), makeNode(doc, 'time', new Date(report.started_at).toISOString()), makeNode(doc, 'span', `${report.duration_ms} ms`));
+  // Canonical English sentences survive in the folded guide: the Korean one-liner
+  // must not replace the honest full wording, only head it.
+  const guide = makeNode(doc, 'details');
+  guide.append(makeNode(doc, 'summary', lexLabel('interpretation_guide', lang)));
+  const guideBody = makeNode(doc, 'p');
+  guideBody.append(doc.createTextNode(OVERALL_STATUS_TEXT[report.status]), doc.createTextNode(' '), doc.createTextNode(verdictText), doc.createTextNode(' '), doc.createTextNode(OBSERVATION_POINT), doc.createTextNode(' '), doc.createTextNode(INTERPRETATION_GUIDE));
+  guide.append(guideBody);
+  verdict.append(header, guide);
   root.append(verdict);
 
   if (!analysis) {
-    const unsupported = analysisSection(doc, 'findings', 'Automated analysis unavailable');
+    const unsupported = analysisSection(doc, 'findings', lexLabel('section.analysis_unavailable', lang));
     unsupported.append(makeNode(doc, 'p', 'The bounded report did not include a supported analysis object.'));
     root.append(unsupported);
     for (const [key, heading, explanation] of UNAVAILABLE_ANALYSIS_GUIDANCE) {
-      const section = analysisSection(doc, key, heading);
+      const section = analysisSection(doc, key, lexLabel(key, lang));
       section.append(makeNode(doc, 'p', explanation)); root.append(section);
     }
   } else {
-    const findings = analysisSection(doc, 'findings', 'Bounded findings');
+    const findings = analysisSection(doc, 'findings', lexLabel('section.findings', lang));
     const evidenceByID = new Map(analysis.evidence.map(item => [item.id, item]));
     if (!analysis.findings.length) findings.append(makeNode(doc, 'p', 'No locally presentable finding requiring attention was derived from the observed checks.'));
     analysis.findings.forEach((finding, index) => {
@@ -570,20 +582,24 @@ function renderAnalysisWorkspace(doc, report, root = doc.querySelector('#analysi
       const article = makeNode(doc, 'article', undefined, `finding finding-${severity}`);
       article.dataset.severity = severity;
       article.dataset.presentationKey = presentation.key;
-      article.append(semanticBlock(doc, 'cause', presentation.cause));
-      const toggle = makeNode(doc, 'button', 'Show bounded evidence and action', 'finding-toggle');
+      const actionBlock = semanticBlock(doc, 'next_action', presentation.action);
+      const list = makeNode(doc, 'ol'); const li = makeNode(doc, 'li'); const checkbox = makeNode(doc, 'input'); checkbox.type = 'checkbox'; checkbox.id = `action-${index}`;
+      const actionLabel = makeNode(doc, 'label', presentation.action); actionLabel.htmlFor = checkbox.id; li.append(checkbox, actionLabel); list.append(li); actionBlock.append(list);
+      article.append(semanticBlock(doc, 'cause', presentation.cause), actionBlock);
+      const toggle = makeNode(doc, 'button', lexLabel('toggle.show_panel', lang), 'finding-toggle');
       toggle.type = 'button'; toggle.setAttribute('aria-expanded', 'false'); toggle.dataset.findingIndex = String(index);
       toggle.setAttribute('aria-controls', `finding-panel-${index}`);
       article.append(toggle); findings.append(article);
       const facts = safeEvidenceFacts(finding, evidenceByID, presentation);
-      accordion.details.push(Object.freeze({ presentation, facts: Object.freeze([...facts]), directness: DIRECTNESS_LABELS[finding.confidence] }));
+      accordion.details.push(Object.freeze({ presentation, facts: Object.freeze([...facts]), directness: lexLabel(finding.confidence, lang) }));
       accordion.toggles.push(toggle);
     });
     root.append(findings);
-    const coverage = analysisSection(doc, 'coverage', 'coverage_limitation');
+    const coverage = analysisSection(doc, 'coverage', lexLabel('section.coverage', lang));
+    const details = makeNode(doc, 'details'); details.append(makeNode(doc, 'summary', lexLabel('coverage_detail', lang)));
     const list = makeNode(doc, 'ul');
     for (const fact of coverageFacts(analysis.coverage, report.results)) list.append(makeNode(doc, 'li', fact));
-    coverage.append(list); root.append(coverage);
+    details.append(list); coverage.append(details); root.append(coverage);
   }
   const raw = analysisSection(doc, 'raw', '원시 결과');
   raw.append(makeNode(doc, 'p', 'Raw results can contain targets and diagnostic details. Review them before sharing.'));
@@ -593,26 +609,24 @@ function renderAnalysisWorkspace(doc, report, root = doc.querySelector('#analysi
 }
 function renderSafeResults(doc, report, targets = {}) {
   const summary = targets.summary || doc.querySelector('#summary'); summary.replaceChildren();
+  const lang = langFor(doc);
+  // Status one-liner (lexicon) heads the card; the canonical full sentence stays as the authoritative wording.
+  summary.append(makeNode(doc, 'p', lexLabel(`status.${report.status}`, lang), 'status-line'));
   const status = makeNode(doc, 'div', undefined, `status ${report.status}`); status.append(makeNode(doc, 'span'), doc.createTextNode(OVERALL_STATUS_TEXT[report.status])); summary.append(status);
   const coverage = report.analysis?.coverage;
-  const coverageSummary = coverage ? `${coverageFacts(coverage, report.results).length} bounded coverage facts` : 'Automated analysis unavailable';
+  const coverageSummary = coverage ? `${coverageFacts(coverage, report.results).length} bounded coverage facts` : lexLabel('section.analysis_unavailable', lang);
   const metrics = makeNode(doc, 'dl');
-  for (const [label, value] of [['Checks', report.summary.total], ['Result status: no issue reported', report.summary.passed], ['Result status: issue reported', report.summary.failed], ['Duration', `${report.duration_ms} ms`], ['Observation point', OBSERVATION_POINT], ['Coverage', coverageSummary]]) {
-    const item = makeNode(doc, 'div'); item.append(makeNode(doc, 'dt', label), makeNode(doc, 'dd', value)); metrics.append(item);
+  for (const [key, value] of [['metric.checks', report.summary.total], ['metric.passed', report.summary.passed], ['metric.failed', report.summary.failed], ['metric.duration', `${report.duration_ms} ms`], ['metric.observation_point', OBSERVATION_POINT], ['metric.coverage', coverageSummary]]) {
+    const item = makeNode(doc, 'div'); item.append(makeNode(doc, 'dt', lexLabel(key, lang)), makeNode(doc, 'dd', value)); metrics.append(item);
   }
   summary.append(metrics);
   const results = targets.results || doc.querySelector('#results'); results.replaceChildren();
-  const resultStatusText = Object.freeze({
-    healthy: 'This bounded check completed within its observed scope.',
-    degraded: 'This bounded check produced an observation requiring attention.',
-    unreachable: 'This bounded check did not establish endpoint reachability.'
-  });
   report.results.forEach((item, index) => {
     const article = makeNode(doc, 'article', undefined, 'result');
     const content = makeNode(doc, 'div');
-    const resultMeaning = hasGreetingScope(item) ? SERVER_GREETING_SCOPE : resultStatusText[item.status];
-    content.append(makeNode(doc, 'h3', `Check ${index + 1}`), makeNode(doc, 'p', resultMeaning));
-    const outcome = makeNode(doc, 'strong', item.status === 'healthy' ? 'Bounded observation completed' : item.status === 'degraded' ? 'Bounded observation degraded' : 'Bounded observation unreachable', item.status);
+    const resultMeaning = hasGreetingScope(item) ? SERVER_GREETING_SCOPE : lexLabel(`result_status.${item.status}`, lang);
+    content.append(makeNode(doc, 'h3', `${lexLabel('check_prefix', lang)} ${index + 1}`), makeNode(doc, 'p', resultMeaning));
+    const outcome = makeNode(doc, 'strong', lexLabel(`outcome.${item.status}`, lang), item.status);
     article.append(makeNode(doc, 'span', item.kind.toUpperCase(), 'kind'), content, outcome, makeNode(doc, 'time', `${item.latency_ms} ms`));
     results.append(article);
   });

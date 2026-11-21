@@ -11,7 +11,7 @@ import (
 
 // Keep the explicit production inventory aligned with the standalone Web image.
 //
-//go:embed index.html styles.css app.js common-prefix.js state.js topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js
+//go:embed index.html styles.css app.js lexicon.js common-prefix.js state.js topology-model.js topology-renderer.js geo-map.js topology-presentation.js topology-visualizer.js
 var assets embed.FS
 
 type asset struct {

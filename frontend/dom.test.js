@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 import { createApp, LABEL_PAGE, MAX_DOCUMENT_ELEMENTS } from './app.js';
+import { label as lexLabel } from './lexicon.js';
 
 const markup = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const started = '2026-09-01T12:00:00Z';
@@ -1080,7 +1081,7 @@ test('maximum report navigation and budgeted label import stay within the docume
 
   await app.start('diagnostics'); observe();
   const initialElements = document.querySelectorAll('*').length;
-  assert.equal(initialElements, 762, 'maximum valid report baseline including the static Geo target-selector root and one interpretation paragraph');
+  assert.equal(initialElements, 1048, 'maximum valid report baseline including the static Geo target-selector root, per-card visible next-action checklists, the status one-liner, and the folded interpretation guide');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -1503,14 +1504,14 @@ test('analysis renders verdict then findings/evidence/actions/coverage/raw and k
   const root = document.querySelector('#analysis-report');
   assert.deepEqual([...root.querySelectorAll('[data-analysis-section]')].map(node => node.dataset.analysisSection), ['verdict', 'findings', 'coverage', 'raw']);
   assert.doesNotMatch(root.textContent, /analysis-id|<img src=x|alert\(1\)/);
-  assert.deepEqual([...root.querySelectorAll('article [data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause']);
+  assert.deepEqual([...root.querySelectorAll('article [data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause', 'next_action']);
   assert.equal(root.querySelector('img, script, iframe'), null);
   assert.equal(document.activeElement.id, 'analysis-title');
   const toggle = root.querySelector('.finding-toggle');
   toggle.dispatchEvent(new document.defaultView.KeyboardEvent('keydown', { key: ' ', bubbles: true }));
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
   assert.ok(document.getElementById(toggle.getAttribute('aria-controls'))?.isConnected);
-  assert.deepEqual([...root.querySelectorAll('article [data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action']);
+  assert.deepEqual([...root.querySelectorAll('article [data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause', 'next_action', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation']);
   assert.ok(root.querySelector('table caption'));
   assert.ok(root.querySelector('ol input[type="checkbox"] + label'));
 });
@@ -1606,7 +1607,7 @@ test('maximum producer report lazily owns one bounded finding panel and rejects 
   assert.equal(toggles.length, 40);
   assert.equal(root.querySelectorAll('.finding-panel').length, 0);
   assert.equal(root.querySelectorAll('[data-semantic-key="cause"]').length, 40);
-  assert.equal(root.querySelectorAll('[data-semantic-key]:not([data-semantic-key="cause"])').length, 0);
+  assert.equal(root.querySelectorAll('[data-semantic-key]:not([data-semantic-key="cause"])').length, 40, 'next-action checklists stay visible on every card while evidence stays folded until claimed');
   const initialElements = document.querySelectorAll('*').length;
   let peakElements = initialElements;
   assert.ok(initialElements <= 1200, `initial document elements: ${initialElements}`);
@@ -1619,7 +1620,7 @@ test('maximum producer report lazily owns one bounded finding panel and rejects 
     assert.equal(document.activeElement, toggle, `focus ${index}`);
     assert.equal(root.querySelectorAll('.finding-panel').length, 1, `owned panel ${index}`);
     assert.deepEqual([...toggle.closest('article').querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey),
-      ['cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action'], `keys ${index}`);
+      ['cause', 'next_action', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation'], `keys ${index}`);
     if (previousPanel) assert.equal(previousPanel.isConnected, false, `prior panel ${index}`);
     const elementCount = document.querySelectorAll('*').length;
     peakElements = Math.max(peakElements, elementCount);
@@ -1741,7 +1742,7 @@ test('all 23 finding families render and export only six stable local semantic s
   dom.window.HTMLAnchorElement.prototype.click = () => {};
   submit(document); await flush();
 
-  const semanticKeys = ['cause', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation', 'next_action'];
+  const semanticKeys = ['cause', 'next_action', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation'];
   const articles = [...document.querySelectorAll('[data-analysis-section="findings"] article')];
   assert.equal(articles.length, 23);
   for (const article of articles) {
@@ -1838,7 +1839,7 @@ test('producer presentation fixture is consumed exactly across all 33 DOM and Ma
     const articles = [...root.querySelectorAll('[data-analysis-section="findings"] article')];
     assert.equal(articles.length, scenario.findings.length, scenario.name);
     for (const article of articles) {
-      assert.deepEqual([...article.querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause'], scenario.name);
+      assert.deepEqual([...article.querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause', 'next_action'], scenario.name);
       article.querySelector('.finding-toggle').click();
     }
     const visible = document.querySelector('#diagnostics-view').cloneNode(true);
@@ -1863,10 +1864,8 @@ test('producer presentation fixture is consumed exactly across all 33 DOM and Ma
       const finding = scenario.report.analysis.findings[index];
       assert.equal(finding.code, fixture.code, scenario.name);
       assert.equal(articles[index].dataset.presentationKey, fixture.presentation_key, scenario.name);
-      if (articles[index].querySelectorAll('[data-semantic-key]').length === 1) {
-        articles[index].querySelector('.finding-toggle').click();
-      }
-      assert.deepEqual([...articles[index].querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), contract.semantic_keys, scenario.name);
+      if (!articles[index].querySelector('.finding-panel')) articles[index].querySelector('.finding-toggle').click();
+      assert.deepEqual([...articles[index].querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause', 'next_action', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation'], scenario.name);
       assert.equal(FINDING_PRESENTATION_REGISTRY[fixture.presentation_key].actionRelationship, fixture.action_relationship, scenario.name);
       const linked = finding.evidence_ids.map(id => scenario.report.analysis.evidence.find(item => item.id === id));
       assert.deepEqual(linked.map(item => item.signal), fixture.evidence.map(item => item.signal), scenario.name);
@@ -1890,7 +1889,8 @@ test('producer presentation fixture is consumed exactly across all 33 DOM and Ma
     }
     if (scenario.name === 'control.mixed_greeting_healthy_dns_failed') {
       assert.match(status.textContent, /degraded|requires attention/i);
-      assert.match(verdict.textContent, /require attention/i);
+      assert.match(verdict.textContent, new RegExp(lexLabel('verdict.attention', 'ko')));
+      assert.match(root.textContent, /require attention/i);
       assert.equal(visibleText.match(new RegExp(greetingScope, 'g'))?.length, 1);
       assert.equal(document.body.textContent.match(new RegExp(greetingScope, 'g'))?.length, 2);
       assert.equal(markdown.match(new RegExp(greetingScope, 'g'))?.length, 2);
@@ -2760,8 +2760,8 @@ test('healthy result status counts remain independent from warning findings on s
     assert.ok(document.querySelector(`[data-presentation-key="finding.${normalized.analysis.findings[0].code}"]`));
     const markdown = presentReport(document, normalized);
     const metrics = new Map([...document.querySelectorAll('#summary dl > div')].map(item => [item.querySelector('dt').textContent, item.querySelector('dd').textContent]));
-    assert.equal(metrics.get('Result status: no issue reported'), '1');
-    assert.equal(metrics.get('Result status: issue reported'), '0');
+    assert.equal(metrics.get(lexLabel('metric.passed', 'ko')), '1');
+    assert.equal(metrics.get(lexLabel('metric.failed', 'ko')), '0');
     assert.match(markdown, /Result status: no issue reported: 1/);
     assert.match(markdown, /Result status: issue reported: 0/);
     for (const text of [document.querySelector('#analysis-report').textContent, markdown]) {
@@ -2780,8 +2780,8 @@ test('result status counts do not confuse observed HTTP failure with incomplete 
     results: [result({ kind: 'http', address: 'https://example.test', status: 'unreachable', error_code: 'unexpected_status', details: { expected_status: 200, status_code: 503 } })] });
   const markdown = presentReport(document, value);
   const metrics = new Map([...document.querySelectorAll('#summary dl > div')].map(item => [item.querySelector('dt').textContent, item.querySelector('dd').textContent]));
-  assert.equal(metrics.get('Result status: no issue reported'), '0');
-  assert.equal(metrics.get('Result status: issue reported'), '1');
+  assert.equal(metrics.get(lexLabel('metric.passed', 'ko')), '0');
+  assert.equal(metrics.get(lexLabel('metric.failed', 'ko')), '1');
   assert.match(markdown, /Result status: no issue reported: 0/);
   assert.match(markdown, /Result status: issue reported: 1/);
   assert.doesNotMatch(document.querySelector('#summary').textContent + markdown, /[Cc]ompleted observations|incomplete observations/);
@@ -2823,8 +2823,10 @@ test('compact vantage and coverage header precedes analysis and folded raw works
   const summary = document.querySelector('#summary');
   const analysisRoot = document.querySelector('#analysis-report');
   const rawCards = document.querySelector('.secondary-results');
-  assert.match(summary.textContent, /Observation point/);
-  assert.match(summary.textContent, /Coverage/);
+  assert.match(summary.textContent, new RegExp(lexLabel('metric.observation_point', 'ko')));
+  assert.match(summary.textContent, new RegExp(lexLabel('metric.coverage', 'ko')));
+  // The canonical observation-scope sentence survives in the folded guide.
+  assert.match(analysisRoot.textContent, /not this browser or phone/);
   assert.ok(summary.compareDocumentPosition(analysisRoot) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
   assert.ok(analysisRoot.compareDocumentPosition(rawCards) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
   assert.equal(rawCards.open, false);

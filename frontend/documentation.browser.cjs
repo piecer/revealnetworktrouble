@@ -22,7 +22,7 @@ async function metric(page,width,view,errors){
  assert.deepEqual(errors,[],`${width}/${view}: script errors`);
 }
 (async()=>{
- for(const name of ['app.js','state.js','index.html','styles.css'])assert.equal(await(await fetch(`${base}/${name}`)).text(),fs.readFileSync(path.join(root,'frontend',name),'utf8'));
+ for(const name of ['app.js','lexicon.js','state.js','index.html','styles.css'])assert.equal(await(await fetch(`${base}/${name}`)).text(),fs.readFileSync(path.join(root,'frontend',name),'utf8'));
  const browser=await chromium.launch();let version;
  try{
   version=browser.version();

@@ -4,7 +4,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_PATH||'playwright');
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const {pathToFileURL}=require('node:url');
 const out=process.argv[2];assert.ok(out,'an owned evidence directory is required');fs.mkdirSync(out,{recursive:true});
-const assets=['index.html','styles.css','app.js','common-prefix.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
+const assets=['index.html','styles.css','app.js','lexicon.js','common-prefix.js','state.js','topology-model.js','topology-presentation.js','topology-visualizer.js','topology-renderer.js','geo-map.js'];
 const started_at='2026-10-09T00:00:00Z',stats=total=>({total,displayed:total,omitted:0}),routeStats=total=>({...stats(total),complete:total,partial:0});
 function fixture(maximum=false,unlocated=false){
  const nodes=Array.from({length:maximum?500:6},(_,i)=>({id:`n${i}`,kind:'ip',address:`8.1.${Math.floor(i/256)}.${i%256}`,status:'healthy',observations:1,public_ip:true,hop_min:1,hop_max:25,...(unlocated?{}:{geolocation:{latitude:0,longitude:maximum?0:[-40,10,40,-10,-10,-25][i],city:'Controlled city',region:'Controlled region',country:'Controlled country',country_code:'US'}})}));
