@@ -2,7 +2,7 @@
 
 ## 구현 진행 — 2026-11-15
 
-원본 `PLAN.md`를 이 파일로 통합했다. 아래 분석 본문은 작성 당시의 기준과 한계를 보존하며 원격 PR·CI 상태를 현재 시점에 다시 확인했다는 뜻은 아니다.
+원본 `PLAN.md`를 이 파일로 통합했다(원문 분석 기록은 [보관](docs/archive/PLAN-ANALYSIS-2026-11-21.md)). 아래 분석 본문은 작성 당시의 기준과 한계를 보존하며 원격 PR·CI 상태를 현재 시점에 다시 확인했다는 뜻은 아니다.
 
 - 로컬 구현·검증: M-1, DOC-1 + M-2 일부, Android versionName 단일 출처화. 반영된 의존성 갱신의 CI/DOM/이미지 pin 불일치도 보완했다.
 - 별도 후보에서 Docker 없는 `make test`, Compose Go/Web 통합 검사, race, syntax/vet/build와 독립 리뷰 통과. 후보에서만 기본 Compose 설정을 사용했으며 사용자 로컬 설정은 보존했다.
@@ -11,6 +11,13 @@
 - 사용자 승인 범위의 GitHub description/topics 변경은 적용 후 재조회했다. 비공개 신고는 이번 쓰기 전부터 활성화돼 있었고 브랜치 보호는 없는 상태임을 확인했으며 두 설정은 변경하지 않았다. 로컬 Compose 분리와 비Android 후속 검증은 [승인 범위 후속 기록](docs/archive/PHASE0-GO-WEB-FOLLOWUP-2026-11-15.md)에 남긴다.
 - 이름·모듈 경로·주 배포 방향 확정은 사용자 요청으로 나중에 결정한다. Android는 현 작업 범위에서 제외하고 릴리스 발행과 Phase 1~4는 미완료다. 모듈 경로 일치 등의 원래 수용 조건이 남으므로 **Phase 0 전체 완료로 표시하지 않는다.**
 - 실행 범위·원본 로그·보관 경로: [Phase 0 구현·검증 기록](docs/archive/PHASE0-VERIFICATION-2026-11-15.md). 과거 기록 목록은 [보관 안내](docs/archive/README.md)를 따른다.
+
+## Phase 1 진행 — 2026-11-17
+
+- U-1의 추가 단계: `CHECKNETWORK_WEB_UI=on`으로 같은 바이너리·listener에 정적 UI를 내장하고 API 주소를 브라우저의 현재 origin으로 고정했다. 기본값은 `off`로 유지하며 기존 standalone Web/API 두 구성과 로컬 배포 파일은 바꾸지 않았다.
+- S-1: 내장 UI에 CSP·nosniff·frame/referrer 정책과 명시적 production asset 경계를 적용했다. 기존 API의 public 인증·rate limit·JSON 오류와 operational probe는 유지한다. standalone nginx의 보안 정책 전환은 포함하지 않는다.
+- 실제 Go/Web·race·구문/vet/build·Compose 설정 검증과 로컬/실제 Docker 아카이브 추출 바이너리의 Chromium 검증을 실행했다. 독립 리뷰의 차단 finding은 없었으며 기존 standalone 브라우저·비Android CI 정책도 통과했다. 최종 범위와 증거는 [내장 UI 검증 기록](docs/archive/PHASE1-EMBEDDED-UI-2026-11-17.md)에 구분한다.
+- U-1의 기본값 전환·exact-SHA 이중 이미지 릴리스, U-2·U-3·R-2는 남아 있다. Android 제외, 이름·모듈 경로 보류, 운영 재배포·commit/push·태그·릴리스 발행 제외 범위를 유지한다. Phase 1 전체 완료가 아니다.
 
 ## 분석 당시의 로드맵
 
@@ -228,9 +235,13 @@
 목표: 새 사용자가 **명령 1개로 3분 안에 첫 진단 결과**를 보고 이해한다.
 
 - [ ] U-1: 정적 UI 내장 모드 추가(`go:embed`), 기본 API 주소를 동일 출처로, 포트 단일화. 기존 2구성은 유지하며 검증 스크립트를 맞춘 뒤 기본값 전환
+  - [x] 선택적 내장 모드·동일 출처 API·단일 listener 추가, 기존 분리 기본값 유지
+  - [x] Go/Web 회귀·실제 Docker build/offline archive·추출 바이너리 브라우저 검증
+  - [x] 포트 단일화: Compose 기본값을 service 하나로 전환(UI+API 같은 origin), 기존 2구성은 `standalone-web` profile로 유지, 노출/빌드 계약 테스트와 문서 동기화
+  - [ ] exact-SHA 이중 이미지 릴리스 검증 후 기본값 전환(선택적 추가와 구분)
 - [ ] U-2: 결과 화면 재구성(상태 한 줄 → 원인 후보 → 다음 단계, 면책·커버리지 접기), ko/en 사전, 내부 코드 비노출. Android 문구도 같은 코드 매핑 사용
 - [ ] U-3: 증상 프리셋 3~4종(웹사이트 / 메일 / SSH / 느림)
-- [ ] S-1: 내장 UI와 함께 보안 헤더(CSP, nosniff, frame, referrer) 적용
+- [x] S-1: 내장 UI와 함께 보안 헤더(CSP, nosniff, frame, referrer) 적용 — 정적 응답 경계·실제 Chromium 정책 검증. standalone nginx 정책은 기존대로 유지
 - [ ] R-2: `v0.1.0` 발행 — 바이너리 4종 + 체크섬 + GHCR 이미지. README 첫 화면을 "다운로드 → 실행 → 브라우저" 3단계로
 
 **완료 기준:** 사전 빌드 바이너리를 내려받아 실행 후 `http://localhost:<포트>` 하나로 프리셋 진단 가능. 결과 화면의 한국어 비율 100%(원시 JSON 제외). 기존 Go·Web 테스트 및 골든 픽스처 통과.

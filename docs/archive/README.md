@@ -4,6 +4,8 @@
 
 현재 사용법은 [README](../../README.md), 동작 계약은 [API](../API.md)와 [아키텍처](../ARCHITECTURE.md), 남은 작업은 [ROADMAP](../../ROADMAP.md)을 참고하세요.
 
+- [정적 분석 기반 개선 계획 — 2026-11-21](PLAN-ANALYSIS-2026-11-21.md): 문서 기반 분석, 루트 PLAN.md 상한(6개) 준수를 보관 기록으로 이동
+- [Phase 1 선택적 내장 UI·보안 헤더 — 2026-11-17](PHASE1-EMBEDDED-UI-2026-11-17.md)
 - [Phase 0 Go/Web·승인 설정 후속 — 2026-11-15](PHASE0-GO-WEB-FOLLOWUP-2026-11-15.md)
 - [Phase 0 커밋·후속 확인 — 2026-11-15](PHASE0-FOLLOWUP-2026-11-15.md)
 - [새 로드맵 Phase 0 구현·검증 — 2026-11-15](PHASE0-VERIFICATION-2026-11-15.md)
