@@ -1,11 +1,11 @@
 # Gradle wrapper provenance
 
-The checked-in wrapper selects Gradle **9.9.0** and the binary distribution. Its JAR and distribution checksum were independently compared with the official version-specific checksum endpoints. To regenerate the same pinned wrapper:
+The checked-in wrapper selects Gradle **9.9.1** and the binary distribution. Its JAR and distribution checksum were independently compared with the official version-specific checksum endpoints. To regenerate the same pinned wrapper:
 
 ```sh
 # Regenerate the complete wrapper with the independently verified distribution pin.
-gradle wrapper --gradle-version 9.9.0 --distribution-type bin \
-  --gradle-distribution-sha256-sum 0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a
+gradle wrapper --gradle-version 9.9.1 --distribution-type bin \
+  --gradle-distribution-sha256-sum d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228
 ```
 
 The wrapper JAR is intentionally committed. Do not add it to `.gitignore`, replace it from an untrusted build, or update only part of the wrapper. Regenerate all wrapper files together and review their diff when upgrading Gradle.
@@ -15,10 +15,10 @@ The wrapper JAR is intentionally committed. Do not add it to `.gitignore`, repla
 | Artifact | SHA-256 |
 | --- | --- |
 | `gradle-wrapper.jar` | `621008afc4f5d59357fcf06ffa644dd5aade5e091bdc363742710445f73cdaf8` |
-| `gradle-9.9.0-bin.zip` | `0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a` |
+| `gradle-9.9.1-bin.zip` | `d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228` |
 
 The distribution checksum is published at:
-<https://services.gradle.org/distributions/gradle-9.9.0-bin.zip.sha256>
+<https://services.gradle.org/distributions/gradle-9.9.1-bin.zip.sha256>
 
 `gradle-wrapper.properties` pins that value with `distributionSha256Sum`, so Gradle verifies a downloaded distribution before use. The repository-level verifier also pins the checked-in JAR, the distribution checksum, and the expected HTTPS distribution URL:
 

@@ -225,6 +225,7 @@
 - [ ] R-1: 이름·모듈 경로 확정 및 일괄 치환(결정 1) — 사용자 요청으로 보류
 - [x] DOC-1 + M-2(일부): `docs/archive/` 이동, 루트 문서 정리, 문서 계약 테스트 축소(같은 변경 묶음, PR 미생성)
 - [x] R-3: Dependabot 7건 상태·위험 분류 — 모두 기존 병합 확인, #1/#4 회귀 및 #5 Wrapper 검증기 보완. Android 전체 통합 검증은 별도 미완료
+  - [x] R-3 2차 triage (2026-11-21): #10(robolectric 4.18)·#11(jsdom 31.0.1) 병합. #12(Gradle 9.9.1)는 checksum을 Gradle 공식 endpoint에서 독립 확인(9.9.1 bin `d8a18a7a…`=CI 실제값; wrapper jar `621008…`은 버전 독립이라 불변) 후 pin·검증기·test·provenance README 동기화로 content already reflected 처리. #9(Alpine)는 `d9e853e`=3.20.10 → `f59abe6`=3.24.4의 major 라인 Upgrade로 독립 재감사(amd64 layer `881fc932…`, diff-ID `75f1d965…`, history created 2026-11-05, config `3ea06e4c…` 확인) 후 재감사 값 반영으로 처리. pin 기반 identity bump은 같은 변경 묶음의 mirror 변경(검증기·contract test)이 필요 — 단파일 PR은 설계상 통과 불가
 - [x] S-3·R-5: private vulnerability reporting 활성 상태·브랜치 보호 현황 확인, 승인된 Description·Topics 적용 후 재조회. 보안 신고/브랜치 보호 자체의 변경은 없음
 - [x] M-5(일부): 이전 Android 버전 단일 출처화 — 패키징 manifest 검증. 이후 Android 작업·검증은 사용자 요청으로 제외
 
