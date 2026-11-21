@@ -1081,7 +1081,7 @@ test('maximum report navigation and budgeted label import stay within the docume
 
   await app.start('diagnostics'); observe();
   const initialElements = document.querySelectorAll('*').length;
-  assert.equal(initialElements, 1054, 'maximum valid report baseline including the static Geo target-selector root, the symptom-preset group, per-card visible next-action checklists, the status one-liner, and the folded interpretation guide');
+  assert.equal(initialElements, 1014, 'maximum valid report baseline including the static Geo target-selector root, the symptom-preset group, per-card visible next-action checklists shown once, the status one-liner, and the folded interpretation guide');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -1514,6 +1514,10 @@ test('analysis renders verdict then findings/evidence/actions/coverage/raw and k
   assert.deepEqual([...root.querySelectorAll('article [data-semantic-key]')].map(node => node.dataset.semanticKey), ['cause', 'next_action', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation']);
   assert.ok(root.querySelector('table caption'));
   assert.ok(root.querySelector('ol input[type="checkbox"] + label'));
+  const actionCard = toggle.closest('article');
+  const actionBlock = actionCard.querySelector('[data-semantic-key="next_action"]');
+  assert.equal(actionBlock.querySelectorAll('p').length, 0, 'the visible action block is the heading plus the checklist, not a repeated sentence');
+  assert.equal(actionCard.textContent.split(actionBlock.querySelector('label').textContent).length - 1, 1, 'the action sentence appears exactly once on the card');
 });
 
 test('checker execution findings render generic text instead of backend prose', async () => {
@@ -1621,6 +1625,9 @@ test('maximum producer report lazily owns one bounded finding panel and rejects 
     assert.equal(root.querySelectorAll('.finding-panel').length, 1, `owned panel ${index}`);
     assert.deepEqual([...toggle.closest('article').querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey),
       ['cause', 'next_action', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation'], `keys ${index}`);
+    const cardActionBlock = toggle.closest('article').querySelector('[data-semantic-key="next_action"]');
+    assert.equal(cardActionBlock.querySelectorAll('p').length, 0, `card ${index}: the action sentence is shown once, as the checklist label`);
+    assert.equal(toggle.closest('article').textContent.split(cardActionBlock.querySelector('label').textContent).length - 1, 1, `card ${index}: no duplicated action sentence`);
     if (previousPanel) assert.equal(previousPanel.isConnected, false, `prior panel ${index}`);
     const elementCount = document.querySelectorAll('*').length;
     peakElements = Math.max(peakElements, elementCount);

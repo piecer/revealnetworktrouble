@@ -468,7 +468,10 @@ function validatePresentationContract(report) {
 
 function semanticBlock(doc, key, text, tag = 'div') {
   const block = makeNode(doc, tag); block.dataset.semanticKey = key;
-  block.append(makeNode(doc, 'h5', lexLabel(key, langFor(doc))), makeNode(doc, 'p', text));
+  block.append(makeNode(doc, 'h5', lexLabel(key, langFor(doc))));
+  // A null text means the block carries its own content (e.g. the visible
+  // action checklist); rendering the sentence twice would duplicate it.
+  if (text !== null) block.append(makeNode(doc, 'p', text));
   return block;
 }
 
@@ -582,7 +585,7 @@ function renderAnalysisWorkspace(doc, report, root = doc.querySelector('#analysi
       const article = makeNode(doc, 'article', undefined, `finding finding-${severity}`);
       article.dataset.severity = severity;
       article.dataset.presentationKey = presentation.key;
-      const actionBlock = semanticBlock(doc, 'next_action', presentation.action);
+      const actionBlock = semanticBlock(doc, 'next_action', null);
       const list = makeNode(doc, 'ol'); const li = makeNode(doc, 'li'); const checkbox = makeNode(doc, 'input'); checkbox.type = 'checkbox'; checkbox.id = `action-${index}`;
       const actionLabel = makeNode(doc, 'label', presentation.action); actionLabel.htmlFor = checkbox.id; li.append(checkbox, actionLabel); list.append(li); actionBlock.append(list);
       article.append(semanticBlock(doc, 'cause', presentation.cause), actionBlock);
