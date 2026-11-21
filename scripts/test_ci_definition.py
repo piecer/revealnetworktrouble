@@ -95,6 +95,18 @@ class PipelineDefinitionTests(unittest.TestCase):
         self.assertNotIn("audit --omit=dev", body)
         self.assertNotIn("|| true", body)
 
+    def test_android_unit_test_gates_match_the_agp9_task_model(self):
+        # AGP 9 creates unit-test components only for the tested build type by
+        # default, which removes testReleaseUnitTest. The gates intentionally run
+        # and count both debug and release results, so the both-build-types
+        # behavior must be pinned explicitly in gradle.properties.
+        properties = (ROOT / "android/gradle.properties").read_text()
+        self.assertIn("android.onlyEnableUnitTestForTheTestedBuildType=false", properties)
+        for name in ("Makefile", "scripts/ci-inner.sh", "scripts/ci-clean-archive.sh"):
+            body = (ROOT / name).read_text()
+            for task in ("testDebugUnitTest", "testReleaseUnitTest"):
+                self.assertIn(task, body)
+
 
 if __name__ == "__main__":
     unittest.main()
