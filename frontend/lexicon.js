@@ -59,6 +59,13 @@ const KO = Object.freeze({
   direct: '직접 근거',
   corroborated: '교차 검증',
   limited: '한계 근거',
+
+  // U-3 symptom presets: the code is the stable key, only the button label.
+  'symptom_presets': '증상 프리셋',
+  'symptom.website': '웹사이트',
+  'symptom.mail': '메일',
+  'symptom.ssh': 'SSH',
+  'symptom.slow': '느림',
 });
 
 const EN = Object.freeze({
@@ -103,7 +110,22 @@ const EN = Object.freeze({
   direct: 'Direct evidence: this check observed the signal itself.',
   corroborated: 'Corroborated by independent observation.',
   limited: 'Limited evidence: independent corroboration is required before a conclusion.',
+
+  'symptom_presets': 'Symptom presets',
+  'symptom.website': 'Website',
+  'symptom.mail': 'Mail',
+  'symptom.ssh': 'SSH',
+  'symptom.slow': 'Slow',
 });
+
+// U-3: symptom -> contract check kinds. Codes are stable keys; kinds must come
+// from the finding contract's result shapes.
+export const SYMPTOM_PRESETS = Object.freeze([
+  { code: 'website', kinds: Object.freeze(['https', 'http']) },
+  { code: 'mail', kinds: Object.freeze(['smtp', 'imap']) },
+  { code: 'ssh', kinds: Object.freeze(['ssh']) },
+  { code: 'slow', kinds: Object.freeze(['traceroute', 'http']) },
+]);
 
 // Short display labels for finding codes. Keys must cover the finding contract
 // (testdata/finding-contract.json) plus the coverage codes; a missing key is

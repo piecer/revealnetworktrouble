@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 import { createApp, LABEL_PAGE, MAX_DOCUMENT_ELEMENTS } from './app.js';
-import { label as lexLabel } from './lexicon.js';
+import { label as lexLabel, SYMPTOM_PRESETS } from './lexicon.js';
 
 const markup = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const started = '2026-09-01T12:00:00Z';
@@ -1081,7 +1081,7 @@ test('maximum report navigation and budgeted label import stay within the docume
 
   await app.start('diagnostics'); observe();
   const initialElements = document.querySelectorAll('*').length;
-  assert.equal(initialElements, 1048, 'maximum valid report baseline including the static Geo target-selector root, per-card visible next-action checklists, the status one-liner, and the folded interpretation guide');
+  assert.equal(initialElements, 1054, 'maximum valid report baseline including the static Geo target-selector root, the symptom-preset group, per-card visible next-action checklists, the status one-liner, and the folded interpretation guide');
   document.querySelector('[data-view-link="ip-labels"]').click();
   const imported = JSON.stringify(labelRows(500));
   const input = document.querySelector('#ip-label-import');
@@ -3000,6 +3000,25 @@ test('common prefix view re-renders without accumulating stale cards', async () 
   document.querySelector('#common-prefix-input').value = '2001:db8::5\n2001:db8::77';
   submit(); await flush();
   assert.equal(document.querySelectorAll('#common-prefix-result .common-prefix-card').length, 1);
+});
+
+test('symptom presets preselect contract check kinds without running a request', () => {
+  let fetches = 0;
+  const { document } = setup(async () => { fetches++; return response(JSON.stringify(report('preset'))); });
+  const group = document.querySelector('#symptom-presets');
+  assert.equal(group.getAttribute('role'), 'group');
+  assert.match(group.getAttribute('aria-label'), new RegExp(lexLabel('symptom_presets', 'ko')));
+  assert.match(group.textContent, new RegExp(lexLabel('symptom_presets', 'ko')));
+  const buttons = [...group.querySelectorAll('button')];
+  assert.deepEqual(buttons.map(b => b.dataset.symptom), ['website', 'mail', 'ssh', 'slow']);
+  assert.ok(buttons.every(b => b.type === 'button' && b.textContent === lexLabel(`symptom.${b.dataset.symptom}`, 'ko')));
+  buttons.find(b => b.dataset.symptom === 'mail').click();
+  const rows = [...document.querySelectorAll('#targets .target-row')];
+  assert.deepEqual(rows.map(r => r.querySelector('select').value), ['smtp', 'imap']);
+  assert.equal(fetches, 0, 'a preset only fills the form; it must not run a check');
+  // The English dictionary uses the same preset codes.
+  const en = setup(async () => response(JSON.stringify(report('preset-en'))), { url: 'https://ui.example.test/?lang=en#diagnostics' });
+  assert.deepEqual([...en.document.querySelectorAll('#symptom-presets button')].map(b => b.textContent), SYMPTOM_PRESETS.map(p => lexLabel(`symptom.${p.code}`, 'en')));
 });
 
 test('common prefix view stays within the document element budget', async () => {

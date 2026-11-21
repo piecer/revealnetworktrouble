@@ -8,7 +8,7 @@ import { TopologyRenderCoordinator } from './topology-renderer.js';
 import { createViewTransform, resetViewTransform, updateViewTransform, normalizeViewport, routeColor } from './topology-visualizer.js';
 import { commonPrefix, COMMON_MAX_ADDRESSES, COMMON_MAX_INPUT_CHARS } from './common-prefix.js';
 import { canonicalPublicIP } from './topology-presentation.js';
-import { label as lexLabel, findingLabel, resolveLang } from './lexicon.js';
+import { label as lexLabel, findingLabel, resolveLang, SYMPTOM_PRESETS } from './lexicon.js';
 
 // U-2: display strings resolve through the ko/en lexicon; contract codes and
 // canonical English sentences stay intact (dataset values, human export, guide).
@@ -834,6 +834,32 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
     if (addTargetButton.disabled && doc.activeElement === addTargetButton) row.querySelector('.icon-button').focus();
     return true;
   }
+  // U-3: symptom presets preselect the contract check kinds without running a
+  // request. The display name comes from the same code-keyed dictionary.
+  function applySymptomPreset(code) {
+    const preset = SYMPTOM_PRESETS.find(p => p.code === code);
+    if (!preset) return;
+    for (const row of [...targetsEl.children]) { detachTargetRow(row); row.remove(); }
+    for (const kind of preset.kinds) addTarget(kind, '', { announce: false });
+    invalidate('diagnostics');
+    const lang = langFor(doc);
+    announceTargets(`${lexLabel('symptom_presets', lang)}: ${lexLabel('symptom.' + code, lang)}`);
+  }
+  function renderSymptomPresets() {
+    const group = doc.querySelector('#symptom-presets');
+    if (!group) return;
+    const lang = langFor(doc);
+    group.setAttribute('aria-label', lexLabel('symptom_presets', lang));
+    group.append(makeNode(doc, 'span', lexLabel('symptom_presets', lang), 'preset-title'));
+    for (const preset of SYMPTOM_PRESETS) {
+      const button = makeNode(doc, 'button', lexLabel(`symptom.${preset.code}`, lang), 'secondary');
+      button.type = 'button';
+      button.dataset.symptom = preset.code;
+      listen(button, 'click', () => applySymptomPreset(preset.code));
+      group.append(button);
+    }
+  }
+  renderSymptomPresets();
 
   function collectTargets() {
     return [...targetsEl.children].map(row => {

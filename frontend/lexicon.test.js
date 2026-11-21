@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LEXICON, FINDING_LABELS, resolveLang, label, findingLabel } from './lexicon.js';
+import { LEXICON, FINDING_LABELS, SYMPTOM_PRESETS, resolveLang, label, findingLabel } from './lexicon.js';
 
 const contract = JSON.parse(readFileSync(new URL('../testdata/finding-contract.json', import.meta.url), 'utf8'));
 const codes = contract.findings.map(finding => finding.code);
@@ -45,6 +45,17 @@ test('resolveLang defaults to ko and accepts only known languages', () => {
   assert.equal(resolveLang('lang=en'), 'en');
   assert.equal(resolveLang('lang=fr'), 'ko');
   assert.equal(resolveLang('?lang=en&x=1'), 'en');
+});
+
+test('symptom presets keep codes as keys and select only contract check kinds', () => {
+  assert.deepEqual(SYMPTOM_PRESETS.map(preset => preset.code), ['website', 'mail', 'ssh', 'slow']);
+  const kinds = new Set(contract.result_shapes.flatMap(shape => shape.kinds));
+  for (const preset of SYMPTOM_PRESETS) {
+    assert.ok(preset.kinds.length >= 1, `preset ${preset.code} selects at least one check`);
+    assert.ok(preset.kinds.every(kind => kinds.has(kind)), `preset ${preset.code} uses contract kinds only`);
+    assert.notEqual(label(`symptom.${preset.code}`, 'ko'), preset.code);
+    assert.notEqual(label(`symptom.${preset.code}`, 'en'), preset.code);
+  }
 });
 
 test('unknown codes fall back to the code itself instead of throwing', () => {
