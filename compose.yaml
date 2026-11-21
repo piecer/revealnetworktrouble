@@ -1,4 +1,6 @@
 services:
+  # Single-port serving (default): the API listener also serves the embedded Web
+  # workspace, so UI and API come from one origin on one published port.
   api:
     build:
       context: .
@@ -7,12 +9,14 @@ services:
         REVISION: ${CHECKNETWORK_REVISION:-0000000000000000000000000000000000000000}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
     environment:
-      CHECKNETWORK_ALLOWED_ORIGINS: http://localhost:3000
+      # Same-origin serving: the allowlist only needs the serving origin itself.
+      CHECKNETWORK_ALLOWED_ORIGINS: ${CHECKNETWORK_ALLOWED_ORIGINS:-http://localhost:8090,http://127.0.0.1:8090}
       CHECKNETWORK_ADDR: :8080
       CHECKNETWORK_MODE: ${CHECKNETWORK_MODE:-trusted-local}
       # Containerized deployments bind :8080 by design; the explicit "yes" declares that host-side
       # exposure stays controlled by loopback-only port publishing (see docs/OPERATIONS.md).
       CHECKNETWORK_EXPOSE_TRUSTED_LOCAL: ${CHECKNETWORK_EXPOSE_TRUSTED_LOCAL:-yes}
+      CHECKNETWORK_WEB_UI: ${CHECKNETWORK_WEB_UI:-on}
       CHECKNETWORK_API_KEY: ${CHECKNETWORK_API_KEY:-}
       CHECKNETWORK_RATE_LIMIT_PER_MINUTE: ${CHECKNETWORK_RATE_LIMIT_PER_MINUTE:-}
     ports:
@@ -28,6 +32,9 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  # Two-port layout, kept as an explicit opt-in: static nginx frontend plus the API.
+  # Enable with COMPOSE_PROFILES=standalone-web. The single-port default above does not start it.
   web:
     build:
       context: ./frontend
@@ -36,8 +43,9 @@ services:
         VERSION: ${CHECKNETWORK_VERSION:-0.1.0-dev}
         REVISION: ${CHECKNETWORK_REVISION:-0000000000000000000000000000000000000000}
         SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
+    profiles: ["standalone-web"]
     ports:
-      - "127.0.0.1:3000:80"
+      - "127.0.0.1:${CHECKNETWORK_WEB_PORT:-3000}:80"
     restart: unless-stopped
     cpus: 0.25
     mem_limit: 64m

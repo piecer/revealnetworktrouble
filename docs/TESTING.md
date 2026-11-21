@@ -45,6 +45,12 @@ Browser wrapper는 120초 deadline을 넘으면 SIGTERM 전 timeout failure를 �
 
 `PLAYWRIGHT_PATH=/path/to/playwright make web-test-cors-browser`는 CORS 부분만 실행한다. Go가 소유한 ephemeral loopback UI/API origins에서 interception 없이 native preflight/fetch와 production Web parser를 실행한다. 실제 429/503의 `Retry-After` 노출·`retryAt` 계산, 별도 거부 Origin 차단을 검사한다. 이것도 외부 배포나 프록시의 CORS 설정 검증을 대신하지 않는다.
 
+### 선택적 내장 UI 실제 바이너리 gate
+
+`PLAYWRIGHT_PATH=/path/to/playwright make web-test-embedded-browser`는 바이너리를 빌드하고 별도 작업 디렉터리에서 ephemeral loopback listener로 시작한다. Python/static 서버 없이 동일 출처로 실제 Go API와 소유한 TCP fixture를 검사하고, public 모드의 UI 공개·API 401/인증 후 200을 확인한다. 1440/375 px의 topology 2D/3D와 Geo는 producer fixture replay로 명시한다. 정상 화면 동작의 CSP 위반/스크립트 오류 없음, 같은 origin 요청, 고의 inline script·외부 origin fetch 차단도 검사한다. 실제 외부 경로 측정·운영 HTTPS·다른 기기의 DNS/CA 검증은 아니다.
+
+`BROWSER_OUTPUT_DIR` 아래 고유 디렉터리에 JSON receipt·로그·스크린샷을 보관한다. 대상 바이너리 외 Web 파일을 런타임 작업 디렉터리에 복사하지 않고, 소유한 API process만 종료해 정상 exit를 확인한다. Playwright/Chromium은 선택적 외부 의존성이고 기본 Go/Web suite에는 요구하지 않는다. 기본 Go suite에는 내장 파일 허용 목록·MIME/HEAD/no-store·보안 헤더·API/probe pass-through와 실제 시작 경로의 on/off/public 회귀가 포함된다.
+
 ### 배포 설정과 static freshness
 
 `make web-test-deployment`는 Docker Compose CLI의 실제 config resolution, post-COPY Dockerfile recipe, jsdom `createApp` request path, malformed port rejection, canonical nine-asset bytes/manifest/mtime 및 harness ownership tests를 실행한다. Docker daemon이나 image build는 사용하지 않는다. Deployment JS tests는 기본 Web suite에도 수집되지만 Compose CLI가 없으면 config-resolution case만 skip한다. 명시적 deployment target에서는 CLI 부재가 실패다. Ownership Python tests는 Go canonical suite에서도 실행한다.

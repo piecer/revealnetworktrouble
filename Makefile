@@ -55,7 +55,7 @@ REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
 	android-assemble android-check ci-inner ci ci-clean-archive release verify-release \
 	verify-release-real verify-api-archive-real verify-web-archive-real verify-archives-real
 
-.PHONY: web-test-deployment web-test-deployment-live
+.PHONY: web-test-deployment web-test-deployment-live web-test-embedded-browser
 
 test: android-env-bootstrap-test ci-policy
 	go test ./...
@@ -77,6 +77,10 @@ web-test-syntax:
 web-test-browser:
 	node frontend/browser-gates.cjs $(if $(BROWSER_OUTPUT_DIR),"$(BROWSER_OUTPUT_DIR)")
 	$(MAKE) web-test-cors-browser
+
+# Optional real-binary acceptance; PLAYWRIGHT_PATH can select a matching external installation.
+web-test-embedded-browser: build
+	node frontend/embedded-ui.browser.cjs "$(abspath bin/checknetwork-api)" $(if $(BROWSER_OUTPUT_DIR),"$(BROWSER_OUTPUT_DIR)")
 
 web-test-cors-browser:
 	CHECKNETWORK_RUN_BROWSER_TESTS=1 go test ./backend/api -run '^TestCORSRetryAfterBrowser$$' -count=1 -v

@@ -10,6 +10,17 @@ Checks run on the API server, not inside the browser or Android device. A remote
 
 The source VERSION is `0.1.0`; this is not a claim that a release/tag has been published. Hosted CI enforcement, exact-SHA release verification and physical-platform acceptance remain separate gates. The project is licensed under [Apache-2.0](LICENSE); publishing a release still requires separate approval.
 
+## Optional single-process Web + API
+
+```sh
+# The binary default is off; the default Compose stack runs the single-port embedded UI.
+CHECKNETWORK_WEB_UI=on GOTOOLCHAIN=go1.26.11 go run ./cmd/checknetwork-api
+```
+
+Open `http://127.0.0.1:8080`. No Python Web server or manual API URL is needed: the embedded UI uses the browser page origin, with a read-only API address. After `make build`, run `CHECKNETWORK_WEB_UI=on ./bin/checknetwork-api` without separate Web files. Run it on the affected computer to measure that computer's network; measurements still originate from the API process.
+
+`CHECKNETWORK_ADDR` changes the shared listener. Traceroute still requires a supported external executable; if unavailable, the UI and other checks remain usable but `/readyz` stays 503. The binary default is `CHECKNETWORK_WEB_UI=off`; the default Compose stack turns it on for single-port serving, and published release provenance is validated separately. Use the standalone Web profile below when a separate API origin is required.
+
 ## Docker Compose quick start
 
 Requires Docker daemon, Compose and access to the pinned image sources. Default host ports are loopback-only.
@@ -21,7 +32,7 @@ curl --fail http://127.0.0.1:8090/readyz
 curl --fail http://127.0.0.1:8090/api/v1/health
 ```
 
-Browser: `http://localhost:3000`. API: `http://localhost:8090`. Container API port: 8080. `CHECKNETWORK_API_PORT=18090 docker compose up --build --wait` changes both the host publication and the Web build-time API default, so rebuild the Web image when changing it.
+Browser and API share one origin: `http://localhost:8090`. Container API port: 8080. The two-port layout is opt-in with `COMPOSE_PROFILES=standalone-web` (Web `3000`, API `8090`); `CHECKNETWORK_API_PORT=18090` changes the host publication and the standalone Web build-time API default together, so rebuild the Web image when changing it.
 
 `/livez` checks process liveness; `/readyz` includes startup traceroute capability and draining; `/api/v1/health` reports build identity. A successful health response does not prove readiness or release provenance.
 

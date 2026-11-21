@@ -265,7 +265,9 @@ func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) 
 
 	resolve := func(overrides ...string) composeConfig {
 		t.Helper()
-		command := exec.Command("docker", "compose", "config", "--format", "json")
+		// Web is opt-in under the standalone-web profile; resolve it explicitly so the
+		// shared identity contract still covers both services.
+		command := exec.Command("docker", "compose", "--profile", "standalone-web", "config", "--format", "json")
 		command.Dir = filepath.Join("..", "..")
 		for _, entry := range os.Environ() {
 			if strings.HasPrefix(entry, "CHECKNETWORK_VERSION=") ||

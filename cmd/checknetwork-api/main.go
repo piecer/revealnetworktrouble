@@ -16,6 +16,7 @@ import (
 
 	"github.com/network-troubleshooting-company/checknetwork/backend/api"
 	"github.com/network-troubleshooting-company/checknetwork/backend/diagnostic"
+	"github.com/network-troubleshooting-company/checknetwork/frontend"
 )
 
 var (
@@ -42,6 +43,7 @@ type runtimeConfig struct {
 	addr                string
 	exposedTrustedLocal bool
 	geoIPURL            string
+	webUI               bool
 	server              api.ServerConfig
 	maxConcurrentChecks int
 	maxConnections      int
@@ -83,6 +85,9 @@ func runMain() int {
 	if err != nil {
 		logger.Error("invalid server configuration", "error", err)
 		return 1
+	}
+	if config.webUI {
+		businessHandler = frontend.WithUI(businessHandler)
 	}
 	handler := newOperationalHandler(operational, businessHandler)
 	if config.exposedTrustedLocal {
@@ -206,6 +211,10 @@ func shutdownService(parent context.Context, timeout time.Duration, operational 
 }
 
 func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
+	webUI := envFrom(lookup, "CHECKNETWORK_WEB_UI", "off")
+	if webUI != "off" && webUI != "on" {
+		return runtimeConfig{}, fmt.Errorf("CHECKNETWORK_WEB_UI must be off or on")
+	}
 	mode := api.DeploymentMode(envFrom(lookup, "CHECKNETWORK_MODE", string(api.ModeTrustedLocal)))
 	if mode != api.ModeTrustedLocal && mode != api.ModePublic {
 		return runtimeConfig{}, fmt.Errorf("CHECKNETWORK_MODE must be trusted-local or public")
@@ -251,6 +260,7 @@ func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
 	config := runtimeConfig{
 		addr:                envFrom(lookup, "CHECKNETWORK_ADDR", "127.0.0.1:8080"),
 		geoIPURL:            envFrom(lookup, "CHECKNETWORK_GEOIP_URL", "https://ipwho.is/"),
+		webUI:               webUI == "on",
 		maxConcurrentChecks: maxConcurrentChecks,
 		maxConnections:      maxConnections,
 		server: api.ServerConfig{

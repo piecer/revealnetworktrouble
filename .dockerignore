@@ -2,7 +2,18 @@
 .gitignore
 
 bin
-frontend
+frontend/*
+!frontend/embed.go
+!frontend/index.html
+!frontend/styles.css
+!frontend/app.js
+!frontend/common-prefix.js
+!frontend/state.js
+!frontend/topology-model.js
+!frontend/topology-renderer.js
+!frontend/geo-map.js
+!frontend/topology-presentation.js
+!frontend/topology-visualizer.js
 android
 scripts
 README.md

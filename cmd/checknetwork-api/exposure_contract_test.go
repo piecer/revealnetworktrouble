@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -141,36 +142,76 @@ print(json.dumps([c for c in state["calls"] if c[:2] == ["container", "create"]]
 
 func TestComposeResolvedExposureBoundary(t *testing.T) {
 	requireComposeIntegration(t)
+	type resolvedService struct {
+		Environment map[string]string `json:"environment"`
+		Ports       []struct {
+			HostIP string `json:"host_ip"`
+		} `json:"ports"`
+	}
+
 	// Only resolve configuration. Never start or replace a user's Compose stack.
-	command := exec.Command("docker", "compose", "-f", "compose.yaml", "config", "--format", "json")
-	command.Dir = "../.."
-	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "CHECKNETWORK_") && !strings.HasPrefix(entry, "COMPOSE_") {
-			command.Env = append(command.Env, entry)
+	resolve := func(profiles ...string) map[string]resolvedService {
+		t.Helper()
+		args := []string{"compose", "-f", "compose.yaml"}
+		for _, profile := range profiles {
+			args = append(args, "--profile", profile)
 		}
+		args = append(args, "config", "--format", "json")
+		command := exec.Command("docker", args...)
+		command.Dir = "../.."
+		for _, entry := range os.Environ() {
+			if !strings.HasPrefix(entry, "CHECKNETWORK_") && !strings.HasPrefix(entry, "COMPOSE_") {
+				command.Env = append(command.Env, entry)
+			}
+		}
+		command.Env = append(command.Env, "COMPOSE_DISABLE_ENV_FILE=1")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("compose config: %v\n%s", err, output)
+		}
+		var resolved struct {
+			Services map[string]resolvedService `json:"services"`
+		}
+		if err := json.Unmarshal(output, &resolved); err != nil {
+			t.Fatal(err)
+		}
+		return resolved.Services
 	}
-	command.Env = append(command.Env, "COMPOSE_DISABLE_ENV_FILE=1")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("compose config: %v\n%s", err, output)
+
+	serviceNames := func(services map[string]resolvedService) []string {
+		names := make([]string, 0, len(services))
+		for name := range services {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names
 	}
-	var resolved struct {
-		Services map[string]struct {
-			Environment map[string]string `json:"environment"`
-			Ports       []struct {
-				HostIP string `json:"host_ip"`
-			} `json:"ports"`
-		} `json:"services"`
+
+	// Single-port serving is the default: one service publishes exactly one loopback port and
+	// serves both the Web workspace and the API from that same origin.
+	defaults := resolve()
+	if len(defaults) != 1 {
+		t.Fatalf("default Compose must resolve to one service for single-port serving, got %v", serviceNames(defaults))
 	}
-	if err := json.Unmarshal(output, &resolved); err != nil {
-		t.Fatal(err)
+	api := defaults["api"]
+	if len(api.Ports) != 1 || api.Ports[0].HostIP != "127.0.0.1" {
+		t.Fatalf("single-port default must retain one loopback-only host publication: %+v", api.Ports)
 	}
-	config, err := loadRuntimeConfig(testEnvironment(resolved.Services["api"].Environment))
+	config, err := loadRuntimeConfig(testEnvironment(api.Environment))
 	if err != nil || config.addr != ":8080" || !config.exposedTrustedLocal {
 		t.Fatalf("default Compose must acknowledge its container bind: %v", err)
 	}
+	if !config.webUI {
+		t.Fatalf("single-port default must serve the embedded Web workspace on the API listener: %v", api.Environment)
+	}
+
+	// The two-port layout remains available as an explicit profile with its own loopback publication.
+	profiled := resolve("standalone-web")
+	if len(profiled) != 2 {
+		t.Fatalf("standalone-web profile must add the static Web service, got %v", serviceNames(profiled))
+	}
 	for _, name := range []string{"api", "web"} {
-		ports := resolved.Services[name].Ports
+		ports := profiled[name].Ports
 		if len(ports) != 1 || ports[0].HostIP != "127.0.0.1" {
 			t.Errorf("%s must retain one loopback-only host publication: %+v", name, ports)
 		}

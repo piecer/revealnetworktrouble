@@ -13,11 +13,14 @@ const assets = ['app.js', 'common-prefix.js', 'geo-map.js', 'index.html', 'state
 const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
 const instructions = dockerfile.replace(/\\\r?\n/g, '').split(/\r?\n/);
 
-function resolveCompose(port) {
+function resolveCompose(port, profile) {
   // Never discover a caller .env or inherit credentials/Compose overlays.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CHECKNETWORK_|COMPOSE_|SOURCE_DATE_EPOCH$)/.test(key)));
   if (port !== undefined) env.CHECKNETWORK_API_PORT = port;
-  const result = spawnSync('docker', ['compose', '--env-file', '/dev/null', '-f', join(root, 'compose.yaml'), 'config', '--format', 'json'], { env, encoding: 'utf8' });
+  const args = ['compose', '--env-file', '/dev/null', '-f', join(root, 'compose.yaml')];
+  if (profile) args.push('--profile', profile);
+  args.push('config', '--format', 'json');
+  const result = spawnSync('docker', args, { env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout).services;
 }
@@ -150,11 +153,42 @@ test('stable nginx URLs ignore both validators and forbid storage', async () => 
 });
 
 const composeAvailable = spawnSync('docker', ['compose', 'version'], { encoding: 'utf8', timeout: 10000 }).status === 0;
+const composeSkip = !composeAvailable && process.env.CHECKNETWORK_RUN_COMPOSE_TESTS !== '1';
+test('single-port default publishes one loopback port and serves the workspace from the API listener', {
+  skip: composeSkip
+}, async () => {
+  const services = resolveCompose();
+  assert.deepEqual(Object.keys(services), ['api'], 'the default must start only the single-port service');
+  const api = services.api;
+  assert.equal(api.environment.CHECKNETWORK_WEB_UI, 'on', 'single-port serving needs the embedded workspace on the API listener');
+  assert.equal(api.ports.length, 1);
+  assert.equal(api.ports[0].host_ip, '127.0.0.1');
+  assert.equal(api.ports[0].target, 8080);
+  assert.equal(api.ports[0].published, '8090');
+  for (const [name, value] of [
+    ['CHECKNETWORK_ALLOWED_ORIGINS', 'http://localhost:8090,http://127.0.0.1:8090'],
+    ['CHECKNETWORK_MODE', 'trusted-local'],
+    ['CHECKNETWORK_EXPOSE_TRUSTED_LOCAL', 'yes'],
+  ]) {
+    assert.equal(api.environment[name], value, `resolved ${name}`);
+  }
+  // The two-port layout stays an explicit opt-in with its own loopback publication.
+  const profiled = resolveCompose('18090', 'standalone-web');
+  assert.deepEqual(Object.keys(profiled).sort(), ['api', 'web']);
+  assert.equal(profiled.api.ports[0].published, '18090');
+  assert.equal(profiled.web.ports[0].host_ip, '127.0.0.1');
+  assert.equal(profiled.web.ports[0].target, 80);
+  assert.equal(profiled.web.ports[0].published, '3000');
+  // The embedded HTML rewrite keeps the app on the same origin it was served from.
+  const embed = await readFile(new URL('./embed.go', import.meta.url), 'utf8');
+  assert.match(embed, /data-api-same-origin="true"/);
+});
+
 test('Compose default and override flow through the actual HTML recipe to the app request', {
-  skip: !composeAvailable && process.env.CHECKNETWORK_RUN_COMPOSE_TESTS !== '1'
+  skip: composeSkip
 }, async () => {
   for (const [override, expected] of [[undefined, '8090'], ['', '8090'], ['18090', '18090']]) {
-    const services = resolveCompose(override);
+    const services = resolveCompose(override, 'standalone-web');
     const published = services.api.ports.find(port => port.target === 8080);
     assert.equal(published.host_ip, '127.0.0.1');
     assert.equal(published.published, expected);

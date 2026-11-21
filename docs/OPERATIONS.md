@@ -4,6 +4,7 @@
 
 - `CHECKNETWORK_ADDR`: API listen 주소, 기본값 `127.0.0.1:8080`
 - `CHECKNETWORK_MODE`: `trusted-local`(기본) 또는 `public`
+- `CHECKNETWORK_WEB_UI`: `off`(기본) 또는 `on`. `on`이면 같은 listener에서 내장 Web UI와 기존 API를 함께 제공한다. 다른 값은 시작을 거부한다.
 - `CHECKNETWORK_EXPOSE_TRUSTED_LOCAL`: trusted-local mode가 loopback 밖 bind를 허용하는 명시적 승인. 값은 정확히 `yes`만 허용한다(기본값 없음, Compose 기본은 yes). 승인 없이는 비loopback bind 시작을 거부한다.
 - `CHECKNETWORK_MAX_CONNECTIONS`: handler 생성 전 active accepted connection 상한, 기본 128, 허용 범위 1~256
 - `CHECKNETWORK_MAX_CONCURRENT_REPORTS`: 동시에 실행할 report 상한, 기본 4, 허용 범위 1~16. 17 이상은 `loadRuntimeConfig` 단계에서 시작을 거부한다.
@@ -43,6 +44,16 @@ Geo 상세정보는 같은 공급자 응답의 추가 필드를 보존한다. �
 현재 API는 `Forwarded`, `X-Forwarded-For`, `X-Real-IP`를 인증이나 rate-limit 식별자로 신뢰하지 않는다. rate limit은 실제 연결의 `RemoteAddr` IP를 사용하므로 하나의 reverse proxy 뒤 사용자들은 backend quota를 공유한다. 프록시는 외부에서 받은 forwarding 헤더를 정리하고 사용자별 제한을 별도로 적용해야 한다. 프록시의 TLS 종료는 backend `public` 인증·SSRF 정책을 끄는 이유가 되지 않는다. CORS 허용 Origin이나 헤더는 인증을 대신하지 않는다.
 
 릴리스 검증용 smoke 컨테이너도 `CHECKNETWORK_MODE=trusted-local`과 승인 `yes`를 실행 인자로 전달한다. 이 예외는 검증용 격리 네트워크에 한정하며, 이미지 기본 환경에 승인 값을 bake하지 않는다.
+
+## 선택적 내장 Web UI
+
+`CHECKNETWORK_WEB_UI=on`으로 바이너리의 `go:embed` UI를 활성화한다. `/` 또는 `/index.html`과 명시된 production asset만 GET/HEAD로 제공하며 테스트·소스·디렉터리 목록·임의 SPA 경로는 공개하지 않는다. `/api/v1/*`와 operational probe는 기존 인증·rate limit·JSON error·readiness 경계를 유지한다. `public`에서도 UI 파일은 credential 없이 로드하지만 API 요청에는 기존 Bearer 인증이 필요하다.
+
+API 주소는 서버 Host/forwarded header를 HTML에 삽입하지 않고 브라우저의 `location.origin`으로 정한다. 내장 화면의 주소 필드는 읽기 전용이고 CSP `connect-src 'self'`로 다른 API origin에 연결할 수 없다. 별도 API 주소가 필요한 경우 기존 standalone Web을 사용한다. 역방향 프록시는 UI와 API를 같은 도메인의 root에 함께 전달해야 한다. URL prefix 하위 배포나 현재 분리 도메인 ingress의 자동 전환을 지원·수행했다는 뜻은 아니다.
+
+내장 정적 응답(GET/HEAD와 405)은 `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`와 CSP를 보낸다. script/style element는 자체 origin만, inline script·frame·object·base·form 제출은 금지한다. 경로 색/툴팁 위치와 정적 범례의 style 속성만 `style-src-attr 'unsafe-inline'` 예외로 허용한다. 이것은 인증이나 SSRF 방어의 대체가 아니며 기존 standalone nginx에 같은 정책을 자동 적용하지 않는다.
+
+기본 `off`와 기존 두 이미지 Compose/release 구성은 유지한다. API Docker builder에는 내장에 필요한 production 파일만 추가하며 Web 이미지의 asset bytes·manifest 계약은 바꾸지 않는다. 기본값 전환과 exact-SHA 재현 릴리스·운영 재배포는 별도 검증/승인 항목이다.
 
 ## 실행 및 자원 envelope
 
@@ -125,9 +136,9 @@ GOOS=windows GOARCH=amd64 go build -o bin/checknetwork-windows-amd64.exe ./cmd/c
 docker compose up --build
 ```
 
-Compose API는 host의 `127.0.0.1:8090`, 웹은 `localhost:3000`에서 접근한다. 컨테이너 API는 `trusted-local`로 실행되며 host publish도 loopback으로 제한한다. 외부 공개 시에는 `public` 모드와 TLS reverse proxy를 사용하고 proxy 계층에도 인증/rate limit을 둔다. 기본 Compose build args의 exact 개발 sentinel은 `CHECKNETWORK_VERSION=0.1.0-dev`, `CHECKNETWORK_REVISION=0000000000000000000000000000000000000000`, `SOURCE_DATE_EPOCH=0`이며 API/Web에 동일하게 전달된다. zero revision은 개발 전용 sentinel이고 실제 commit 또는 release provenance가 아니므로 release artifact로 배포하지 않는다. 명시적인 `CHECKNETWORK_VERSION`, `CHECKNETWORK_REVISION`, `SOURCE_DATE_EPOCH` override는 Compose가 그대로 두 service에 전달한다.
+Compose 기본 구성은 service 하나가 host의 `127.0.0.1:8090` 포트에서 내장 Web UI와 API를 같은 origin으로 제공한다. 컨테이너 API는 `trusted-local`로 실행되며 host publish도 loopback으로 제한한다. 화면과 API를 분리하는 standalone Web 구성은 `COMPOSE_PROFILES=standalone-web`로 선택한다(Web `127.0.0.1:3000`, API `127.0.0.1:8090`). 외부 공개 시에는 `public` 모드와 TLS reverse proxy를 사용하고 proxy 계층에도 인증/rate limit을 둔다. 기본 Compose build args의 exact 개발 sentinel은 `CHECKNETWORK_VERSION=0.1.0-dev`, `CHECKNETWORK_REVISION=0000000000000000000000000000000000000000`, `SOURCE_DATE_EPOCH=0`이며 API/Web에 동일하게 전달된다. zero revision은 개발 전용 sentinel이고 실제 commit 또는 release provenance가 아니므로 release artifact로 배포하지 않는다. 명시적인 `CHECKNETWORK_VERSION`, `CHECKNETWORK_REVISION`, `SOURCE_DATE_EPOCH` override는 Compose가 그대로 두 service에 전달한다.
 
-API image는 non-root `65532:65532`로 실행하고 Web image는 nginx `worker_processes 2`를 사용한다. 두 service 모두 exec-form healthcheck가 있으며 Web은 API `/readyz` health를 기다린다. 운영 smoke는 `docker compose config`, `docker compose build api web`, `docker compose up -d --wait`, API `/readyz`와 Web URL 확인, `docker compose down` 순서로 수행한다.
+API image는 non-root `65532:65532`로 실행하고 Web image는 nginx `worker_processes 2`를 사용한다. 두 service 모두 exec-form healthcheck가 있으며 Web은 API `/readyz` health를 기다린다. 운영 smoke는 `docker compose config`, `docker compose build api web`, `docker compose up -d --wait`, API `/readyz`와 Web URL 확인, `docker compose down` 순서로 수행한다. 단일 포트 구성에서는 같은 port의 `/`과 `/readyz`를 함께 확인한다.
 
 ### 로컬 Compose 설정 보존
 

@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 첫 사용 경험 — 선택적 내장 UI
+
+- `CHECKNETWORK_WEB_UI=on`으로 같은 바이너리·listener에서 정적 Web UI와 API를 제공한다. 기존 API-only 기본값과 standalone Web/API 두 이미지는 유지한다.
+- 내장 UI는 API 주소 입력 없이 현재 페이지 origin으로 연결하며 CSP·nosniff·frame/referrer 정책과 명시적인 production asset 경계를 적용한다. API 인증·readiness 계약은 유지한다.
+- 실제 시작 경로와 분리 배포 보존 회귀, 선택적 실제 바이너리 Chromium gate를 추가한다. 공개 릴리스 발행·Android·운영 배포는 이번 추가에 포함하지 않는다.
+
+### 배포 — 단일 포트 serving 기본값
+
+- Compose 기본 구성을 service 하나로 전환한다: 같은 listener에서 Web workspace와 API를 같은 origin으로 제공하고 host loopback publish를 하나의 포트(기본 `127.0.0.1:8090`)로만 노출한다.
+- 화면과 API를 분리하는 두 포트 구성(Web `3000`, API `8090`)은 `standalone-web` profile로 선택할 때만 시작된다.
+- Compose 노출 경계와 build identity 계약 테스트를 단일 포트 기본값과 profile 경로 양쪽에 대해 회귀 검사로 갱신했다. binary 기본값 `off`와 릴리스 검증 경계는 유지한다.
+
 ### Go 표준 라이브러리 보안 갱신 — 2026-11-11
 
 - 실제 source/추출 binary 검사에서 GO-2026-6859가 검출된 Go 1.26.10 후보를 제외하고 CI·Docker builder·offline validator·fixture를 Go 1.26.11로 함께 갱신한다.

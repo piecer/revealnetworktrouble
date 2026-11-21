@@ -714,6 +714,11 @@ export function createApp({ document: doc, window: win, fetchImpl = win.fetch?.b
   const labelInstance = {};
   const targetFilterInstance = {};
   const lifecycle = new win.AbortController();
+  // Only the embedded server opts into same-origin; standalone deployments keep their configured base.
+  const apiAddress = doc.querySelector('#api-base-url');
+  if (apiAddress.dataset.apiSameOrigin === 'true' && ['http:', 'https:'].includes(win.location.protocol)) {
+    apiAddress.value = win.location.origin;
+  }
   const listeners = new Set();
   const listen = (target, type, handler, options) => {
     target.addEventListener(type, handler, options);

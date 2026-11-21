@@ -9,11 +9,13 @@
 | 프로세스 진입점 | `cmd/checknetwork-api` | 환경 검증, traceroute capability probe, listener admission, readiness/drain/shutdown |
 | HTTP 경계 | `backend/api` | route/auth/rate, bounded decode·admission·serialization, CORS, telemetry |
 | 진단 엔진 | `backend/diagnostic` | Checker 실행·deadline·결과·deterministic Analyze·compact topology |
-| Web | `frontend` | 정적 ESM 앱, strict response parser, request ownership, Canvas·semantic inspector |
+| Web | `frontend` | 정적 ESM 앱, strict response parser, request ownership, Canvas·semantic inspector; 선택적 `go:embed` HTTP adapter |
 | Android | `android/app` | Java Activity, core schema, network transport, state/session, private-cache 공유 |
 | 운영·검증 | `scripts`, `Makefile`, `.github` | 로컬/hosted 공통 gate, archive 검증, 실패 신호·증거 보존 |
 
 별도 `ReportService` 타입이나 `internal/api` 패키지는 없다. 현재 HTTP `api.Server`가 `diagnostic.Runner`를 직접 호출한다. `ServiceChecker`는 SSH/메일 계열 server-first greeting 검사이며 report orchestration 서비스가 아니다. `IPContextService`는 선택한 IP의 on-demand 부가 정보를 다루는 별도 경계다.
+
+`CHECKNETWORK_WEB_UI=on`일 때만 `frontend.WithUI`가 기존 API 앞에서 명시된 정적 파일을 제공한다. 바이너리 기본값은 API-only(`off`)이고 Compose 기본 구성은 `on`으로 지정해 service 하나가 같은 listener에서 Web workspace와 API를 같은 origin으로 제공한다. standalone Web/API 두 이미지는 유지되며 `standalone-web` profile로 선택한다. 내장 UI는 현재 페이지 origin으로 API를 호출하고 CSP로 동일 출처 fetch를 제한한다. UI 공개와 API public 인증은 별개이며 operational handler가 가장 바깥에 남는다. 자세한 정적 경계는 [내장 UI 운영](OPERATIONS.md#선택적-내장-web-ui)을 따른다.
 
 ## 2. 진단 데이터 흐름
 

@@ -59,6 +59,35 @@ function setup(fetchImpl = async () => response(JSON.stringify(report('one'))), 
   const app = createApp({ document: dom.window.document, window: dom.window, fetchImpl, ...appOptions });
   return { dom, app, document: dom.window.document };
 }
+test('embedded UI uses its own HTTP(S) origin without changing standalone API settings', async () => {
+  for (const url of ['http://127.0.0.1:18080/#topology', 'https://rnt.example.test/#diagnostics', 'http://[::1]:18080/']) {
+    const calls = [];
+    const { dom, app, document } = setup(async request => {
+      calls.push(request);
+      return response(JSON.stringify(report('embedded')));
+    }, { url, configureWindow(win) {
+      const input = win.document.querySelector('#api-base-url');
+      input.value = '';
+      input.dataset.apiSameOrigin = 'true';
+      input.readOnly = true;
+    } });
+    try {
+      assert.equal(document.querySelector('#api-base-url').value, new URL(url).origin);
+      assert.equal(document.querySelector('#api-base-url').readOnly, true);
+      await app.start('diagnostics');
+      assert.deepEqual(calls, [`${new URL(url).origin}/api/v1/reports?geo_details=1`]);
+      assert.equal(app.getState().diagnostics.phase, 'ready');
+    } finally { app.destroy(); dom.window.close(); }
+  }
+  const { dom, app, document } = setup(undefined, { configureWindow(win) {
+    win.document.querySelector('#api-base-url').value = 'https://separate-api.example.test';
+  } });
+  try {
+    assert.equal(document.querySelector('#api-base-url').value, 'https://separate-api.example.test');
+    assert.equal(document.querySelector('#api-base-url').readOnly, false);
+  } finally { app.destroy(); dom.window.close(); }
+});
+
 function submit(document, selector = '#check-form') { document.querySelector(selector).dispatchEvent(new document.defaultView.Event('submit', { bubbles: true, cancelable: true })); }
 async function flush() { await new Promise(resolve => setTimeout(resolve, 0)); }
 function labelRows(count, offset = 0) {

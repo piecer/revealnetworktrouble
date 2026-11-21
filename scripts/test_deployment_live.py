@@ -132,7 +132,7 @@ def run(receipts):
     receipts.mkdir(parents=True, exist_ok=False)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, interrupted)
-    base = re.search(r'^FROM (\S+)', (ROOT / 'frontend/Dockerfile').read_text())
+    base = re.search(r'^FROM (\S+)', (ROOT / 'frontend/Dockerfile').read_text(), re.MULTILINE)
     assert base, 'Dockerfile must declare its pinned base'
     image = base.group(1)
     html = receipts / 'html'

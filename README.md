@@ -20,7 +20,22 @@ CheckNetwork는 네트워크 연결 문제를 확인하고, 관측 결과를 바
 
 ## 빠른 시작
 
-아래 두 방법 중 하나를 선택하세요. 명령은 저장소 루트에서 실행합니다.
+아래 실행 방법 중 하나를 선택하세요. 명령은 저장소 루트에서 실행합니다.
+
+### 선택 사항: 명령 하나로 Web + API 실행
+
+Go 1.22 이상이 있으면 정적 UI를 내장한 API를 한 프로세스로 실행할 수 있습니다.
+
+```sh
+# 바이너리 기본값은 off다. Compose 기본 구성은 단일 포트 내장 UI로 실행한다.
+CHECKNETWORK_WEB_UI=on GOTOOLCHAIN=go1.26.11 go run ./cmd/checknetwork-api
+```
+
+브라우저에서 `http://127.0.0.1:8080`을 여세요. Python 웹 서버나 API 주소 수동 입력 없이 현재 페이지와 같은 주소의 API에 연결합니다. 측정은 여전히 API 서버에서 수행되므로 내 PC의 네트워크를 검사하려면 그 PC에서 실행하세요. 포트는 `CHECKNETWORK_ADDR`로 변경할 수 있습니다.
+
+이미 `make build`로 빌드했다면 `CHECKNETWORK_WEB_UI=on ./bin/checknetwork-api`로 실행합니다. 별도 Web 파일 없이 바이너리만으로 화면을 제공하지만 경로 추적에는 지원되는 `traceroute` 실행 파일이 여전히 필요합니다. 없으면 다른 검사와 UI는 사용할 수 있어도 `/readyz`는 503입니다.
+
+내장 UI의 API 주소는 동일 출처로 고정한다. 별도 API를 지정하는 기존 분리 배포는 아래 방법을 사용하세요. 바이너리 기본값은 `off`이고 공개 릴리스는 별도 검증 대상이다.
 
 ### Docker Compose로 실행
 
@@ -30,7 +45,13 @@ Docker와 Compose 플러그인이 필요합니다. 처음 실행할 때 이미�
 docker compose up --build --wait
 ```
 
-브라우저에서 `http://localhost:3000`을 여세요. API 주소는 `http://localhost:8090`입니다. 기본 설정은 두 서비스 모두 내 컴퓨터에서만 접속할 수 있도록 제한합니다.
+브라우저에서 `http://localhost:8090`을 여세요. 기본 구성은 **하나의 포트**에서 화면과 API를 같은 주소로 제공한다. 접속은 내 컴퓨터로만 제한된다.
+
+화면과 API를 두 포트(웹 `3000`, API `8090`)로 나누는 기존 구성은 선택적이다:
+
+```bash
+COMPOSE_PROFILES=standalone-web docker compose up --build --wait
+```
 
 API가 준비됐는지 확인하려면:
 
@@ -63,7 +84,8 @@ python3 -m http.server 3000 --bind 127.0.0.1 --directory frontend
 
 | 실행 방법 | 웹 주소 | 사용할 API 주소 |
 | --- | --- | --- |
-| Docker Compose 기본값 | `http://localhost:3000` | `http://localhost:8090` |
+| Docker Compose 기본값 | `http://localhost:8090` | 같은 주소 (동일 출처) |
+| Docker Compose `standalone-web` profile | `http://localhost:3000` | `http://localhost:8090` |
 | 소스 직접 실행 | `http://localhost:3000` | `http://localhost:8080` |
 
 정적 HTML에 들어 있는 초기 API 주소는 `http://localhost:9090`이므로 직접 실행할 때는 위 설정이 필요합니다. Compose는 빌드할 때 API 주소를 맞춥니다. `CHECKNETWORK_API_PORT`로 Compose 포트를 바꿨다면 웹 이미지도 다시 빌드하세요.

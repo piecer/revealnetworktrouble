@@ -6,6 +6,8 @@ WORKDIR /src
 COPY go.mod ./
 COPY backend ./backend
 COPY cmd ./cmd
+# The optional UI is compiled into the API binary; never copy frontend development files.
+COPY frontend/embed.go frontend/index.html frontend/styles.css frontend/app.js frontend/common-prefix.js frontend/state.js frontend/topology-model.js frontend/topology-renderer.js frontend/geo-map.js frontend/topology-presentation.js frontend/topology-visualizer.js ./frontend/
 RUN test -n "${SOURCE_DATE_EPOCH}" && \
     CGO_ENABLED=0 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" go build -trimpath -buildvcs=false \
       -ldflags="-s -w -buildid= -X main.version=${VERSION} -X main.revision=${REVISION}" \

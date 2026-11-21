@@ -18,6 +18,17 @@ function grepAccepts(pattern, candidate) {
   return spawnSync('grep', ['-Eq', pattern], { input: `${candidate}\n`, encoding: 'utf8' }).status === 0;
 }
 
+test('API image build includes only the embedded production web inputs', async () => {
+  const apiDockerfile = await readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
+  const ignore = await readFile(new URL('../.dockerignore', import.meta.url), 'utf8');
+  const copies = apiDockerfile.split(/\r?\n/).filter(line => /^COPY frontend\//.test(line));
+  const expected = ['embed.go', ...productionAssets].sort();
+  const inputs = copies.flatMap(line => line.trim().split(/\s+/).slice(1, -1));
+  assert.deepEqual(inputs.map(name => name.replace(/^frontend\//, '')).sort(), expected, 'API build must compile the same production assets, not tests/node_modules');
+  for (const name of expected) assert.ok(ignore.split(/\r?\n/).includes(`!frontend/${name}`), `${name} must survive Docker context filtering`);
+  assert.ok(ignore.split(/\r?\n/).includes('frontend/*'), 'non-production frontend files must remain excluded');
+});
+
 test('frontend and release SemVer EREs equal and execute the independent canonical corpus', async () => {
   const dockerfile = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
   const releaseVerifier = await readFile(new URL('../scripts/verify-release.sh', import.meta.url), 'utf8');
