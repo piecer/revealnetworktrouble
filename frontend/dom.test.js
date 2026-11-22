@@ -3028,6 +3028,13 @@ test('symptom presets preselect contract check kinds without running a request',
   assert.deepEqual([...en.document.querySelectorAll('#symptom-presets button')].map(b => b.textContent), SYMPTOM_PRESETS.map(p => lexLabel(`symptom.${p.code}`, 'en')));
 });
 
+test('symptom preset markup seeds no language literal', async () => {
+  const groupMarkup = markup.match(/<section id="symptom-presets"[^>]*>/)[0];
+  assert.ok(groupMarkup.includes('role="group"'));
+  assert.ok(!groupMarkup.includes('aria-label'), 'the group label is resolved at render time through the dictionary, not seeded in markup');
+  assert.doesNotMatch(markup, /증상/);
+});
+
 test('common prefix view stays within the document element budget', async () => {
   const { document } = setup();
   document.querySelector('[data-view-link="common-prefix"]').click();
