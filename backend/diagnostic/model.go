@@ -39,6 +39,10 @@ type Target struct {
 	Address        string `json:"address"`
 	ExpectedStatus int    `json:"expected_status,omitempty"`
 	Attempts       int    `json:"attempts,omitempty"`
+	// Samples repeats a connectivity check for statistical confidence. An
+	// omitted or zero value preserves the legacy single observation, so the
+	// existing wire fixtures are unaffected.
+	Samples int `json:"samples,omitempty"`
 }
 
 type TopologyMode string
@@ -95,6 +99,11 @@ type Result struct {
 	ErrorCode string         `json:"error_code,omitempty"`
 	Message   string         `json:"message,omitempty"`
 	Details   map[string]any `json:"details,omitempty"`
+
+	// sampleStats is the aggregate over repeated observations. It stays
+	// unexported until contract v2 registers the wire shape, so consumers that
+	// pin the closed detail registry keep rejecting unknown keys as before.
+	sampleStats *SampleStats
 }
 
 const (
