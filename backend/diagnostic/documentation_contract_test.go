@@ -69,6 +69,58 @@ func TestDocumentationContractRequiredFilesAndLocalLinks(t *testing.T) {
 	}
 }
 
+// Live documents must not assert test-inventory cardinality. Those numbers drift
+// with every added test and a document cannot verify its own claim, so past
+// readings live only in docs/archive and current cardinality is observed by
+// running the gate. Contract-pinned fixture cardinalities are enforced by tests
+// rather than asserted in prose.
+func TestLiveDocumentationDoesNotAssertTestCounts(t *testing.T) {
+	root := documentationRepositoryRoot(t)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`[0-9]+[- ]tests?\b`),
+		regexp.MustCompile(`[0-9]+ \+ [0-9]+ = [0-9]+`),
+	}
+	var live []string
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".md" {
+			live = append(live, filepath.Join(root, entry.Name()))
+		}
+	}
+	docs := filepath.Join(root, "docs")
+	docEntries, err := os.ReadDir(docs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range docEntries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".md" {
+			live = append(live, filepath.Join(docs, entry.Name()))
+		}
+	}
+	live = append(live, filepath.Join(root, "android", "README.md"))
+	if len(live) == 0 {
+		t.Fatal("no live documents were inspected")
+	}
+	for _, path := range live {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Error(err)
+			continue
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			for _, pattern := range patterns {
+				if match := pattern.FindString(line); match != "" {
+					rel, _ := filepath.Rel(root, path)
+					t.Errorf("%s:%d asserts a test count (%q): %s", rel, i+1, match, line)
+				}
+			}
+		}
+	}
+}
+
 type documentedAPIError struct {
 	Key        string `json:"key"`
 	Status     int    `json:"status"`

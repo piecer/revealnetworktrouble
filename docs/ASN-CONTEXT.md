@@ -35,9 +35,10 @@ reuses existing help text. Counts use total = displayed + omitted.
 
 ## Source acceptance and reproduction
 
-Current Node runner inventory is **328 tests** (pre-density route-visual 326 and ASN-context 320 are historical), plus the separate application
-contract script (Geo 308/304 and pre-Geo 298 are historical). At ASN-context acceptance, the focused
-presentation/renderer suite contained 42 tests (historical). The Go-owned classification fixture
+Test-inventory cardinality is not asserted in live documents: past readings are kept in the
+archived record ([implementation history](archive/IMPLEMENTATION-HISTORY.md)) and the current
+reading is observed by running the gate. At ASN-context acceptance, the focused
+presentation/renderer suite is a historical record only. The Go-owned classification fixture
 contains 3,119 witnesses: every canonical blocked prefix's first/last address,
 adjacent outside boundaries, and each host bit and its inverse across the entire
 prefix interior, plus public/mapped controls. These are not exhaustive enumeration

@@ -24,6 +24,17 @@
 - canonical SemVer ERE 판정을 external `grep` 대신 pure Go subset evaluator로 수행한다(POSIX ERE와 semantics가 같은 construct만 허용, 그 밖은 fail-closed). `grep -E`가 존재할 때만 같은 corpus로 교차 검증한다.
 - pure resolver와 real Compose CLI의 결과 일치는 gate로 검증한다: `TestRealComposeCLIResolvesIdenticallyToPureResolver`는 Compose CLI가 존재할 때만 같은 corpus로 실행되고, 다른 Compose CLI 버전과 diverge하면 실패한다. Android·브라우저·운영 환경 acceptance는 이 변경으로 해결된 것이 아니다.
 
+### 클린 환경 prerequisite 계약
+
+- `scripts/ci-clean-archive.sh`와 `scripts/ci-clean-archive-test.sh`는 work 전에 스스로 선언한 tool prerequisite set(`required_tools`)을 검사하고, 부재하면 cryptic exec error가 아니라 tool 이름을 지정한 actionable error로 실패한다.
+- fixture를 선언된 tool만으로 구성한 PATH에서 실행해 undeclared binary 의존이 없음을 증명한다. 이 실행이 `tar` 의존을 발견해 선언 set에 추가했다. `make`은 gate prerequisite이고 fixture는 fake make로 대체한다.
+- harness는 `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOSUMDB=off`로 toolchain download을 시도하지 않는다. 회귀 검사: `TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites`.
+
+### 문서 정책 — live 문서의 테스트 수 주장 금지
+
+- live 문서(root Markdown, `docs/` direct children, `android/README.md`)는 테스트 수·case inventory를 주장하지 않는다. 과거 reading은 `docs/archive/` record에만 두고 current cardinality는 gate 실행으로 관측한다. contract test가 단언하는 fixture cardinality는 유지한다.
+- live 문서에 테스트 수 주장이 나타나면 `TestLiveDocumentationDoesNotAssertTestCounts`가 실패한다(RED로 확인 후 문서 rewriting으로 green). CI가 생성하는 count report는 보류한다.
+
 ### Go 표준 라이브러리 보안 갱신 — 2026-11-11
 
 - 실제 source/추출 binary 검사에서 GO-2026-6859가 검출된 Go 1.26.10 후보를 제외하고 CI·Docker builder·offline validator·fixture를 Go 1.26.11로 함께 갱신한다.

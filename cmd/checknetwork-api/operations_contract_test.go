@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -106,6 +108,102 @@ func TestCleanArchiveFixtureUsesMinimumGoVersion(t *testing.T) {
 	if len(minimum) != 2 || len(fixture) != 2 || fixture[1] != minimum[1] {
 		t.Fatalf("archive fixture Go requirement %v must match module minimum %v", fixture, minimum)
 	}
+}
+
+// The clean-archive contract is a POSIX sh contract, so its tool prerequisites are
+// part of the contract itself. Each script declares its prerequisite tools and checks
+// them before doing any work. Running the fixture with PATH containing only the
+// declared tools proves it executes nothing undeclared; a missing declared tool must
+// produce an actionable prerequisite error instead of a cryptic exec failure.
+func TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites(t *testing.T) {
+	declaredByContract := []string{"sh", "git", "find", "awk", "go", "mktemp", "mkdir", "rm", "cat", "chmod", "cp", "dirname", "tar"}
+	pattern := regexp.MustCompile(`(?m)^required_tools='([^']+)'$`)
+
+	for _, script := range []string{"scripts/ci-clean-archive.sh", "scripts/ci-clean-archive-test.sh"} {
+		body := repositoryFile(t, script)
+		match := pattern.FindStringSubmatch(body)
+		if match == nil {
+			t.Errorf("%s must declare its tool prerequisites as required_tools='...'", script)
+			continue
+		}
+		declared := strings.Fields(match[1])
+		sort.Strings(declared)
+		// The gate runs `make ci-inner`, so make is a gate prerequisite. The fixture
+		// substitutes a fake make, so real make is not a fixture-time prerequisite.
+		expected := append([]string(nil), declaredByContract...)
+		if script == "scripts/ci-clean-archive.sh" {
+			expected = append(expected, "make")
+		}
+		sort.Strings(expected)
+		if !reflect.DeepEqual(declared, expected) {
+			t.Errorf("%s declares %v, want the contract prerequisite set %v", script, declared, expected)
+			continue
+		}
+		if !strings.Contains(body, "command -v \"$tool\"") {
+			t.Errorf("%s must check each declared prerequisite with command -v", script)
+			continue
+		}
+
+		// Missing declared tool: actionable named error, before any tool is executed.
+		missingGit := t.TempDir()
+		for _, tool := range declared {
+			if tool == "git" {
+				continue
+			}
+			source, err := exec.LookPath(tool)
+			if err != nil {
+				t.Fatalf("%s requires %s (declared prerequisite); install coreutils/git before running this contract", script, tool)
+			}
+			if err := os.Symlink(source, filepath.Join(missingGit, tool)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		output, err := runDeclaredToolEnv(t, script, missingGit)
+		if err == nil {
+			t.Errorf("%s passed without git; the prerequisite was not checked\n%s", script, output)
+			continue
+		}
+		if !strings.Contains(string(output), "requires git") {
+			t.Errorf("%s must report an actionable prerequisite error naming git, got:\n%s", script, output)
+		}
+	}
+
+	// The fixture is the runnable half of the contract: with only declared tools on
+	// PATH it must still complete, which proves no undeclared binary is executed.
+	declared := append([]string(nil), declaredByContract...)
+	sort.Strings(declared)
+	declaredPath := t.TempDir()
+	for _, tool := range declared {
+		source, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("the clean archive contract requires %s (declared prerequisite); install coreutils/git before running it", tool)
+		}
+		if err := os.Symlink(source, filepath.Join(declaredPath, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output, err := runDeclaredToolEnv(t, "scripts/ci-clean-archive-test.sh", declaredPath)
+	if err != nil {
+		t.Errorf("clean archive fixture failed with only its declared tools: %v\n%s", err, output)
+	}
+}
+
+func runDeclaredToolEnv(t *testing.T, script string, isolatedPath string) ([]byte, error) {
+	t.Helper()
+	interpreter, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(interpreter, filepath.Join("..", "..", script))
+	command.Env = []string{
+		"PATH=" + isolatedPath,
+		"TMPDIR=" + t.TempDir(),
+		"HOME=" + isolatedPath,
+		"GOTOOLCHAIN=local",
+		"GOPROXY=off",
+		"GOSUMDB=off",
+	}
+	return command.CombinedOutput()
 }
 
 func TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS(t *testing.T) {

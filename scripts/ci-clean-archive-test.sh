@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 
+required_tools='sh git find awk go mktemp mkdir rm cat chmod cp dirname tar'
+for tool in $required_tools; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'clean archive contract requires %s (declared prerequisite); install git/coreutils/tar or provide it on PATH\n' "$tool" >&2
+        exit 3
+    }
+done
+
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 root=$(mktemp -d "${TMPDIR:-/tmp}/checknetwork-clean-archive-test.XXXXXX")
 cleanup() { rm -rf -- "$root"; }

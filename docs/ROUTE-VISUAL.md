@@ -17,16 +17,16 @@ Inspected actual 04e3521 frontend/app.js (map renderer lines 399–465): luminou
 - Chromium verifier interface: `node frontend/route-visual.browser.cjs OUTPUT [REPORT_LOG]`. The historical run supplied an external captured REPORT log. Own ephemeral loopback server closes on completion; nine served assets compared byte-for-byte. Eight producer/captured × 375/1440 × 2D/3D cases, plus four existing interaction cases, passed before final canonical rerun. These are intercepted report replays, NOT new live diagnostic evidence.
 - Producer fixture now requires six completed attempts across all three results. Initial fixture incorrectly exhausted a one-slot supervisor and mislabeled unknown-hop attempts healthy, silently losing routes. Three slots and truthful degraded status fix that; exact producer-byte freshness remains mandatory.
 - Observed RED/GREEN: labels previously crossed node circles; reserve full ring bounds in label placement. Aliases get at most 25 candidates (ordinary labels nine). Overlapping node role glyphs are suppressed, not stacked; full roles remain in hover/focus/inspector. The unchanged browser glyph-overlap and saved-alias assertions pass.
-- Current source inventory: **Web 326 tests**, plus application contract script. Maximum report DOM measured 729 initial / 762 expanded; report/label navigation peak 1169, guard 1200. Earlier 699/732 and ASN 320 are historical records, not current readings.
+- Source inventory는 live 문서에 고정하지 않는다; past readings는 archived record([implementation history](archive/IMPLEMENTATION-HISTORY.md))에만 있다. Maximum report DOM measured 729 initial / 762 expanded; report/label navigation peak 1169, guard 1200. Earlier readings are historical records, not current measurements.
 - Screenshots and machine evidence: `/tmp/route-visual-evidence/results.json`, `interaction/results.json`, `{producer-route-RTT,captured-existing-network-replay}-{375,1440}-{2d,3d}[-canvas].png`, and `legend-{375,1440}.png`. Actual screenshots inspected, including dense captured replay. Desktop clearly restores luminous route curves, RTT circles and independent ASN rings.
 - **Visual acceptance limitation:** 129-node captured all-target replay is still severely crowded at 375px; circles and edges overlap and most ordinary labels are omitted. Even the small mobile producer graph omits labels to protect rings. Zoom/filter/hover/keyboard inspector remain available, but this is not a claim of solved dense-mobile layout or pixel parity with 04e3521. Shared hue identity is stable only within a report; twenty distinct RGB values do not guarantee perceptual distinction or color-blind accessibility. Edge crossings remain possible. No physical device, screen reader, new live diagnostic, deployment, Docker, commit or release validation is claimed.
 
 ## Density correction and closeout evidence
 
-The pre-density section above is historical, including its 326-test inventory and
-nine/25-candidate description. Current source inventory is **Web 328 tests**, plus
-the separate application contract script; the closeout inventory run collected
-328 and passed the previously unrun asymmetric-glyph-metrics case. It also exposed
+The pre-density section above is historical, including its inventory and
+nine/25-candidate description; the inventory numbers are kept only in the archived
+record ([implementation history](archive/IMPLEMENTATION-HISTORY.md)). The closeout
+inventory run passed the previously unrun asymmetric-glyph-metrics case. It also exposed
 one help-text length regression. The neutral callout explanation was moved to the
 existing route legend, retaining the original 140-character help cap rather than
 weakening its test or adding DOM elements.

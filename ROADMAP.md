@@ -50,7 +50,7 @@
 |---|---|---|
 | `go build ./...`, `go vet ./...` | 통과 | Go 1.22.2 (`go.mod` 최소 버전). CI는 1.26.11 사용 |
 | `go test ./...` | `backend/api` 통과 / `backend/diagnostic` 1건 실패 / `cmd/checknetwork-api` 3건 실패 | 4건 모두 환경 의존. 상세는 M-1 |
-| `npm test` (Node 22.23) | 892 tests 중 891 pass, 1 skip, 0 fail, 약 64초 | 스크립트형 2종(`app.test.js`, `common-prefix.test.js`)이 먼저 통과 |
+| `npm test` (Node 22.23) | runner suite fail 없이 통과(약 64초); observed inventory는 archived record에만 있다 | 스크립트형 2종(`app.test.js`, `common-prefix.test.js`)이 먼저 통과 |
 | API 로컬 스모크 | 통과 | TCP·HTTP·DNS·닫힌 포트 4건을 한 번에 요청, 4ms, 응답 2.4KB. CORS 허용 목록 동작, `no-store`·`nosniff` 확인 |
 | UI 확인 | `docs/images/diagnostics.png` 검토 | U-2 근거 |
 | 원격 상태 | Actions 26회 실행, PR 8건 모두 open(병합 0) | 비로그인 웹 페이지로 확인. 브랜치 보호·보안 신고 설정은 **확인 불가** |
@@ -143,15 +143,17 @@
 - **현상 [실행]:**
   - `TestRunTraceCommandNormalParentExitKillsChildAndGrandchildHoldingPipes` — 자식 프로세스는 실제로 종료됐지만 PID 1이 수거하지 않아 좀비(`Z`)로 남았고, 헬퍼 `processPIDExists`가 `kill(pid, 0)`만 확인해 **좀비를 생존으로 오판**했습니다(3회 재실행 모두 동일). `docker run`을 `--init` 없이 쓰는 환경에서도 같은 문제가 날 수 있습니다. [추정]
   - `TestComposeResolvedExposureBoundary`, `TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable` — `docker` 바이너리가 없으면 skip이 아니라 **실패**.
-  - `TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS` — 오래된 로컬 Go에서 더 높은 toolchain을 내려받으려다 외부망 차단 시 실패.
+  - `TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS` — 오래된 로컬 Go에서 더 높은 toolchain을 내려받으려다 외부망 차단 시 실패했다. now the harness pins `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOSUMDB=off`, so no download is attempted.
 - **문제:** README는 `make test`에 Go·Node·npm·make만 요구한다고 안내하지만 실제로는 Docker와 외부망이 필요합니다. 기여자가 클론 직후 빨간 테스트를 보게 됩니다.
 - **권고:** Docker·외부망 의존 테스트는 `exec.LookPath("docker")` 실패 시 `t.Skip` 하거나 `//go:build integration` 태그로 분리. `processPIDExists`는 `/proc/<pid>/stat`의 상태가 `Z`면 종료로 간주. `make test`(빠른 계층)와 `make test-integration`을 문서에 구분.
 - **현재 [실행]:** Compose 계약은 pure-Go resolver로 기본 suite에서 강제된다 — Compose CLI 부재와 무관하게 실행된다. 실제 CLI는 Docker가 존재할 때만 같은 결과를 교차 검증하고, 부재 시 그 gate만 skip되며 명시적으로 요청한 gate는 actionable error로 실패한다. 회귀 검사(`TestComposeContractIsEnforcedWithoutDocker`, `TestComposeChecksAreOptionalWithoutDocker`, `TestRequestedComposeChecksFailWithoutDocker`)가 skip 경로와 CLI 호출 없음을 확인한다. resolver는 `compose.yaml`이 쓰는 YAML subset만 허용하고 subset 밖의 구성(anchor, merge key, tag, multi-document, flow mapping, compact mapping, duplicate key)은 조용히 오독하지 않고 gate가 실패한다. 계약은 external binary에 의존하지 않는다 — canonical SemVer ERE 판정도 pure Go subset evaluator로 하고 `grep -E`가 존재할 때만 같은 corpus로 교차 검증한다. 두 경로 실행의 일치는 gate로 관측한다: Compose CLI가 존재할 때만 실행되는 교차 검증 gate가 다른 Compose CLI 버전과 diverge하면 빨간 된다.
+클린 환경 completion: clean-archive contract는 work 전에 스스로 선언한 tool prerequisite set(`required_tools`)을 검사하고, 부재하면 cryptic exec error가 아니라 tool 이름을 지정한 actionable error로 실패한다. fixture는 선언된 tool만으로 구성한 PATH에서 실행complete — 이 실행이 undeclared binary 의존이 없음을 증명한다(`tar`가 이렇게 발견되어 선언 set에 추가됐다). `make`은 gate prerequisite이고 fixture는 fake make로 대체한다. `TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites`가 set과 actionable error를 pin한다.
 
 #### M-2. 계약 테스트·검증 체계의 과중함 (P2)
-- **현상:** Go 테스트 코드가 프로덕션의 약 1.9배이고, 일부 테스트가 **문서 문구 자체를 고정**합니다. `documentation_contract_test.go`(858줄)는 "Offline archive validators: API 33 + Web 30 = 63" 같은 산문 속 숫자를 단언하고, 숫자가 낡았는지 탐지하는 테스트(`TestStaleArchiveValidatorClaimDetection` 등)까지 있습니다. 문서 한 줄을 고치려면 테스트도 고쳐야 합니다. [코드]
+- **현상:** Go 테스트 코드가 프로덕션의 약 1.9배이고, 문서 contract는 원래 산문 속 숫자를 단언했다(858줄 버전). DOC-1에서 축소해 현재는 링크 무결성·필수 파일 존재·API 오류 테이블만 단언한다(164줄). 남은 문제는 live 문서에 남아 있던 과거 inventory 문장 복사본이었다: live 테스트 수 주장이 실측과, 그리고 같은 문서의 자체 서술과 충돌했다. [코드]
 - **영향:** 문서 정비(DOC-1)와 기능 개선 속도를 모두 떨어뜨립니다.
 - **권고:** 문서 테스트는 링크 무결성·필수 파일 존재·코드와 직접 대응되는 사실(API 오류 코드 목록 등)로 축소. 테스트 개수 같은 변동 수치는 문서에서 제거하거나 CI가 생성. PR 단위 CI는 Quick 계층에 집중하고 exact-SHA 재현 검증은 릴리스 후보에서만 수행(현재 구조를 유지하되 의무 범위만 조정).
+- **현재 [실행]:** live 문서(root Markdown + `docs/` direct children + `android/README.md`)는 테스트 수·case inventory 주장을 하지 않는다. 과거 reading은 `docs/archive/` record에만 있고 current cardinality는 gate 실행으로 관측한다. contract test가 단언하는 fixture cardinality는 유지한다. 이 정책을 `TestLiveDocumentationDoesNotAssertTestCounts`가 pin한다(RED로 확인한 뒤 문서 rewriting으로 green). CI가 생성하는 count report는 사용자가 보류했다.
 
 #### M-3. 타입 없는 `Details`로 인한 분석 코드 비대 (P2)
 - **현상:** `Result.Details`가 `map[string]any`라서 `analysis.go`(1,309줄)의 상당 부분이 **서버가 직접 만든 값**을 다시 untyped map에서 꺼내 검증하는 코드입니다(`normalizeResults`, `stringDetail`/`integerDetail`/`timeDetail` 등). [코드]
@@ -227,6 +229,7 @@
 - [x] M-1: Docker·외부망 의존 테스트 skip/태그 분리, 좀비 판정 수정, `GOTOOLCHAIN` 안내
 - [ ] R-1: 이름·모듈 경로 확정 및 일괄 치환(결정 1) — 사용자 요청으로 보류
 - [x] DOC-1 + M-2(일부): `docs/archive/` 이동, 루트 문서 정리, 문서 계약 테스트 축소(같은 변경 묶음, PR 미생성)
+- [x] M-2(잔여 중 live 문서 수치 정책): live 문서의 테스트 수 주장 제거 + `TestLiveDocumentationDoesNotAssertTestCounts`로 pin. 과거 reading은 archived record에만 보존. CI 생성 count report는 보류.
 - [x] R-3: Dependabot 7건 상태·위험 분류 — 모두 기존 병합 확인, #1/#4 회귀 및 #5 Wrapper 검증기 보완. Android 전체 통합 검증은 별도 미완료
   - [x] R-3 2차 triage (2026-11-21): #10(robolectric 4.18)·#11(jsdom 31.0.1) 병합. #12(Gradle 9.9.1)는 checksum을 Gradle 공식 endpoint에서 독립 확인(9.9.1 bin `d8a18a7a…`=CI 실제값; wrapper jar `621008…`은 버전 독립이라 불변) 후 pin·검증기·test·provenance README 동기화로 content already reflected 처리. #9(Alpine)는 `d9e853e`=3.20.10 → `f59abe6`=3.24.4의 major 라인 Upgrade로 독립 재감사(amd64 layer `881fc932…`, diff-ID `75f1d965…`, history created 2026-11-05, config `3ea06e4c…` 확인) 후 재감사 값 반영으로 처리. pin 기반 identity bump은 같은 변경 묶음의 mirror 변경(검증기·contract test)이 필요 — 단파일 PR은 설계상 통과 불가
 - [x] S-3·R-5: private vulnerability reporting 활성 상태·브랜치 보호 현황 확인, 승인된 Description·Topics 적용 후 재조회. 보안 신고/브랜치 보호 자체의 변경은 없음

@@ -98,7 +98,7 @@ Campaign receipts under sibling `stage3-evidence` bind command exits/logs to exa
 
 ## Historical pre-Stage1 basemap evidence (not current readiness)
 
-The following records describe an earlier basemap-only slice. Its 328-test inventory, live API observations, temporary paths and open gates are historical, not current Stage3 acceptance. Older inventories 326/320/308/304/298 are likewise historical; browser cases were never added to Node collection counts.
+The following records describe an earlier basemap-only slice. Its test inventory, live API observations, temporary paths and open gates are historical, not current Stage3 acceptance. Earlier inventories are historical records held only in the archived record; browser cases were never added to Node collection counts.
 
 ## Geographic source and reproducibility
 
@@ -185,4 +185,4 @@ git diff --check
 
 Each browser directory contains its aggregate `results.json`; Geo directories include map-only PNGs. `/tmp/geo-final-red.log` records the two unit failures, `/tmp/geo-final-seam-mutant.log` the intentional pixel mutation rejection. Final canonical command logs use `/tmp/geo-final-{test,build,vet,syntax,api-archive,web-archive}.log`. Evidence paths are local, not portable release artifacts. Preserve existing temporary data under the non-deletion instruction.
 
-Production closure is ten assets in Docker COPY/hash/timestamp, offline validator exact selected set, release source/served-byte checks, borrowed-base read-only mounts and corresponding contracts. Offline API/Web validators use synthetic archives (28 and 25 cases), not a claim that an uncommitted Docker image was built or deployed. No stage, commit, push, main-worktree edit, Docker lifecycle or deletion is authorized. `make build` output is retained. Independent review, exact-SHA release/buildx closure, Android CI, other physical browsers and screen-reader acceptance remain separate outstanding gates.
+Production closure is ten assets in Docker COPY/hash/timestamp, offline validator exact selected set, release source/served-byte checks, borrowed-base read-only mounts and corresponding contracts. Offline API/Web validators use synthetic archives with the exact selected set the validator itself pins, not a claim that an uncommitted Docker image was built or deployed. No stage, commit, push, main-worktree edit, Docker lifecycle or deletion is authorized. `make build` output is retained. Independent review, exact-SHA release/buildx closure, Android CI, other physical browsers and screen-reader acceptance remain separate outstanding gates.
