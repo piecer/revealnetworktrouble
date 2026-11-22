@@ -16,6 +16,15 @@ const (
 	ResultDetailCertificateBefore   = "certificate_not_before"
 	ResultDetailCertificateAfter    = "certificate_not_after"
 
+	// Stage timings are per-request observations recorded only when the phase
+	// actually ran; they describe observed client-side timing, not server or
+	// network internals.
+	ResultDetailStageTiming    = "stage_timing"
+	ResultDetailDNSPhaseMS     = "dns_ms"
+	ResultDetailConnectPhaseMS = "connect_ms"
+	ResultDetailTLSPhaseMS     = "tls_ms"
+	ResultDetailTTFBPhaseMS    = "ttfb_ms"
+
 	DetailTypeString              = "string"
 	DetailTypeNonEmptyString      = "nonempty_string"
 	DetailTypeCanonicalUTCRFC3339 = "canonical_utc_rfc3339"
