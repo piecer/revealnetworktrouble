@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,50 @@ func TestServerStartedLogUsesExactBuildIdentity(t *testing.T) {
 
 func testEnvironment(values map[string]string) func(string) string {
 	return func(name string) string { return values[name] }
+}
+
+func TestLoadRuntimeConfigGeoIPIsEnabledByDefaultAndStrictlySwitchable(t *testing.T) {
+	config, err := loadRuntimeConfig(testEnvironment(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.geoIPDisabled {
+		t.Fatalf("geolocation must be enabled by default: %+v", config)
+	}
+
+	config, err = loadRuntimeConfig(testEnvironment(map[string]string{"CHECKNETWORK_GEOIP": "off"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.geoIPDisabled {
+		t.Fatalf("CHECKNETWORK_GEOIP=off must disable geolocation: %+v", config)
+	}
+
+	if _, err := loadRuntimeConfig(testEnvironment(map[string]string{"CHECKNETWORK_GEOIP": "sometimes"})); err == nil {
+		t.Fatal("ambiguous switch value must be rejected, not defaulted")
+	}
+}
+
+type wiredGeoIP struct{ disabled bool }
+
+func (w *wiredGeoIP) Lookup(context.Context, net.IP) (diagnostic.IPMetadata, error) {
+	return diagnostic.IPMetadata{}, nil
+}
+
+func (w *wiredGeoIP) SetDisabled(disabled bool) { w.disabled = disabled }
+
+// Startup must propagate the configuration to the shared lookup instance that
+// checkers use, not just parse the flag.
+func TestApplyGeoIPConfigDisablesSharedLookup(t *testing.T) {
+	lookup := &wiredGeoIP{}
+	applyGeoIPConfig(lookup, true)
+	if !lookup.disabled {
+		t.Fatal("shared lookup must be disabled when configured off")
+	}
+	applyGeoIPConfig(lookup, false)
+	if lookup.disabled {
+		t.Fatal("shared lookup must remain enabled when configured on")
+	}
 }
 
 func TestRuntimeBudgetEquationsAndHTTPServerContract(t *testing.T) {
