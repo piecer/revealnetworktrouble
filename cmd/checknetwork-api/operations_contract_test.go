@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+const canonicalSemverERE = `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`
+
 func repositoryFile(t *testing.T, name string) string {
 	t.Helper()
 	contents, err := os.ReadFile(filepath.Join("..", "..", name))
@@ -284,26 +286,15 @@ func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) 
 		}
 	}
 
-	const canonicalSemverERE = `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`
-	validSemvers := []string{"0.1.0-dev", "1.0.0-alpha.1", "1.0.0+build.5", "1.0.0-0"}
-	invalidSemvers := []string{
-		"dev", "v1.0.0", "01.0.0", "1.01.0", "1.0.01", "1.0.0-01",
-		"1..0", "1.0.0-alpha..1", "1.0.0-", "1.0.0-alpha.", "1.0.0+build..1",
-		"1.0.0-alpha_beta",
-	}
+	validSemvers := canonicalSemverValidCorpus
+	invalidSemvers := canonicalSemverInvalidCorpus
 	acceptsERE := func(pattern, candidate string) bool {
 		t.Helper()
-		command := exec.Command("grep", "-Eq", pattern)
-		command.Stdin = strings.NewReader(candidate + "\n")
-		err := command.Run()
-		if err == nil {
-			return true
+		accepted, err := posixEREExists(pattern, candidate)
+		if err != nil {
+			t.Fatalf("evaluate canonical SemVer ERE: %v", err)
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return false
-		}
-		t.Fatalf("execute canonical SemVer ERE for %q: %v", candidate, err)
-		return false
+		return accepted
 	}
 	for _, candidate := range validSemvers {
 		if !acceptsERE(canonicalSemverERE, candidate) {

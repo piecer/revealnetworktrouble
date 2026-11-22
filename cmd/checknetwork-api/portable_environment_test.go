@@ -8,9 +8,13 @@ import (
 	"testing"
 )
 
+func composeGateRequested() bool {
+	return os.Getenv("CHECKNETWORK_RUN_COMPOSE_TESTS") == "1"
+}
+
 func requireComposeIntegration(t *testing.T) {
 	t.Helper()
-	if os.Getenv("CHECKNETWORK_RUN_COMPOSE_TESTS") != "1" {
+	if !composeGateRequested() {
 		t.Skip("Compose configuration checks are opt-in; run make test-integration")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
@@ -38,6 +42,16 @@ func TestComposeChecksAreOptionalWithoutDocker(t *testing.T) {
 			t.Fatalf("optional cross-check must skip without Docker: %v\n%s", err, output)
 		}
 	})
+	t.Run("TestCanonicalERECrossChecksPOSIXGrepWhenPresent", func(t *testing.T) {
+		// Same policy for the POSIX grep cross-check: pure-Go evaluation is the enforced
+		// contract, the reference implementation is only cross-checked when present.
+		command := exec.Command(os.Args[0], "-test.run=^TestCanonicalERECrossChecksPOSIXGrepWhenPresent$", "-test.v")
+		command.Env = append(os.Environ(), "PATH="+t.TempDir(), "CHECKNETWORK_RUN_COMPOSE_TESTS=")
+		output, err := command.CombinedOutput()
+		if err != nil || !strings.Contains(string(output), "--- SKIP: TestCanonicalERECrossChecksPOSIXGrepWhenPresent") {
+			t.Fatalf("optional grep cross-check must skip without grep: %v\n%s", err, output)
+		}
+	})
 }
 
 func TestRequestedComposeChecksFailWithoutDocker(t *testing.T) {
@@ -49,11 +63,20 @@ func TestRequestedComposeChecksFailWithoutDocker(t *testing.T) {
 			t.Fatalf("requested cross-check must fail with an actionable prerequisite error: %v\n%s", err, output)
 		}
 	})
+	t.Run("TestCanonicalERECrossChecksPOSIXGrepWhenPresent", func(t *testing.T) {
+		command := exec.Command(os.Args[0], "-test.run=^TestCanonicalERECrossChecksPOSIXGrepWhenPresent$", "-test.v")
+		command.Env = append(os.Environ(), "PATH="+t.TempDir(), "CHECKNETWORK_RUN_COMPOSE_TESTS=1")
+		output, err := command.CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "grep is required to cross-check") {
+			t.Fatalf("requested grep cross-check must fail with an actionable prerequisite error: %v\n%s", err, output)
+		}
+	})
 }
 
 func TestComposeContractIsEnforcedWithoutDocker(t *testing.T) {
 	// The default suite must verify the Compose contract itself, not skip it.
-	// A recording shim on PATH proves the contract tests never invoke Docker.
+	// PATH contains only a recording shim: no other external binary is available,
+	// so a pass proves the contract is enforced in pure Go and never invokes Docker.
 	root := t.TempDir()
 	fakeBin := filepath.Join(root, "bin")
 	if err := os.Mkdir(fakeBin, 0o755); err != nil {
@@ -65,7 +88,7 @@ func TestComposeContractIsEnforcedWithoutDocker(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestComposeResolved", "-test.v")
-	command.Env = append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"), "FAKE_DOCKER_MARKER="+marker)
+	command.Env = append(os.Environ(), "PATH="+fakeBin, "FAKE_DOCKER_MARKER="+marker, "CHECKNETWORK_RUN_COMPOSE_TESTS=")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Compose contract must pass without Docker: %v\n%s", err, output)

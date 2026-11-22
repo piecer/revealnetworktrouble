@@ -548,6 +548,82 @@ func TestComposeYAMLSubsetValidatorRejectsUnsupportedConstructs(t *testing.T) {
 	}
 }
 
+// posixEREExists evaluates a POSIX ERE in pure Go so the contract runs in a clean
+// environment with no external binary. Only constructs whose match-existence
+// semantics coincide with POSIX ERE are accepted; anything else fails closed
+// instead of quietly meaning something else. The contract asserts existence, not
+// submatch or greediness, so leftmost-longest and Go's leftmost-first cannot
+// disagree. grep -E cross-checks the same pattern when it is present.
+func posixEREExists(pattern, candidate string) (bool, error) {
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] == '\\' {
+			if i+1 >= len(pattern) || strings.IndexByte(".+?^$()|[]{}*-", pattern[i+1]) < 0 {
+				return false, fmt.Errorf("unsupported ERE escape %q", pattern[i:i+2])
+			}
+			i++
+			continue
+		}
+		if strings.IndexByte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.^$|?*+()[]{}-", pattern[i]) < 0 {
+			return false, fmt.Errorf("unsupported ERE construct %q", pattern[i])
+		}
+	}
+	return regexp.MustCompile(pattern).MatchString(candidate), nil
+}
+
+// Canonical SemVer ERE acceptance corpus, shared by the pure-Go contract test and
+// the POSIX grep cross-check.
+var canonicalSemverValidCorpus = []string{"0.1.0-dev", "1.0.0-alpha.1", "1.0.0+build.5", "1.0.0-0"}
+var canonicalSemverInvalidCorpus = []string{
+	"dev", "v1.0.0", "01.0.0", "1.01.0", "1.0.01", "1.0.0-01",
+	"1..0", "1.0.0-alpha..1", "1.0.0-", "1.0.0-alpha.", "1.0.0+build..1",
+	"1.0.0-alpha_beta",
+}
+
+// TestCanonicalERECrossChecksPOSIXGrepWhenPresent keeps the pure-Go evaluation honest
+// against the reference POSIX implementation. Absent grep skips only this
+// cross-check; the enforced contract already ran in pure Go.
+func TestCanonicalERECrossChecksPOSIXGrepWhenPresent(t *testing.T) {
+	grepPath, err := exec.LookPath("grep")
+	if err != nil {
+		if composeGateRequested() {
+			t.Fatalf("grep is required to cross-check the canonical SemVer ERE; install coreutils or drop the gate flag")
+		}
+		t.Skipf("grep absent, cross-check skipped: %v", err)
+	}
+	grepAccepts := func(candidate string) bool {
+		t.Helper()
+		command := exec.Command(grepPath, "-Eq", canonicalSemverERE)
+		command.Stdin = strings.NewReader(candidate + "\n")
+		runErr := command.Run()
+		if runErr == nil {
+			return true
+		}
+		if exitErr, ok := runErr.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false
+		}
+		t.Fatalf("POSIX grep failed on %q: %v", candidate, runErr)
+		return false
+	}
+	for _, candidate := range canonicalSemverValidCorpus {
+		accepted, err := posixEREExists(canonicalSemverERE, candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !accepted || !grepAccepts(candidate) {
+			t.Fatalf("pure-Go and POSIX grep disagree on valid corpus member %q: pure=%v grep=%v", candidate, accepted, grepAccepts(candidate))
+		}
+	}
+	for _, candidate := range canonicalSemverInvalidCorpus {
+		accepted, err := posixEREExists(canonicalSemverERE, candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if accepted || grepAccepts(candidate) {
+			t.Fatalf("pure-Go and POSIX grep disagree on invalid corpus member %q: pure=%v grep=%v", candidate, accepted, grepAccepts(candidate))
+		}
+	}
+}
+
 // TestComposeInterpolationFollowsComposeVariableRules pins the semantics the
 // resolver claims for the forms compose.yaml uses.
 func TestComposeInterpolationFollowsComposeVariableRules(t *testing.T) {

@@ -37,7 +37,8 @@ Historical route-visual slice source inventory: **Web 328 tests** (pre-density r
 
 ### Compose 구성 해석 계약
 
-`compose.yaml` 계약은 기본 Go suite에서 순수 Go resolver로 강제한다: single-port default, loopback-only host publication, opt-in `standalone-web` profile, documented environment와 shared build args, exec-form healthcheck. 기본 suite는 Docker CLI를 호출하지 않는다. 회귀 검사는 PATH에 기록용 fake docker를 놓고 실행해 skip도 CLI 호출도 없음을 확인한다(`TestComposeContractIsEnforcedWithoutDocker`).
+`compose.yaml` 계약은 기본 Go suite에서 순수 Go resolver로 강제한다: single-port default, loopback-only host publication, opt-in `standalone-web` profile, documented environment와 shared build args, exec-form healthcheck. 기본 suite는 Docker CLI를 호출하지 않는다. 회귀 검사는 PATH에 기록용 fake docker만 놓고(다른 실행 파일 없이) 실행해 skip도 CLI 호출도 없음을 확인한다(`TestComposeContractIsEnforcedWithoutDocker`).
+canonical SemVer ERE 판정도 pure Go로 한다: POSIX ERE와 semantics가 같은 construct만 허용하고 그 밖은 fail-closed로 실패한다. `grep -E`는 존재할 때만 같은 corpus로 교차 검증한다(`TestCanonicalERECrossChecksPOSIXGrepWhenPresent`) — 부재는 이 교차 검증만 skip하고 enforce된 판정 자체는 이미 pure Go로 실행된다.
 resolver가 정확히 읽을 수 없는 구성(anchors, merge keys, tags, multi-document, block scalar, flow mapping, tab 들여쓰기, CRLF, compact mapping, duplicate key)은 다른 값으로 조용히 해석되지 않고 gate가 실패한다.
 실제 Compose CLI는 Docker가 존재할 때만 같은 계약을 교차 검증한다(`make test-integration`; `--env-file /dev/null`로 caller `.env`를 discover하지 않는다). CLI가 없으면 교차 검증만 skip되고 pure contract는 계속 실행된다. 요청한 opt-in gate의 CLI 부재는 actionable error로 실패한다. 두 경로 모두 구성만 resolve하며 daemon·컨테이너 시작·image build가 없다.
 
