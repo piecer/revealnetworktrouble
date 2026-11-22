@@ -18,6 +18,7 @@ const (
 	MaxTargets                = 20
 	DefaultTraceAttempts      = 5
 	MaxTraceAttempts          = 10
+	MaxSamples                = 10
 	RequestBudgetGrace        = time.Second
 	MaxRequestBudget          = MaxTimeout*MaxTraceAttempts + RequestBudgetGrace
 	DefaultCheckerCapacity    = 80
@@ -274,6 +275,12 @@ func (r *Runner) Validate(req Request) error {
 		if target.Attempts != 0 && target.Kind != KindTraceroute {
 			return fmt.Errorf("targets[%d].attempts is only supported for traceroute", i)
 		}
+		if target.Samples < 0 || target.Samples > MaxSamples {
+			return fmt.Errorf("targets[%d].samples must be between 1 and %d", i, MaxSamples)
+		}
+		if target.Samples != 0 && target.Kind == KindTraceroute {
+			return fmt.Errorf("targets[%d].samples is only supported for non-traceroute kinds", i)
+		}
 		if target.ExpectedStatus != 0 {
 			if target.Kind != KindHTTP && target.Kind != KindHTTPS {
 				return fmt.Errorf("targets[%d].expected_status is only supported for HTTP and HTTPS", i)
@@ -455,7 +462,26 @@ func (r *Runner) runChecker(runCtx context.Context, timeout time.Duration, targe
 			terminal.outcomes <- outcome
 		}
 	}()
-	result = r.checkers[target.Kind].Check(checkCtx, target)
+	samples := 1
+	if target.Samples > 1 {
+		samples = target.Samples
+	}
+	var observations []sampleObservation
+	for i := 0; i < samples; i++ {
+		// Each sample runs inside the remaining check window; request admission
+		// sizes the deadline for samples x timeout, so a sample that runs out of
+		// window reports its own error rather than silently distorting the
+		// distribution.
+		sample := r.checkers[target.Kind].Check(checkCtx, target)
+		observations = append(observations, observationFromResult(sample))
+		result = sample
+	}
+	// A panic mid-loop unwinds to the deferred recovery: partial observations
+	// would misrepresent distribution confidence, so no aggregate is computed.
+	if len(observations) > 1 {
+		stats := computeSampleStats(observations)
+		result.sampleStats = &stats
+	}
 	completedAt = time.Now()
 }
 
