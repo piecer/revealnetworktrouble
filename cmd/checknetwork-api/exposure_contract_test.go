@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -141,61 +139,32 @@ print(json.dumps([c for c in state["calls"] if c[:2] == ["container", "create"]]
 }
 
 func TestComposeResolvedExposureBoundary(t *testing.T) {
-	requireComposeIntegration(t)
-	type resolvedService struct {
-		Environment map[string]string `json:"environment"`
-		Ports       []struct {
-			HostIP string `json:"host_ip"`
-		} `json:"ports"`
-	}
+	source := repositoryFile(t, "compose.yaml")
 
-	// Only resolve configuration. Never start or replace a user's Compose stack.
-	resolve := func(profiles ...string) map[string]resolvedService {
+	// Configuration resolution only, in pure Go: the default suite enforces this
+	// boundary without the Docker CLI, which is cross-checked when Docker is present.
+	resolve := func(env map[string]string, profiles ...string) map[string]resolvedComposeService {
 		t.Helper()
-		args := []string{"compose", "-f", "compose.yaml"}
-		for _, profile := range profiles {
-			args = append(args, "--profile", profile)
-		}
-		args = append(args, "config", "--format", "json")
-		command := exec.Command("docker", args...)
-		command.Dir = "../.."
-		for _, entry := range os.Environ() {
-			if !strings.HasPrefix(entry, "CHECKNETWORK_") && !strings.HasPrefix(entry, "COMPOSE_") {
-				command.Env = append(command.Env, entry)
-			}
-		}
-		command.Env = append(command.Env, "COMPOSE_DISABLE_ENV_FILE=1")
-		output, err := command.CombinedOutput()
+		resolved, err := resolveComposeConfig(source, env, profiles)
 		if err != nil {
-			t.Fatalf("compose config: %v\n%s", err, output)
-		}
-		var resolved struct {
-			Services map[string]resolvedService `json:"services"`
-		}
-		if err := json.Unmarshal(output, &resolved); err != nil {
 			t.Fatal(err)
 		}
-		return resolved.Services
-	}
-
-	serviceNames := func(services map[string]resolvedService) []string {
-		names := make([]string, 0, len(services))
-		for name := range services {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		return names
+		return resolved
 	}
 
 	// Single-port serving is the default: one service publishes exactly one loopback port and
 	// serves both the Web workspace and the API from that same origin.
-	defaults := resolve()
+	defaults := resolve(nil)
 	if len(defaults) != 1 {
-		t.Fatalf("default Compose must resolve to one service for single-port serving, got %v", serviceNames(defaults))
+		t.Fatalf("default Compose must resolve to one service for single-port serving, got %v", sortedComposeNames(defaults))
 	}
 	api := defaults["api"]
-	if len(api.Ports) != 1 || api.Ports[0].HostIP != "127.0.0.1" {
+	if len(api.Ports) != 1 || api.Ports[0].HostIP != "127.0.0.1" || api.Ports[0].Published != "8090" || api.Ports[0].Target != "8080" {
 		t.Fatalf("single-port default must retain one loopback-only host publication: %+v", api.Ports)
+	}
+	// The resolved environment is the contract itself, never an ambient .env file.
+	if len(api.Environment) == 0 {
+		t.Fatal("default Compose does not resolve the documented environment contract")
 	}
 	config, err := loadRuntimeConfig(testEnvironment(api.Environment))
 	if err != nil || config.addr != ":8080" || !config.exposedTrustedLocal {
@@ -204,16 +173,34 @@ func TestComposeResolvedExposureBoundary(t *testing.T) {
 	if !config.webUI {
 		t.Fatalf("single-port default must serve the embedded Web workspace on the API listener: %v", api.Environment)
 	}
+	if strings.Join(config.server.AllowedOrigins, ",") != "http://localhost:8090,http://127.0.0.1:8090" {
+		t.Fatalf("default Compose origin contract changed: %v", config.server.AllowedOrigins)
+	}
+	healthcheck := strings.Join(api.Healthcheck, " ")
+	if healthcheck == "" || strings.Contains(healthcheck, "\n") || !strings.Contains(healthcheck, "http://127.0.0.1:8080/readyz") {
+		t.Fatalf("healthcheck must stay a single-line exec form on the loopback container address: %q", api.Healthcheck)
+	}
 
 	// The two-port layout remains available as an explicit profile with its own loopback publication.
-	profiled := resolve("standalone-web")
+	profiled := resolve(nil, "standalone-web")
 	if len(profiled) != 2 {
-		t.Fatalf("standalone-web profile must add the static Web service, got %v", serviceNames(profiled))
+		t.Fatalf("standalone-web profile must add the static Web service, got %v", sortedComposeNames(profiled))
 	}
 	for _, name := range []string{"api", "web"} {
 		ports := profiled[name].Ports
 		if len(ports) != 1 || ports[0].HostIP != "127.0.0.1" {
 			t.Errorf("%s must retain one loopback-only host publication: %+v", name, ports)
 		}
+	}
+
+	// A caller may intentionally replace the default origin, but the default itself
+	// stays loopback-only.
+	overridden := resolve(map[string]string{"CHECKNETWORK_ALLOWED_ORIGINS": "http://10.0.0.5:8090"})
+	if overridden["api"].Environment["CHECKNETWORK_ALLOWED_ORIGINS"] != "http://10.0.0.5:8090" {
+		t.Fatalf("caller origin override did not resolve: %v", overridden["api"].Environment)
+	}
+	overriddenConfig, err := loadRuntimeConfig(testEnvironment(overridden["api"].Environment))
+	if err != nil || strings.Join(overriddenConfig.server.AllowedOrigins, ",") != "http://10.0.0.5:8090" {
+		t.Fatalf("caller override did not reach the runtime contract: %v", err)
 	}
 }

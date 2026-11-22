@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -254,51 +253,32 @@ func TestComposeRuntimeContract(t *testing.T) {
 }
 
 func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) {
-	requireComposeIntegration(t)
-	type composeConfig struct {
-		Services map[string]struct {
-			Build struct {
-				Args map[string]string `json:"args"`
-			} `json:"build"`
-		} `json:"services"`
-	}
+	source := repositoryFile(t, "compose.yaml")
 
-	resolve := func(overrides ...string) composeConfig {
+	// Pure resolution in the default suite: the identity contract is enforced with no
+	// Docker CLI, and the real CLI is cross-checked separately when it is present.
+	resolve := func(overrides map[string]string) map[string]resolvedComposeService {
 		t.Helper()
-		// Web is opt-in under the standalone-web profile; resolve it explicitly so the
-		// shared identity contract still covers both services.
-		command := exec.Command("docker", "compose", "--profile", "standalone-web", "config", "--format", "json")
-		command.Dir = filepath.Join("..", "..")
-		for _, entry := range os.Environ() {
-			if strings.HasPrefix(entry, "CHECKNETWORK_VERSION=") ||
-				strings.HasPrefix(entry, "CHECKNETWORK_REVISION=") ||
-				strings.HasPrefix(entry, "SOURCE_DATE_EPOCH=") {
-				continue
-			}
-			command.Env = append(command.Env, entry)
-		}
-		command.Env = append(command.Env, overrides...)
-		output, err := command.CombinedOutput()
+		// Only the explicitly passed overrides form the environment, so an ambient .env
+		// or shell value cannot leak into the identity contract. Web is opt-in under the
+		// standalone-web profile; resolve it explicitly so the shared contract covers both.
+		resolved, err := resolveComposeConfig(source, overrides, []string{"standalone-web"})
 		if err != nil {
-			t.Fatalf("docker compose config: %v\n%s", err, output)
+			t.Fatal(err)
 		}
-		var config composeConfig
-		if err := json.Unmarshal(output, &config); err != nil {
-			t.Fatalf("decode docker compose config: %v\n%s", err, output)
-		}
-		return config
+		return resolved
 	}
 
-	assertShared := func(config composeConfig, want map[string]string) {
+	assertShared := func(resolved map[string]resolvedComposeService, want map[string]string) {
 		t.Helper()
 		for _, service := range []string{"api", "web"} {
-			resolved, ok := config.Services[service]
+			entry, ok := resolved[service]
 			if !ok {
 				t.Fatalf("resolved Compose config has no %s service", service)
 			}
 			for name, value := range want {
-				if got := resolved.Build.Args[name]; got != value {
-					t.Errorf("%s build arg %s=%q, want exact %q", service, name, got, value)
+				if entry.BuildArgs[name] != value {
+					t.Errorf("%s build arg %s=%q, want exact %q", service, name, entry.BuildArgs[name], value)
 				}
 			}
 		}
@@ -343,14 +323,14 @@ func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) 
 		"REVISION":          zeroRevision,
 		"SOURCE_DATE_EPOCH": "0",
 	}
-	resolvedDefaults := resolve()
+	resolvedDefaults := resolve(nil)
 	assertShared(resolvedDefaults, defaults)
 
 	// The independently specified canonical ERE, rather than either production
 	// copy, decides whether resolved Compose defaults are valid.
 	hex40 := regexp.MustCompile(`^[0-9a-f]{40}$`)
 	for _, service := range []string{"api", "web"} {
-		args := resolvedDefaults.Services[service].Build.Args
+		args := resolvedDefaults[service].BuildArgs
 		if !acceptsERE(canonicalSemverERE, args["VERSION"]) {
 			t.Errorf("resolved %s default VERSION %q is not canonical SemVer", service, args["VERSION"])
 		}
@@ -368,16 +348,19 @@ func TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable(t *testing.T) 
 		t.Fatalf("SemVer ERE duplication drift: frontend=%q release=%q canonical=%q", frontendMatch[1], releaseMatch[1], canonicalSemverERE)
 	}
 
-	overrides := map[string]string{
-		"VERSION":           "9.8.7-explicit.1+caller",
-		"REVISION":          "0123456789abcdef0123456789abcdef01234567",
-		"SOURCE_DATE_EPOCH": "1234567890",
+	// The build identity comes from the documented environment names, so a caller
+	// override must reach the shared build args through exactly those names.
+	callerEnv := map[string]string{
+		"CHECKNETWORK_VERSION":  "9.8.7-explicit.1+caller",
+		"CHECKNETWORK_REVISION": "0123456789abcdef0123456789abcdef01234567",
+		"SOURCE_DATE_EPOCH":     "1234567890",
 	}
-	assertShared(resolve(
-		"CHECKNETWORK_VERSION="+overrides["VERSION"],
-		"CHECKNETWORK_REVISION="+overrides["REVISION"],
-		"SOURCE_DATE_EPOCH="+overrides["SOURCE_DATE_EPOCH"],
-	), overrides)
+	overriddenArgs := map[string]string{
+		"VERSION":           callerEnv["CHECKNETWORK_VERSION"],
+		"REVISION":          callerEnv["CHECKNETWORK_REVISION"],
+		"SOURCE_DATE_EPOCH": callerEnv["SOURCE_DATE_EPOCH"],
+	}
+	assertShared(resolve(callerEnv), overriddenArgs)
 }
 
 func TestReleaseDockerfileIsImmutableAndCarriesExactIdentity(t *testing.T) {

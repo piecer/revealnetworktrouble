@@ -113,6 +113,6 @@ make ci-security
 make ci
 ```
 
-After installing frontend dependencies, `make test` needs neither Docker nor internet access. For offline use, select an installed Go 1.22+ with `GOTOOLCHAIN=local make test`. `make test-integration` separately requires the Docker Compose CLI; it resolves configuration without starting containers or using a daemon.
+After installing frontend dependencies, `make test` needs neither Docker nor internet access. The Compose contract is enforced in the default suite by a pure-Go resolver, so it runs regardless of the CLI being installed. For offline use, select an installed Go 1.22+ with `GOTOOLCHAIN=local make test`. `make test-integration` separately cross-checks the same contract against the Docker Compose CLI and requires that CLI; it resolves configuration without starting containers or using a daemon, and skips only that cross-check when the CLI is absent.
 
 See [CI](docs/CI.md), [testing](docs/TESTING.md), [verification evidence](docs/archive/PHASE2-VERIFICATION.md), [plan](ROADMAP.md) and [changelog](CHANGELOG.md). Local automation does not establish hosted required-check enforcement, exact-SHA release reproducibility or physical Chrome/Firefox/Safari, screen-reader, Android and TLS-proxy acceptance.

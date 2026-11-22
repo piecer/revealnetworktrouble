@@ -4,7 +4,7 @@
 
 ## 환경
 
-Go module 최소 버전은 1.22이고 CI는 수정 툴체인 Go 1.26.11을 사용한다. 기본 검사에는 Go 1.22+, Node 22+, npm lockfile, Python 3, make와 Git이 필요하다. `npm ci`로 개발 의존성을 먼저 준비하면 `make test` 자체는 Docker·외부망·Android SDK를 요구하지 않는다. `make test-integration`은 Docker Compose CLI를 추가로 요구한다(daemon·컨테이너 시작 없음). Full은 JDK 17, Android platform 35/build-tools 35.0.0을 추가로 요구한다. 실제 Docker/브라우저/기기 검증은 [CI](docs/CI.md)와 [테스트](docs/TESTING.md)의 별도 조건을 따른다.
+Go module 최소 버전은 1.22이고 CI는 수정 툴체인 Go 1.26.11을 사용한다. 기본 검사에는 Go 1.22+, Node 22+, npm lockfile, Python 3, make와 Git이 필요하다. `npm ci`로 개발 의존성을 먼저 준비하면 `make test` 자체는 Docker·외부망·Android SDK를 요구하지 않는다. Compose 구성 계약은 순수 Go resolver로 기본 suite에서 실행되므로 Compose CLI 부재와 무관하게 강제된다. `make test-integration`은 같은 계약을 실제 Compose CLI와 교차 검증하며 Compose CLI를 추가로 요구한다(daemon·컨테이너 시작 없음, caller `.env` discover 없음; CLI가 없으면 이 교차 검증만 skip된다). Full은 JDK 17, Android platform 35/build-tools 35.0.0을 추가로 요구한다. 실제 Docker/브라우저/기기 검증은 [CI](docs/CI.md)와 [테스트](docs/TESTING.md)의 별도 조건을 따른다.
 
 오프라인에서는 설치된 Go 1.22+를 선택해 `GOTOOLCHAIN=local make test`를 실행한다. 더 높은 버전의 `GOTOOLCHAIN`을 지정하면 Go가 해당 툴체인을 다운로드할 수 있다. 의존성 설치 자체(`npm ci`)와 릴리스/보안 도구 설치까지 오프라인이라는 뜻은 아니다.
 

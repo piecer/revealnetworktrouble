@@ -5,7 +5,7 @@
 ```bash
 npm --prefix frontend ci
 make test                 # Go/Web + CI 정책; Docker·외부망·Android 불필요(의존성 사전 설치)
-make test-integration     # Docker Compose config 검증; daemon·컨테이너 시작 없음
+make test-integration     # pure Compose contract + 실제 Compose CLI 교차 검증; daemon·컨테이너 시작 없음
 make web-test-syntax      # 모든 Web JavaScript 구문 검사
 make test-race
 make vet
@@ -35,6 +35,12 @@ Historical route-visual slice source inventory: **Web 328 tests** (pre-density r
 
 ## 테스트 계층
 
+### Compose 구성 해석 계약
+
+`compose.yaml` 계약은 기본 Go suite에서 순수 Go resolver로 강제한다: single-port default, loopback-only host publication, opt-in `standalone-web` profile, documented environment와 shared build args, exec-form healthcheck. 기본 suite는 Docker CLI를 호출하지 않는다. 회귀 검사는 PATH에 기록용 fake docker를 놓고 실행해 skip도 CLI 호출도 없음을 확인한다(`TestComposeContractIsEnforcedWithoutDocker`).
+resolver가 정확히 읽을 수 없는 구성(anchors, merge keys, tags, multi-document, block scalar, flow mapping, tab 들여쓰기, CRLF, compact mapping, duplicate key)은 다른 값으로 조용히 해석되지 않고 gate가 실패한다.
+실제 Compose CLI는 Docker가 존재할 때만 같은 계약을 교차 검증한다(`make test-integration`; `--env-file /dev/null`로 caller `.env`를 discover하지 않는다). CLI가 없으면 교차 검증만 skip되고 pure contract는 계속 실행된다. 요청한 opt-in gate의 CLI 부재는 actionable error로 실패한다. 두 경로 모두 구성만 resolve하며 daemon·컨테이너 시작·image build가 없다.
+
 ### 선택적 통합 Chromium gate
 
 `PLAYWRIGHT_PATH=/path/to/playwright make web-test-browser`는 graph-first, route-visual(상호작용 포함), 라벨 최대 입력, empty-state replay와 실제 Go-handler CORS 검사를 실행한다. Playwright 및 Chromium은 별도 설치가 필요하며 부재는 이 opt-in target의 실패다. 기본 `make test`는 브라우저 설치를 요구하지 않는다. `BROWSER_OUTPUT_DIR`를 지정하면 그 아래 고유 증거 디렉터리를 만들고, 생략하면 `TMPDIR`/OS temporary directory 아래에 만든다. 기존 증거를 덮어쓰지 않는다.
@@ -53,7 +59,7 @@ Browser wrapper는 120초 deadline을 넘으면 SIGTERM 전 timeout failure를 �
 
 ### 배포 설정과 static freshness
 
-`make web-test-deployment`는 Docker Compose CLI의 실제 config resolution, post-COPY Dockerfile recipe, jsdom `createApp` request path, malformed port rejection, canonical nine-asset bytes/manifest/mtime 및 harness ownership tests를 실행한다. Docker daemon이나 image build는 사용하지 않는다. Deployment JS tests는 기본 Web suite에도 수집되지만 Compose CLI가 없으면 config-resolution case만 skip한다. 명시적 deployment target에서는 CLI 부재가 실패다. Ownership Python tests는 Go canonical suite에서도 실행한다.
+`make web-test-deployment`는 Docker Compose CLI의 실제 config resolution, post-COPY Dockerfile recipe, jsdom `createApp` request path, malformed port rejection, canonical nine-asset bytes/manifest/mtime 및 harness ownership tests를 실행한다. Docker daemon이나 image build는 사용하지 않는다. Deployment JS tests는 기본 Web suite에도 수집되지만 Compose CLI가 없으면 config-resolution case만 skip한다. 명시적 deployment target에서는 CLI 부재가 실패다. 이 skip은 compose 계약 자체를 미검증으로 만들지 않는다: default single-port, opt-in profile과 loopback-only publication은 같은 suite의 Go pure resolver gate에서 CLI와 무관하게 실행된다. Ownership Python tests는 Go canonical suite에서도 실행한다.
 
 실제 nginx gate는 `make web-test-deployment-live DEPLOYMENT_RECEIPTS=/absolute/new/evidence-directory`로 별도 실행한다. Docker daemon과 이미 캐시된 pinned nginx base가 필요하며 기존 디렉터리를 증거 경로로 재사용하지 않는다. 자체 nonce-owned container/ephemeral loopback port만 만들고 read-only config/assets를 mount한다. 동일 epoch와 길이의 두 세대에 대한 18 conditional responses가 모두 새 bytes의 200/no-store여야 하며 exact container ID/name/owner 재확인 후 제거·absence readback을 요구한다. Borrowed image와 기존 서비스는 변경하지 않는다. 이 gate는 실제 nginx 응답 검증이지 production deployment나 두 release build의 재현성 검증은 아니다.
 

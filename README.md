@@ -178,7 +178,7 @@ Go/Web 기본 테스트에는 Go 1.22 이상, Node.js 22 이상, npm, Python 3, 
 export GOTOOLCHAIN=go1.26.11
 npm --prefix frontend ci
 make test             # Go/Web 테스트 및 Android 환경 탐색 스크립트 검사
-make test-integration # Docker Compose config 검사; daemon·컨테이너 시작 없음
+make test-integration # pure Compose contract + 실제 Compose CLI 교차 검증; daemon·컨테이너 시작 없음
 make web-test-syntax  # JavaScript 문법 검사
 make test-race        # Go 동시성 검사
 make vet              # Go 정적 검사

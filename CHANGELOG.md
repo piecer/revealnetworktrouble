@@ -16,6 +16,13 @@
 - 화면과 API를 분리하는 두 포트 구성(Web `3000`, API `8090`)은 `standalone-web` profile로 선택할 때만 시작된다.
 - Compose 노출 경계와 build identity 계약 테스트를 단일 포트 기본값과 profile 경로 양쪽에 대해 회귀 검사로 갱신했다. binary 기본값 `off`와 릴리스 검증 경계는 유지한다.
 
+### 테스트 계층 — Compose 계약의 clean-environment 강제 집행
+
+- Compose 구성 계약(default single-port, loopback-only host publication, opt-in `standalone-web` profile, documented environment와 shared build args, exec-form healthcheck)을 Docker CLI 없이 기본 Go suite에서 실행하는 pure-Go resolver를 추가한다. 실제 Compose CLI는 Docker가 존재할 때만 같은 결과를 교차 검증한다.
+- resolver는 `compose.yaml`이 사용하는 YAML subset만 읽고 subset 밖의 구성(anchors, merge keys, tags, multi-document, block scalar, flow mapping, compact mapping, duplicate key, tab 들여쓰기, CRLF)은 조용히 오독하지 않고 gate가 실패한다.
+- skip 경로와 CLI 호출 없음을 확인하는 regression tests를 추가한다(`TestComposeContractIsEnforcedWithoutDocker`), 명시적으로 요청한 opt-in gate의 CLI 부재는 actionable error로 유지한다.
+- pure resolver와 real Compose CLI의 결과 일치는 gate로 검증한다: `TestRealComposeCLIResolvesIdenticallyToPureResolver`는 Compose CLI가 존재할 때만 같은 corpus로 실행되고, 다른 Compose CLI 버전과 diverge하면 실패한다. Android·브라우저·운영 환경 acceptance는 이 변경으로 해결된 것이 아니다.
+
 ### Go 표준 라이브러리 보안 갱신 — 2026-11-11
 
 - 실제 source/추출 binary 검사에서 GO-2026-6859가 검출된 Go 1.26.10 후보를 제외하고 CI·Docker builder·offline validator·fixture를 Go 1.26.11로 함께 갱신한다.

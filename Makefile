@@ -62,7 +62,7 @@ test: android-env-bootstrap-test ci-policy
 	$(MAKE) web-test
 
 test-integration:
-	CHECKNETWORK_RUN_COMPOSE_TESTS=1 go test -count=1 ./cmd/checknetwork-api -run '^TestComposeResolved'
+	CHECKNETWORK_RUN_COMPOSE_TESTS=1 go test -count=1 ./cmd/checknetwork-api -run '^TestComposeResolved|^TestRealComposeCLI'
 
 frontend-deps:
 	npm --prefix frontend ci
