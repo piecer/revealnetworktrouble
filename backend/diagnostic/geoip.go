@@ -51,7 +51,13 @@ type GeoIPSource string
 const (
 	GeoIPSourceUpstream GeoIPSource = "upstream"
 	GeoIPSourceCache    GeoIPSource = "cache"
+	// GeoIPSourceDisabled marks that enrichment was skipped by configuration,
+	// not that a lookup failed: analysis must not count it as a provider failure.
+	GeoIPSourceDisabled GeoIPSource = "disabled"
 )
+
+// ErrGeoIPDisabled is the typed sentinel for the configuration off switch.
+var ErrGeoIPDisabled = errors.New("geolocation lookup is disabled by configuration")
 
 type IPMetadata struct {
 	Geolocation *GeoLocation      `json:"geolocation,omitempty"`
@@ -151,6 +157,7 @@ type IPWhoIsLookup struct {
 	policyClientErr error
 
 	mu              sync.Mutex
+	disabled        bool
 	cache           map[string]geoIPCacheEntry
 	inflight        map[string]*geoIPFlight
 	cacheMaxEntries int
@@ -212,9 +219,25 @@ func boundedGeoIPLimit(value, fallback, hardMaximum int) int {
 	return value
 }
 
+// SetDisabled flips the configuration off switch. It is concurrency-safe
+// because the lookup is shared across requests.
+func (l *IPWhoIsLookup) SetDisabled(disabled bool) {
+	l.mu.Lock()
+	l.disabled = disabled
+	l.mu.Unlock()
+}
+
 func (l *IPWhoIsLookup) Lookup(ctx context.Context, ip net.IP) (IPMetadata, error) {
 	if err := ctx.Err(); err != nil {
 		return IPMetadata{}, geoIPContextError(err)
+	}
+	l.mu.Lock()
+	isDisabled := l.disabled
+	l.mu.Unlock()
+	if isDisabled {
+		// Report the disabled state instead of a cached hit: configuration, not
+		// data availability, is what the consumer needs to see.
+		return IPMetadata{Source: GeoIPSourceDisabled}, ErrGeoIPDisabled
 	}
 	if ip == nil || (ip.To4() == nil && ip.To16() == nil) {
 		return IPMetadata{}, newGeoIPError(GeoIPErrorMalformed, false, nil)
