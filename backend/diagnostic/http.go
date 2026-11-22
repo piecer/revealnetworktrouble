@@ -131,6 +131,8 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 	}
 	client = &clientCopy
 	var tlsObservation tlsHandshakeObservation
+	stageObserver := newStageTimingObserver(now)
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), stageObserver.trace()))
 	if kind == KindHTTPS {
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), tlsObservation.trace()))
 	}
@@ -169,6 +171,13 @@ func checkHTTP(ctx context.Context, target Target, kind Kind, scheme string, con
 		"expected_status": expected,
 		"protocol":        resp.Proto,
 		"content_type":    resp.Header.Get("Content-Type"),
+	}
+	if durations := stageObserver.ObservedDurations(); len(durations) > 0 {
+		block := make(map[string]any, len(durations))
+		for key, duration := range durations {
+			block[key] = duration
+		}
+		result.Details[ResultDetailStageTiming] = block
 	}
 	if resp.TLS != nil {
 		result.Details[ResultDetailTLSVersion] = tlsVersionName(resp.TLS.Version)
