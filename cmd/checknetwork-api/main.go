@@ -43,6 +43,7 @@ type runtimeConfig struct {
 	addr                string
 	exposedTrustedLocal bool
 	geoIPURL            string
+	geoIPDisabled       bool
 	webUI               bool
 	server              api.ServerConfig
 	maxConcurrentChecks int
@@ -70,6 +71,7 @@ func runMain() int {
 		policy = diagnostic.NewNetworkPolicy(nil, nil)
 	}
 	geoIP := diagnostic.NewIPWhoIsLookupWithPolicy(nil, config.geoIPURL, policy)
+	applyGeoIPConfig(geoIP, config.geoIPDisabled)
 	checkers := buildCheckers(config.server.Mode, policy, geoIP, tracerouteCapability)
 	supervisor, err := diagnostic.NewCheckerSupervisor(config.maxConcurrentChecks)
 	if err != nil {
@@ -257,9 +259,22 @@ func loadRuntimeConfig(lookup func(string) string) (runtimeConfig, error) {
 			return runtimeConfig{}, fmt.Errorf("CHECKNETWORK_MAX_CONCURRENT_CHECKS must not exceed %d", diagnostic.MaxCheckerCapacity)
 		}
 	}
+	// Strict switch: an ambiguous value is rejected instead of silently
+	// defaulting, so a typo cannot turn enrichment off (or on) by accident.
+	geoIPDisabled := false
+	if value := strings.TrimSpace(lookup("CHECKNETWORK_GEOIP")); value != "" {
+		switch value {
+		case "on":
+		case "off":
+			geoIPDisabled = true
+		default:
+			return runtimeConfig{}, fmt.Errorf("CHECKNETWORK_GEOIP must be on or off")
+		}
+	}
 	config := runtimeConfig{
 		addr:                envFrom(lookup, "CHECKNETWORK_ADDR", "127.0.0.1:8080"),
 		geoIPURL:            envFrom(lookup, "CHECKNETWORK_GEOIP_URL", "https://ipwho.is/"),
+		geoIPDisabled:       geoIPDisabled,
 		webUI:               webUI == "on",
 		maxConcurrentChecks: maxConcurrentChecks,
 		maxConnections:      maxConnections,
@@ -309,6 +324,15 @@ func bindingHost(addr string) string {
 func bindingIsLoopback(host string) bool {
 	ip := net.ParseIP(strings.TrimSpace(host))
 	return ip != nil && ip.IsLoopback()
+}
+
+// applyGeoIPConfig propagates the configuration switch to the shared lookup
+// instance used by checkers. The narrow optional interface keeps GeoIPLookup
+// unchanged for existing test doubles.
+func applyGeoIPConfig(lookup diagnostic.GeoIPLookup, disabled bool) {
+	if switcher, ok := lookup.(interface{ SetDisabled(bool) }); ok {
+		switcher.SetDisabled(disabled)
+	}
 }
 
 func buildCheckers(mode api.DeploymentMode, policy *diagnostic.NetworkPolicy, geoIP diagnostic.GeoIPLookup, tracerouteCapability *diagnostic.TracerouteCapability) []diagnostic.Checker {
