@@ -211,6 +211,77 @@ func presentationScenarioSources(t *testing.T) []diagnostic.PresentationScenario
 		Name:   "control.mixed_greeting_healthy_dns_failed",
 		Report: runPresentationReportWithCheckers(t, fmt.Sprintf("%024x", 0x220), mixedTargets, mixedCheckers),
 	})
+
+	// The aggregate rules must be witnessed through wire data the producer
+	// writes, not through an injected finding. Each scenario carries a closed
+	// detail block that the rule reads back.
+	slowServerDetails := map[string]any{
+		"status_code":     200,
+		"expected_status": 200,
+		diagnostic.ResultDetailStageTiming: map[string]any{
+			diagnostic.ResultDetailDNSPhaseMS:     120,
+			diagnostic.ResultDetailConnectPhaseMS: 50,
+			diagnostic.ResultDetailTLSPhaseMS:     300,
+			diagnostic.ResultDetailTTFBPhaseMS:    1500,
+		},
+	}
+	slowReport := runPresentationReport(t, fmt.Sprintf("%024x", 0x230),
+		[]diagnostic.Target{{Kind: diagnostic.KindHTTP, Address: "http://slow.example.test/health"}},
+		map[diagnostic.Kind]func(diagnostic.Target) diagnostic.Result{
+			diagnostic.KindHTTP: func(diagnostic.Target) diagnostic.Result {
+				return diagnostic.Result{Status: diagnostic.StatusHealthy, Details: slowServerDetails}
+			},
+		})
+	sources = append(sources, diagnostic.PresentationScenarioSource{
+		Name:           "finding.http_slow_server_response",
+		PrimaryFinding: diagnostic.FindingHTTPSlowServerResponse,
+		Report:         slowReport,
+	})
+
+	// Three observations on one target, two failed and one healthy. The last
+	// observation is the reported result, so the aggregate is the only claim.
+	observations := 0
+	sampleTarget := diagnostic.Target{Kind: diagnostic.KindTCP, Address: "198.51.100.23:22", Samples: 3}
+	sampleChecker := presentationChecker{kind: diagnostic.KindTCP, result: func(diagnostic.Target) diagnostic.Result {
+		observations++
+		if observations < 3 {
+			return diagnostic.Result{Status: diagnostic.StatusUnreachable, ErrorCode: "connection_failed", LatencyMS: 110, Details: map[string]any{}}
+		}
+		return diagnostic.Result{Status: diagnostic.StatusHealthy, LatencyMS: 100, Details: map[string]any{
+			"local_address":  "198.51.100.23:22",
+			"remote_address": "198.51.100.23:22",
+		}}
+	}}
+	sources = append(sources, diagnostic.PresentationScenarioSource{
+		Name:           "finding.intermittent_connectivity",
+		PrimaryFinding: diagnostic.FindingIntermittentConnectivity,
+		Report: runPresentationReportWithCheckers(t, fmt.Sprintf("%024x", 0x240), []diagnostic.Target{sampleTarget}, []diagnostic.Checker{sampleChecker}),
+	})
+
+	divergenceDetails := map[string]any{
+		"addresses":     []string{"192.0.2.53"},
+		"answer_count":  1,
+		diagnostic.ResultDetailResolverComparison: map[string]any{
+			"comparable":     true,
+			"match":          false,
+			"only_system":    []string{"192.0.2.53"},
+			"only_reference": []string{"198.51.100.53"},
+			"gap_side":       "",
+		},
+	}
+	divergenceReport := runPresentationReport(t, fmt.Sprintf("%024x", 0x250),
+		[]diagnostic.Target{{Kind: diagnostic.KindDNS, Address: "divergence.example.test"}},
+		map[diagnostic.Kind]func(diagnostic.Target) diagnostic.Result{
+			diagnostic.KindDNS: func(diagnostic.Target) diagnostic.Result {
+				return diagnostic.Result{Status: diagnostic.StatusHealthy, Details: divergenceDetails}
+			},
+		})
+	sources = append(sources, diagnostic.PresentationScenarioSource{
+		Name:           "finding.local_resolver_divergence",
+		PrimaryFinding: diagnostic.FindingLocalResolverDivergence,
+		Report:         divergenceReport,
+	})
+
 	return sources
 }
 
@@ -327,6 +398,12 @@ func presentationCoverageProbes() []diagnostic.Result {
 		{Kind: diagnostic.KindHTTPS, Status: diagnostic.StatusHealthy, Details: map[string]any{"status_code": 200, "expected_status": 200, diagnostic.ResultDetailTLSVersion: "TLS 1.3", diagnostic.ResultDetailCertificateExpires: 42}},
 		{Kind: diagnostic.KindTraceroute, Status: diagnostic.StatusHealthy, Details: mergeDetails(validTrace(diagnostic.StatusHealthy), map[string]any{"geoip_provider_failures": 1})},
 		{Kind: diagnostic.KindTraceroute, Status: diagnostic.StatusHealthy, Details: mergeDetails(validTrace(diagnostic.StatusHealthy), map[string]any{"geoip_enrichment": map[string]any{}})},
+		// Closed aggregate blocks: a block that drifts from its registered key
+		// set is a coverage limitation, and a comparison that never completed is
+		// a gap rather than a divergence claim.
+		{Kind: diagnostic.KindHTTP, Status: diagnostic.StatusHealthy, Details: map[string]any{diagnostic.ResultDetailStageTiming: map[string]any{diagnostic.ResultDetailDNSPhaseMS: "120"}}},
+		{Kind: diagnostic.KindTCP, Status: diagnostic.StatusHealthy, Details: map[string]any{diagnostic.ResultDetailSampleStats: map[string]any{"count": 3}}},
+		{Kind: diagnostic.KindDNS, Status: diagnostic.StatusHealthy, Details: map[string]any{diagnostic.ResultDetailResolverComparison: map[string]any{"comparable": false, "match": false, "only_system": []string{}, "only_reference": []string{}, "gap_side": "reference"}}},
 		{Kind: diagnostic.KindTraceroute, Status: diagnostic.StatusDegraded, Details: mergeDetails(traceCounters(1, 1, 0, 0, 0, 0), map[string]any{"attempts": []any{"malformed"}})},
 		{Kind: diagnostic.KindTraceroute, Status: diagnostic.StatusUnreachable, ErrorCode: "destination_unreached", Details: traceCounters(1, 0, 0, 1, 0, 0)},
 		{Kind: diagnostic.KindTraceroute, Status: diagnostic.StatusHealthy, Details: validTrace(diagnostic.StatusHealthy)},

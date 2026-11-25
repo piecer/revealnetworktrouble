@@ -146,7 +146,7 @@ func assertTracerouteWitnessWireTruth(t *testing.T, full, compact []byte, witnes
 func assertResultAllowedByFindingContract(t *testing.T, result diagnostic.Result) {
 	t.Helper()
 	for _, shape := range diagnostic.ProducerFindingContract().ResultShapes {
-		if shape.Status != result.Status || shape.ErrorCode != result.ErrorCode || !containsKind(shape.Kinds, result.Kind) {
+		if shape.Status != result.Status || shape.ErrorCode != result.ErrorCode || !diagnostic.ContainsKind(shape.Kinds, result.Kind) {
 			continue
 		}
 		allowed := make(map[string]bool, len(shape.RequiredDetails)+len(shape.OptionalDetails))
@@ -171,13 +171,4 @@ func assertResultAllowedByFindingContract(t *testing.T, result diagnostic.Result
 		}
 	}
 	t.Fatalf("producer result has no semantic shape: kind=%s status=%s error_code=%q details=%v", result.Kind, result.Status, result.ErrorCode, result.Details)
-}
-
-func containsKind(kinds []diagnostic.Kind, want diagnostic.Kind) bool {
-	for _, kind := range kinds {
-		if kind == want {
-			return true
-		}
-	}
-	return false
 }

@@ -1537,14 +1537,15 @@ test('Web presentation registry exhaustively matches all producer finding keys w
   const contract = JSON.parse(await readFile(new URL('../testdata/finding-contract.json', import.meta.url), 'utf8'));
   const { FINDING_PRESENTATION_REGISTRY, EVIDENCE_SIGNAL_PRESENTATION_REGISTRY, COVERAGE_CODE_PRESENTATION_REGISTRY } = await import('./app.js');
   const expected = contract.findings.map(finding => finding.presentation_key).sort();
-  assert.equal(expected.length, 23);
+  assert.equal(expected.length, 26);
   assert.deepEqual(Object.keys(FINDING_PRESENTATION_REGISTRY).sort(), expected);
   assert.deepEqual(Object.keys(EVIDENCE_SIGNAL_PRESENTATION_REGISTRY).sort(), [
-    'error_code', 'http.status_code', 'tls.certificate_expires_at', 'traceroute.attempts_cancelled',
+    'error_code', 'http.status_code', 'resolver_comparison', 'sample_stats', 'stage_timing',
+    'tls.certificate_expires_at', 'traceroute.attempts_cancelled',
     'traceroute.attempts_execution_failed', 'traceroute.attempts_reached', 'traceroute.attempts_timed_out',
     'traceroute.execution_failures', 'traceroute.path_signatures', 'traceroute.path_status'
   ]);
-  assert.deepEqual(Object.keys(COVERAGE_CODE_PRESENTATION_REGISTRY).sort(), ['malformed_details', 'missing_details', 'unsupported_details']);
+  assert.deepEqual(Object.keys(COVERAGE_CODE_PRESENTATION_REGISTRY).sort(), ['configuration_disabled', 'malformed_details', 'missing_details', 'unsupported_details']);
   for (const key of expected) {
     const entry = FINDING_PRESENTATION_REGISTRY[key];
     assert.equal(entry.key, key);
@@ -1554,7 +1555,7 @@ test('Web presentation registry exhaustively matches all producer finding keys w
   }
 });
 
-test('all 21 coverage issues combine their fixed private label and category with fixed code text', async () => {
+test('all 24 coverage issues combine their fixed private label and category with fixed code text', async () => {
   const contract = JSON.parse(await readFile(new URL('../testdata/presentation-contract.json', import.meta.url), 'utf8'));
   const base = contract.scenarios.find(scenario => scenario.name === 'finding.dns_resolution_failed').report;
   const { COVERAGE_SIGNAL_PRESENTATION_REGISTRY, COVERAGE_CODE_PRESENTATION_REGISTRY, presentReport } = await import('./app.js');
@@ -1563,9 +1564,11 @@ test('all 21 coverage issues combine their fixed private label and category with
     dns_answers: ['DNS answer facts', 'dns'], endpoint: ['Connected endpoint facts', 'connectivity'],
     error_code: ['Result error code', 'result'], geoip: ['GeoIP result facts', 'geoip'],
     geoip_enrichment: ['GeoIP enrichment facts', 'geoip'], http_status: ['HTTP status facts', 'http'],
-    kind: ['Result kind', 'result'], response_body: ['Response body facts', 'http'],
-    result: ['Result observation', 'result'], service_verification_details: ['Service verification details', 'service'],
-    service_verification_scope: ['Service verification scope', 'service'], status: ['Result status', 'result'],
+    kind: ['Result kind', 'result'], resolver_comparison: ['Resolver comparison facts', 'dns'],
+    response_body: ['Response body facts', 'http'],
+    result: ['Result observation', 'result'], sample_stats: ['Sampling aggregate facts', 'result'],
+    service_verification_details: ['Service verification details', 'service'],
+    service_verification_scope: ['Service verification scope', 'service'], stage_timing: ['Stage timing facts', 'http'], status: ['Result status', 'result'],
     tls: ['TLS handshake facts', 'tls'], tls_certificate: ['TLS certificate facts', 'tls'],
     tls_failure_details: ['TLS failure details', 'tls'], trace_attempts: ['Traceroute attempt counters', 'traceroute'],
     trace_error: ['Traceroute error facts', 'traceroute'], trace_paths: ['Completed traceroute path facts', 'traceroute'],
@@ -1694,7 +1697,7 @@ test('maximum producer report lazily owns one bounded finding panel and rejects 
   t.diagnostic(`maximum report DOM elements: initial=${initialElements}, peak=${peakElements}, findings=${toggles.length}`);
 });
 
-test('all 23 finding families render and export only six stable local semantic sections with safe facts', async () => {
+test('all 26 finding families render and export only six stable local semantic sections with safe facts', async () => {
   const contract = JSON.parse(await readFile(new URL('../testdata/finding-contract.json', import.meta.url), 'utf8'));
   const { FINDING_PRESENTATION_REGISTRY } = await import('./app.js');
   const poison = {
@@ -1711,6 +1714,9 @@ test('all 23 finding families render and export only six stable local semantic s
   const safeEvidence = signal => ({
     error_code: ['connection_failed', ''],
     'http.status_code': ['503', '200'],
+    resolver_comparison: ['record sets differ: 1 system-only, 1 reference-only', ''],
+    sample_stats: ['3 samples: 1 succeeded, 2 failed, 33 percent success rate', ''],
+    stage_timing: ['dominant observed phase ttfb 1500 ms of 1970 ms total', ''],
     'tls.certificate_expires_at': ['2026-09-09T00:00:00Z', ''],
     'traceroute.attempts_cancelled': ['1', '0'],
     'traceroute.attempts_execution_failed': ['1', '0'],
@@ -1751,7 +1757,7 @@ test('all 23 finding families render and export only six stable local semantic s
 
   const semanticKeys = ['cause', 'next_action', 'supporting_evidence', 'expectation', 'evidence_directness', 'coverage_limitation'];
   const articles = [...document.querySelectorAll('[data-analysis-section="findings"] article')];
-  assert.equal(articles.length, 23);
+  assert.equal(articles.length, 26);
   for (const article of articles) {
     article.querySelector('.finding-toggle').click();
     assert.deepEqual([...article.querySelectorAll('[data-semantic-key]')].map(node => node.dataset.semanticKey), semanticKeys);
@@ -1763,7 +1769,7 @@ test('all 23 finding families render and export only six stable local semantic s
   for (const value of Object.values(poison)) assert.doesNotMatch(visibleText, new RegExp(value, 'i'), value);
 
   document.querySelector('#download-human').click();
-  for (const key of semanticKeys) assert.equal(exported.match(new RegExp(`^### ${key} \\[finding\\.`, 'gm'))?.length, 23, key);
+  for (const key of semanticKeys) assert.equal(exported.match(new RegExp(`^### ${key} \\[finding\\.`, 'gm'))?.length, 26, key);
   assert.match(exported, /Observed code: connection_failed/);
   assert.match(exported, /Result status was available/);
   assert.match(exported, /Checker details were not available/);
@@ -1800,7 +1806,7 @@ test('all eight valid greeting then close service kinds retain exact bounded mea
   }
 });
 
-test('producer presentation fixture is consumed exactly across all 33 DOM and Markdown scenarios', async t => {
+test('producer presentation fixture is consumed exactly across all 36 DOM and Markdown scenarios', async t => {
   const contract = JSON.parse(await readFile(new URL('../testdata/presentation-contract.json', import.meta.url), 'utf8'));
   const {
     PRESENTATION_SEMANTIC_KEYS, FINDING_PRESENTATION_REGISTRY,
@@ -1813,10 +1819,10 @@ test('producer presentation fixture is consumed exactly across all 33 DOM and Ma
   assert.deepEqual(contract.semantic_keys, [...PRESENTATION_SEMANTIC_KEYS]);
   assert.deepEqual(Object.keys(contract).sort(), ['action_relationships', 'coverage_signals', 'evidence_signals', 'scenarios', 'schema', 'semantic_keys']);
   assert.equal(contract.semantic_keys.length, 6);
-  assert.equal(contract.action_relationships.length, 23);
-  assert.equal(contract.evidence_signals.length, 10);
-  assert.equal(contract.coverage_signals.length, 21);
-  assert.equal(contract.scenarios.length, 33);
+  assert.equal(contract.action_relationships.length, 26);
+  assert.equal(contract.evidence_signals.length, 13);
+  assert.equal(contract.coverage_signals.length, 24);
+  assert.equal(contract.scenarios.length, 36);
   assert.deepEqual(Object.keys(FINDING_PRESENTATION_REGISTRY).sort(), contract.action_relationships.map(item => item.finding_presentation_key).sort());
   assert.deepEqual(Object.keys(EVIDENCE_SIGNAL_PRESENTATION_REGISTRY).sort(), contract.evidence_signals.map(item => item.signal).sort());
   assert.deepEqual(Object.keys(COVERAGE_SIGNAL_PRESENTATION_REGISTRY).sort(), [...contract.coverage_signals].sort());

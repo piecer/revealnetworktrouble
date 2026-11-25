@@ -25,15 +25,23 @@ const (
 	ResultDetailTLSPhaseMS     = "tls_ms"
 	ResultDetailTTFBPhaseMS    = "ttfb_ms"
 
-	DetailTypeString              = "string"
-	DetailTypeNonEmptyString      = "nonempty_string"
-	DetailTypeCanonicalUTCRFC3339 = "canonical_utc_rfc3339"
-	DetailTypeUTCTimestamp        = "utc_timestamp"
-	DetailTypeNonNegativeInteger  = "nonnegative_integer"
-	DetailTypeStringArray         = "string_array"
-	DetailTypeTraceAttempts       = "trace_attempts"
-	DetailTypeTopology            = "topology"
-	DetailTypeEnrichment          = "enrichment"
+	// Aggregates ride as closed detail blocks so every client reads the same
+	// keys instead of private fields.
+	ResultDetailSampleStats        = "sample_stats"
+	ResultDetailResolverComparison = "resolver_comparison"
+
+	DetailTypeString                  = "string"
+	DetailTypeNonEmptyString          = "nonempty_string"
+	DetailTypeCanonicalUTCRFC3339     = "canonical_utc_rfc3339"
+	DetailTypeUTCTimestamp            = "utc_timestamp"
+	DetailTypeNonNegativeInteger      = "nonnegative_integer"
+	DetailTypeStringArray             = "string_array"
+	DetailTypeTraceAttempts           = "trace_attempts"
+	DetailTypeTopology                = "topology"
+	DetailTypeEnrichment              = "enrichment"
+	DetailTypeStageTimingBlock        = "stage_timing_block"
+	DetailTypeSampleStatsBlock        = "sample_stats_block"
+	DetailTypeResolverComparisonBlock = "resolver_comparison_block"
 )
 
 type FindingContractEntry struct {
@@ -71,8 +79,11 @@ var findingRegistry = []FindingContractEntry{
 	{FindingEndpointConnectFailed, "finding.endpoint_connect_failed"},
 	{FindingExecutionCancelled, "finding.execution_cancelled"},
 	{FindingExecutionTimeout, "finding.execution_timeout"},
+	{FindingHTTPSlowServerResponse, "finding.http_slow_server_response"},
 	{FindingHTTPUnexpectedStatus, "finding.http_unexpected_status"},
+	{FindingIntermittentConnectivity, "finding.intermittent_connectivity"},
 	{FindingInvalidTarget, "finding.invalid_target"},
+	{FindingLocalResolverDivergence, "finding.local_resolver_divergence"},
 	{FindingServiceGreetingUnverified, "finding.service_greeting_unverified"},
 	{FindingTargetPolicyBlocked, "finding.target_policy_blocked"},
 	{FindingTLSCertificateExpired, "finding.tls_certificate_expired"},
@@ -152,7 +163,57 @@ var producerResultShapeRegistry = []ResultShapeContract{
 
 func shape(name string, kinds []Kind, status Status, code string, required []ResultDetailContract) ResultShapeContract {
 	return ResultShapeContract{Name: name, Kinds: kinds, Status: status, ErrorCode: code,
-		RequiredDetails: required, OptionalDetails: []ResultDetailContract{}}
+		RequiredDetails: required, OptionalDetails: aggregateBlocks(kinds, status, code)}
+}
+
+// unobservedOutcomeCodes are runner outcomes recorded before any target
+// observation happened, so no aggregate could ever have been computed for them.
+var unobservedOutcomeCodes = map[string]bool{
+	"checker_capacity_unavailable": true,
+	"checker_panic": true,
+	"network_policy_blocked": true,
+}
+
+// aggregateBlocks lists the closed aggregate blocks a shape may carry. A shape
+// never lists a block its producer could not have written: the sampling
+// aggregate rides on every kind that can repeat an observation whatever the
+// outcome was, while a phase block only exists for a response the HTTP path
+// actually received, and a record comparison only for a lookup that completed.
+func aggregateBlocks(kinds []Kind, status Status, code string) []ResultDetailContract {
+	if unobservedOutcomeCodes[code] {
+		return []ResultDetailContract{}
+	}
+	blocks := make(map[string]ResultDetailContract, len(kinds))
+	for _, kind := range kinds {
+		if kind != KindTraceroute {
+			blocks[ResultDetailSampleStats] = ResultDetailContract{Key: ResultDetailSampleStats, Type: DetailTypeSampleStatsBlock}
+		}
+		if kind == KindDNS && status == StatusHealthy {
+			blocks[ResultDetailResolverComparison] = ResultDetailContract{Key: ResultDetailResolverComparison, Type: DetailTypeResolverComparisonBlock}
+		}
+		if (kind == KindHTTP || kind == KindHTTPS) && status == StatusHealthy {
+			blocks[ResultDetailStageTiming] = ResultDetailContract{Key: ResultDetailStageTiming, Type: DetailTypeStageTimingBlock}
+		}
+	}
+	keys := make([]string, 0, len(blocks))
+	for key := range blocks {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	details := make([]ResultDetailContract, 0, len(keys))
+	for _, key := range keys {
+		details = append(details, blocks[key])
+	}
+	return details
+}
+
+func ContainsKind(kinds []Kind, want Kind) bool {
+	for _, kind := range kinds {
+		if kind == want {
+			return true
+		}
+	}
+	return false
 }
 
 func noDetailShape(name string, kinds []Kind, status Status, code string) ResultShapeContract {
@@ -174,6 +235,7 @@ func httpShape(name string, kind Kind, status Status, code string) ResultShapeCo
 		{Key: ResultDetailCertificateExpires, Type: DetailTypeUTCTimestamp},
 		{Key: ResultDetailCertificateSubject, Type: DetailTypeString},
 	}
+	optional = append(optional, aggregateBlocks([]Kind{kind}, status, code)...)
 	sort.Slice(optional, func(i, j int) bool { return optional[i].Key < optional[j].Key })
 	return ResultShapeContract{Name: name, Kinds: []Kind{kind}, Status: status, ErrorCode: code,
 		RequiredDetails: []ResultDetailContract{}, OptionalDetails: optional}
@@ -220,7 +282,7 @@ func traceShape(name string, status Status, code string, topologyAllowed bool) R
 func tlsFailureShape(code string, required []ResultDetailContract) ResultShapeContract {
 	return ResultShapeContract{
 		Name: code, Kinds: tlsKinds(), Status: StatusUnreachable, ErrorCode: code,
-		RequiredDetails: required, OptionalDetails: []ResultDetailContract{},
+		RequiredDetails: required, OptionalDetails: aggregateBlocks(tlsKinds(), StatusUnreachable, code),
 	}
 }
 

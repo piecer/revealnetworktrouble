@@ -77,7 +77,7 @@ func TestCommittedPresentationContractMatchesGoProducerBytes(t *testing.T) {
 	if err := json.Unmarshal(got, &contract); err != nil {
 		t.Fatal(err)
 	}
-	if len(contract.SemanticKeys) != 6 || len(contract.EvidenceSignals) != 10 || len(contract.CoverageSignals) != 21 || len(contract.ActionRelationships) != 23 || len(contract.Scenarios) != 33 {
+	if len(contract.SemanticKeys) != 6 || len(contract.EvidenceSignals) != 13 || len(contract.CoverageSignals) != 24 || len(contract.ActionRelationships) != 26 || len(contract.Scenarios) != 36 {
 		t.Fatalf("presentation contract counts = semantics %d evidence %d coverage %d actions %d scenarios %d", len(contract.SemanticKeys), len(contract.EvidenceSignals), len(contract.CoverageSignals), len(contract.ActionRelationships), len(contract.Scenarios))
 	}
 	evidenceSignals := make([]string, len(contract.EvidenceSignals))
@@ -96,7 +96,7 @@ func TestCommittedPresentationContractMatchesGoProducerBytes(t *testing.T) {
 			primary++
 		}
 	}
-	if primary != 23 || !sort.StringsAreSorted(names) || !sort.StringsAreSorted(evidenceSignals) || !sort.StringsAreSorted(contract.CoverageSignals) || !sort.StringsAreSorted(actionKeys) {
+	if primary != 26 || !sort.StringsAreSorted(names) || !sort.StringsAreSorted(evidenceSignals) || !sort.StringsAreSorted(contract.CoverageSignals) || !sort.StringsAreSorted(actionKeys) {
 		t.Fatalf("presentation registries/scenarios are not exact and sorted: primary=%d names=%v evidence=%v coverage=%v actions=%v", primary, names, evidenceSignals, contract.CoverageSignals, actionKeys)
 	}
 	assertPresentationScenarioStatuses(t, contract)

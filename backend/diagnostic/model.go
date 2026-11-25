@@ -163,7 +163,10 @@ type FindingCode string
 const (
 	FindingDNSResolutionFailed           FindingCode = "dns_resolution_failed"
 	FindingEndpointConnectFailed         FindingCode = "endpoint_connect_failed"
+	FindingHTTPSlowServerResponse        FindingCode = "http_slow_server_response"
 	FindingHTTPUnexpectedStatus          FindingCode = "http_unexpected_status"
+	FindingIntermittentConnectivity      FindingCode = "intermittent_connectivity"
+	FindingLocalResolverDivergence       FindingCode = "local_resolver_divergence"
 	FindingServiceGreetingUnverified     FindingCode = "service_greeting_unverified"
 	FindingInvalidTarget                 FindingCode = "invalid_target"
 	FindingExecutionTimeout              FindingCode = "execution_timeout"
@@ -260,6 +263,9 @@ const (
 	CoverageMissingDetails     CoverageIssueCode = "missing_details"
 	CoverageMalformedDetails   CoverageIssueCode = "malformed_details"
 	CoverageUnsupportedDetails CoverageIssueCode = "unsupported_details"
+	// A configuration skip is not a provider failure: the lookup was never
+	// attempted, so it cannot be counted as a failed upstream call.
+	CoverageConfigurationDisabled CoverageIssueCode = "configuration_disabled"
 )
 
 type CoverageIssue struct {
@@ -277,6 +283,7 @@ const (
 	EnrichmentSourceCache    EnrichmentSource = "cache"
 	EnrichmentSourceMixed    EnrichmentSource = "mixed"
 	EnrichmentSourceNone     EnrichmentSource = "none"
+	EnrichmentSourceDisabled EnrichmentSource = "disabled"
 )
 
 type EnrichmentFailure struct {

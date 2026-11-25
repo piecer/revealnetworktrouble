@@ -23,6 +23,9 @@ const (
 	EvidenceShapeExecutionFailureCounts = "execution_failure_counts"
 	EvidenceShapeCompletedFraction      = "completed_fraction"
 	EvidenceShapePathCount              = "path_count"
+	EvidenceShapeStageTimingSummary     = "stage_timing_summary"
+	EvidenceShapeSampleStatsSummary     = "sample_stats_summary"
+	EvidenceShapeRecordSetSummary       = "record_set_summary"
 )
 
 // PresentationEvidenceSignal defines the safe typed projection that consumers
@@ -84,6 +87,9 @@ var presentationSemanticKeys = []string{
 var presentationEvidenceSignalRegistry = []PresentationEvidenceSignal{
 	{Signal: "error_code", ObservedShape: EvidenceShapeClosedErrorCode, ExpectedShape: EvidenceShapeNone},
 	{Signal: "http.status_code", ObservedShape: EvidenceShapeHTTPStatus, ExpectedShape: EvidenceShapeHTTPStatus},
+	{Signal: "resolver_comparison", ObservedShape: EvidenceShapeRecordSetSummary, ExpectedShape: EvidenceShapeNone},
+	{Signal: "sample_stats", ObservedShape: EvidenceShapeSampleStatsSummary, ExpectedShape: EvidenceShapeNone},
+	{Signal: "stage_timing", ObservedShape: EvidenceShapeStageTimingSummary, ExpectedShape: EvidenceShapeNone},
 	{Signal: "tls.certificate_expires_at", ObservedShape: EvidenceShapeUTCTimestamp, ExpectedShape: EvidenceShapeNone},
 	{Signal: "traceroute.attempts_cancelled", ObservedShape: EvidenceShapeCount, ExpectedShape: EvidenceShapeCount},
 	{Signal: "traceroute.attempts_execution_failed", ObservedShape: EvidenceShapeCount, ExpectedShape: EvidenceShapeCount},
@@ -107,10 +113,13 @@ var presentationCoverageSignalRegistry = []string{
 	"geoip_enrichment",
 	"http_status",
 	"kind",
+	"resolver_comparison",
 	"response_body",
 	"result",
+	"sample_stats",
 	"service_verification_details",
 	"service_verification_scope",
+	"stage_timing",
 	"status",
 	"tls",
 	"tls_certificate",
@@ -119,6 +128,18 @@ var presentationCoverageSignalRegistry = []string{
 	"trace_error",
 	"trace_paths",
 	"trace_topology",
+}
+
+// observedPhaseName accepts exactly the phase names stageTimingPhaseName emits,
+// so the presentation gate cannot accept a phase word the producer can never
+// write.
+func observedPhaseName(name string) bool {
+	for _, key := range []string{ResultDetailDNSPhaseMS, ResultDetailConnectPhaseMS, ResultDetailTLSPhaseMS, ResultDetailTTFBPhaseMS} {
+		if stageTimingPhaseName(key) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func actionRelationshipKey(code FindingCode) string {
@@ -375,6 +396,31 @@ func safeEvidenceValue(shape, value string) bool {
 			return true
 		}
 		return false
+	case EvidenceShapeStageTimingSummary:
+		var phase string
+		var phaseMS, totalMS int
+		count, err := fmt.Sscanf(value, "dominant observed phase %s %d ms of %d ms total", &phase, &phaseMS, &totalMS)
+		if err != nil || count != 3 || value != fmt.Sprintf("dominant observed phase %s %d ms of %d ms total", phase, phaseMS, totalMS) {
+			return false
+		}
+		if !observedPhaseName(phase) || phaseMS < 0 || totalMS < 0 || phaseMS > totalMS || totalMS > int(maxStageTimingPhaseMS) {
+			return false
+		}
+		return true
+	case EvidenceShapeSampleStatsSummary:
+		var samples, successes, failures, rate int
+		count, err := fmt.Sscanf(value, "%d samples: %d succeeded, %d failed, %d percent success rate", &samples, &successes, &failures, &rate)
+		if err != nil || count != 4 || value != fmt.Sprintf("%d samples: %d succeeded, %d failed, %d percent success rate", samples, successes, failures, rate) {
+			return false
+		}
+		return samples >= 1 && samples <= MaxSamples && successes >= 0 && failures >= 0 && successes+failures == samples && rate >= 0 && rate <= 100
+	case EvidenceShapeRecordSetSummary:
+		var systemOnly, referenceOnly int
+		count, err := fmt.Sscanf(value, "record sets differ: %d system-only, %d reference-only", &systemOnly, &referenceOnly)
+		if err != nil || count != 2 || value != fmt.Sprintf("record sets differ: %d system-only, %d reference-only", systemOnly, referenceOnly) {
+			return false
+		}
+		return systemOnly >= 0 && referenceOnly >= 0 && systemOnly <= maxComparisonRecordValues && referenceOnly <= maxComparisonRecordValues && systemOnly+referenceOnly > 0
 	case EvidenceShapeNone:
 		return value == ""
 	default:

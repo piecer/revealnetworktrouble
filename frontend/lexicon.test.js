@@ -5,10 +5,10 @@ import { LEXICON, FINDING_LABELS, SYMPTOM_PRESETS, resolveLang, label, findingLa
 
 const contract = JSON.parse(readFileSync(new URL('../testdata/finding-contract.json', import.meta.url), 'utf8'));
 const codes = contract.findings.map(finding => finding.code);
-const coverageCodes = ['missing_details', 'malformed_details', 'unsupported_details'];
+const coverageCodes = ['configuration_disabled', 'missing_details', 'malformed_details', 'unsupported_details'];
 
 test('lexicon covers every finding-contract code in both languages', () => {
-  assert.equal(codes.length, 23);
+  assert.equal(codes.length, 26);
   for (const code of codes) {
     for (const lang of ['ko', 'en']) {
       const entry = FINDING_LABELS[lang][code];

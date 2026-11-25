@@ -154,7 +154,7 @@ Unix runtime은 startup probe가 선택한 exact path와 common numeric `-n -q 1
 
 응답 JSON은 직렬화에 성공한 뒤 status/header와 함께 기록되며 현재 호환성을 위해 마지막 newline을 유지한다. 서버 응답 값을 직렬화할 수 없으면 부분 `200` 대신 `500`과 `response_serialization_failed` JSON 오류를 반환한다.
 
-closed registry는 정확히 16 rows이고 producer-derived structural mutation corpus는 85 cases다. Producer-owned finding fixture는 exact 23 findings, 31 result shapes와 expanded 136-row `(kind,status,error_code,details)` semantic compatibility matrix를 제공하며 Web/Android 두 client가 같은 exact producer matrix bytes와 eight traceroute witness fixtures를 소비한다. `healthy` result는 `error_code` absent/empty만 허용한다. 알려진 status/code/details라도 matrix와 모순이면 두 client는 publication 전에 whole report를 atomic 거부하고 server prose를 반사하지 않는 fixed local `invalid_response`/`INVALID_RESPONSE`를 게시한다. 별도 presentation fixture cardinality `6/10/21/23/33`의 10 evidence result kinds는 result-shape cardinality가 아니다.
+closed registry는 정확히 16 rows이고 producer-derived structural mutation corpus는 85 cases다. Producer-owned finding fixture는 exact 26 findings, 31 result shapes와 expanded 136-row `(kind,status,error_code,details)` semantic compatibility matrix를 제공하며 Web/Android 두 client가 같은 exact producer matrix bytes와 eight traceroute witness fixtures를 소비한다. `healthy` result는 `error_code` absent/empty만 허용한다. 알려진 status/code/details라도 matrix와 모순이면 두 client는 publication 전에 whole report를 atomic 거부하고 server prose를 반사하지 않는 fixed local `invalid_response`/`INVALID_RESPONSE`를 게시한다. 별도 presentation fixture cardinality `6/13/24/26/36`의 13 evidence signals는 result-shape cardinality가 아니다.
 
 | registry key | HTTP | wire code | retryable | `Retry-After` | fixed wire message |
 |---|---:|---|---|---|---|

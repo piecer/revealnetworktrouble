@@ -1,6 +1,6 @@
 import {
   createRequestLane, canonicalDiagnosticsInput, canonicalTopologyInput, inputSignature,
-  transitionRequest, ownsRequest, clientTimeoutMS, normalizeRequestError, parseResponse, SCHEMA_LIMITS, createIPContextController
+  transitionRequest, ownsRequest, clientTimeoutMS, normalizeRequestError, parseResponse, SCHEMA_LIMITS, AGGREGATE_LIMITS, createIPContextController
 } from './state.js';
 import { canonicalIP, topologyModelFromReport, filterTopologyModel } from './topology-model.js';
 import { mountGeoMap } from './geo-map.js';
@@ -289,8 +289,11 @@ export const FINDING_PRESENTATION_REGISTRY = Object.freeze(Object.fromEntries([
   findingPresentation('endpoint_connect_failed', 'The endpoint connection did not complete.', 'The intended endpoint accepts a connection from this observation point.', 'This finding covers connection establishment only; application behavior was not tested.', 'Verify the listener and access policy, then repeat from the same observation point.'),
   findingPresentation('execution_cancelled', 'The check ended after cancellation.', 'The check remains active until a bounded observation completes.', 'Cancellation does not establish service health or failure.', 'Repeat the check when it can remain active through completion.', ['error_code', 'traceroute.attempts_cancelled']),
   findingPresentation('execution_timeout', 'The check did not complete before its bounded deadline.', 'The check completes before the configured deadline.', 'A timeout does not identify whether the endpoint, path, or checker caused the delay.', 'Repeat once with the same bounded timeout and verify endpoint availability independently.', ['error_code', 'traceroute.attempts_timed_out']),
+  findingPresentation('http_slow_server_response', 'The response phase was clearly larger than every phase that preceded it, so the measured delay sits past the connection.', 'The response phase stays comparable with the phases that preceded it.', 'Only the phases this observation point measured were compared; the server-side handler and upstream timings were not observed.', 'Compare the same request against the server-side handler and upstream timings.', ['stage_timing']),
   findingPresentation('http_unexpected_status', 'The observed HTTP status did not match the configured status expectation.', 'The endpoint returns the configured HTTP status.', 'Only the bounded HTTP status observation was compared; end-to-end application health was not established.', 'Verify the route, health endpoint, and configured status expectation.', ['http.status_code', 'error_code']),
+  findingPresentation('intermittent_connectivity', 'The same target produced different outcomes across its repeated samples.', 'Repeated samples of the same target stay in one outcome class.', 'The sample window is bounded; a failure share does not identify which element caused it.', 'Repeat the check over a longer window and compare the failure share.', ['sample_stats']),
   findingPresentation('invalid_target', 'The target was rejected before a network observation was possible.', 'The target uses accepted syntax, scheme, hostname, and port fields.', 'No network or service-health conclusion can be drawn from rejected input.', 'Correct the target fields and run the bounded check again.'),
+  findingPresentation('local_resolver_divergence', 'The local resolver record set did not match the reference record set for the same name.', 'The local resolver and the reference resolver return the same record set.', 'Only completed record sets were compared; the resolver path actually used by the client was not established.', 'Confirm which resolver the client path uses, then recompare the same record type.', ['resolver_comparison']),
   findingPresentation('service_greeting_unverified', 'The expected server-first greeting was not verified after transport connection.', 'The intended service returns its expected bounded server-first greeting without client input.', 'Command, authentication, STARTTLS, mailbox, and end-to-end service behavior were not tested.', 'Verify the intended listener and server-first greeting, then repeat the check.'),
   findingPresentation('target_policy_blocked', 'Deployment policy blocked the target before a connection was attempted.', 'The target is permitted by the selected deployment policy.', 'No endpoint-health conclusion can be drawn because policy prevented network observation.', 'Use an approved target or an explicitly authorized trusted-local deployment.'),
   findingPresentation('tls_certificate_expired', 'The observed TLS certificate was expired at verification time.', 'The endpoint presents a certificate valid at verification time.', 'Certificate validity does not by itself establish full application or service health.', 'Renew and deploy the intended certificate chain, then repeat verification.', ['error_code', 'tls.certificate_expires_at']),
@@ -320,6 +323,9 @@ function evidenceSignal(label, category, observedShape, expectedShape) {
 export const EVIDENCE_SIGNAL_PRESENTATION_REGISTRY = Object.freeze({
   error_code: evidenceSignal('Result error code', 'result', 'closed_error_code', 'none'),
   'http.status_code': evidenceSignal('HTTP status comparison', 'http', 'http_status', 'http_status'),
+  resolver_comparison: evidenceSignal('Local resolver record set', 'dns', 'record_set_summary', 'none'),
+  sample_stats: evidenceSignal('Repeated sample outcomes', 'result', 'sample_stats_summary', 'none'),
+  stage_timing: evidenceSignal('Dominant response phase', 'http', 'stage_timing_summary', 'none'),
   'tls.certificate_expires_at': evidenceSignal('Certificate expiry timestamp', 'tls', 'utc_timestamp', 'none'),
   'traceroute.attempts_cancelled': evidenceSignal('Cancelled traceroute attempts', 'traceroute', 'count', 'count'),
   'traceroute.attempts_execution_failed': evidenceSignal('Failed traceroute command attempts', 'traceroute', 'count', 'count'),
@@ -342,10 +348,13 @@ export const COVERAGE_SIGNAL_PRESENTATION_REGISTRY = Object.freeze({
   geoip_enrichment: coverageSignal('GeoIP enrichment facts', 'geoip', true),
   http_status: coverageSignal('HTTP status facts', 'http', true),
   kind: coverageSignal('Result kind', 'result'),
+  resolver_comparison: coverageSignal('Resolver comparison facts', 'dns', true),
   response_body: coverageSignal('Response body facts', 'http', true),
   result: coverageSignal('Result observation', 'result'),
+  sample_stats: coverageSignal('Sampling aggregate facts', 'result', true),
   service_verification_details: coverageSignal('Service verification details', 'service', true),
   service_verification_scope: coverageSignal('Service verification scope', 'service'),
+  stage_timing: coverageSignal('Stage timing facts', 'http', true),
   status: coverageSignal('Result status', 'result'),
   tls: coverageSignal('TLS handshake facts', 'tls', true),
   tls_certificate: coverageSignal('TLS certificate facts', 'tls', true),
@@ -356,6 +365,7 @@ export const COVERAGE_SIGNAL_PRESENTATION_REGISTRY = Object.freeze({
   trace_topology: coverageSignal('Traceroute topology facts', 'traceroute', true)
 });
 export const COVERAGE_CODE_PRESENTATION_REGISTRY = Object.freeze({
+  configuration_disabled: 'A configured lookup was disabled, so its evidence was never attempted.',
   missing_details: 'Required checker details were not observed.',
   malformed_details: 'Observed checker details did not satisfy the closed local contract.',
   unsupported_details: 'Observed details are outside the supported analysis scope.'
@@ -390,6 +400,26 @@ function boundedEvidenceValue(value, shape, perspective) {
     const signatures = /^multiple successful completed path signatures among (\d{1,2}) reached completed attempts$/.exec(text);
     const count = Number((degraded || signatures)?.[1]);
     return Number.isInteger(count) && count >= 0 && count <= 10 ? `${prefix} completed path evidence count: ${count}.` : '';
+  }
+  // Accepted aggregate forms are the exact strings the producer can emit, so a
+  // summary that is only shaped like one is not presented.
+  if (shape === 'stage_timing_summary') {
+    const match = /^dominant observed phase (dns|connect|tls|ttfb) (\d{1,6}) ms of (\d{1,6}) ms total$/.exec(text);
+    const values = match?.slice(2).map(Number) ?? null;
+    return values && values[0] <= values[1] && values[1] <= AGGREGATE_LIMITS.stageTimingMS
+      ? `${prefix} dominant phase ${match[1]}: ${values[0]} ms of ${values[1]} ms.` : '';
+  }
+  if (shape === 'sample_stats_summary') {
+    const match = /^(\d{1,2}) samples: (\d{1,2}) succeeded, (\d{1,2}) failed, (\d{1,2}) percent success rate$/.exec(text);
+    const values = match ? match.slice(1).map(Number) : null;
+    return values && values[0] >= 1 && values[0] <= AGGREGATE_LIMITS.samples && values[1] + values[2] === values[0] && values[3] <= 100
+      ? `${prefix} samples: ${values[0]}, ${values[1]} succeeded, ${values[2]} failed, ${values[3]} percent success rate.` : '';
+  }
+  if (shape === 'record_set_summary') {
+    const match = /^record sets differ: (\d{1,3}) system-only, (\d{1,3}) reference-only$/.exec(text);
+    const values = match ? match.slice(1).map(Number) : null;
+    return values && values[0] <= AGGREGATE_LIMITS.comparisonValues && values[1] <= AGGREGATE_LIMITS.comparisonValues && values[0] + values[1] > 0
+      ? `${prefix} record sets differ: ${values[0]} system-only, ${values[1]} reference-only.` : '';
   }
   if (shape === 'utc_timestamp') {
     const parsed = new Date(text);

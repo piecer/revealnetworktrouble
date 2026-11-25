@@ -100,21 +100,51 @@ function resultDetailValue(detail) {
     case 'enrichment': return {
       provider: 'geoip', source: 'none', cache_hits: 0, upstream_fetches: 0, max_age_ms: 0, failures: []
     };
+    // Closed aggregate blocks: a fixture value must satisfy every registered
+    // key so the parser is exercised on a whole block, never a partial one.
+    case 'stage_timing_block': return { dns_ms: 120, connect_ms: 50, tls_ms: 300, ttfb_ms: 1500 };
+    case 'sample_stats_block': return {
+      count: 3, successes: 2, failures: 1, success_rate: 67,
+      p50_ms: 100, p95_ms: 110, jitter_ms: 10, latency_distribution_available: true
+    };
+    case 'resolver_comparison_block': return {
+      comparable: true, match: false, only_system: ['8.8.8.8'], only_reference: ['9.9.9.9'], gap_side: ''
+    };
     default: throw new TypeError(`unsupported fixture detail type: ${detail.type}`);
   }
 }
 
-function resultDetailsForShape(shape) {
+// Which aggregate blocks a producer could have written for one kind. A shape
+// lists the union over its kinds, so a kind cannot carry a block another kind
+// in the same shape could. Traceroute reports attempts rather than one repeated
+// observation, so it never carries an aggregate.
+function blockKeysForKind(kind) {
+  if (kind === 'traceroute') return [];
+  const keys = ['sample_stats'];
+  if (kind === 'dns') keys.push('resolver_comparison');
+  if (kind === 'http' || kind === 'https') keys.push('stage_timing');
+  return keys;
+}
+
+function resultDetailsForShape(shape, kind = shape.kinds[0]) {
   const fields = [...shape.required_details, ...shape.optional_details];
   if (fields.length === 0) return undefined;
-  const details = Object.fromEntries(fields.map(detail => [detail.key, resultDetailValue(detail)]));
+  // Build only what this kind's producer could have written, so the matrix test
+  // exercises the accepted key set instead of every block the shape lists.
+  const allowedBlocks = blockKeysForKind(kind);
+  const details = {};
+  for (const detail of fields) {
+    if (detail.type.endsWith('_block') && !allowedBlocks.includes(detail.key)) continue;
+    details[detail.key] = resultDetailValue(detail);
+  }
+  if (Object.keys(details).length === 0) return undefined;
   if (Object.hasOwn(details, 'certificate_not_before')) details.certificate_not_before = '2025-09-01T12:00:00Z';
   if (Object.hasOwn(details, 'certificate_not_after')) details.certificate_not_after = '2027-09-01T12:00:00Z';
   return details;
 }
 
 function resultShapeReport(shape, kind = shape.kinds[0]) {
-  const details = resultDetailsForShape(shape);
+  const details = resultDetailsForShape(shape, kind);
   const value = result({
     kind,
     status: shape.status,
@@ -369,7 +399,7 @@ test('normalizes serialized Go checker execution findings into privacy-safe gene
 test('Web finding allowlist accepts every producer-fixture code and rejects closed-version mutations', async () => {
   const contract = await findingContractFixture();
   assert.equal(contract.schema, 'finding-contract-v1');
-  assert.equal(contract.findings.length, 23);
+  assert.equal(contract.findings.length, 26);
   assert.deepEqual(contract.findings.map(item => item.code), [...contract.findings.map(item => item.code)].sort());
 
   for (const { code } of contract.findings) {
@@ -424,7 +454,7 @@ test('Web result parser consumes all 136 producer-fixture matrix rows repeatedly
       assert.equal(normalized.results[0].kind, kind);
       assert.equal(normalized.results[0].status, shape.status);
       assert.equal(normalized.results[0].error_code, shape.error_code ?? '');
-      const expectedDetails = resultDetailsForShape(shape);
+      const expectedDetails = resultDetailsForShape(shape, kind);
       if (expectedDetails === undefined) {
         assert.equal(Object.hasOwn(normalized.results[0], 'details'), false, `${shape.name}/${kind}`);
       } else {
@@ -432,6 +462,63 @@ test('Web result parser consumes all 136 producer-fixture matrix rows repeatedly
       }
     }
   }
+});
+
+test('closed aggregate blocks are read whole and only where the producer could have written them', () => {
+  const sampleStats = {
+    count: 3, successes: 2, failures: 1, success_rate: 67,
+    p50_ms: 100, p95_ms: 110, jitter_ms: 10, latency_distribution_available: true
+  };
+  const stageTiming = { dns_ms: 120, connect_ms: 50, tls_ms: 300, ttfb_ms: 1500 };
+  const comparison = { comparable: true, match: false, only_system: ['8.8.8.8'], only_reference: ['9.9.9.9'], gap_side: '' };
+
+  const http = normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, sample_stats: sampleStats, stage_timing: stageTiming } }));
+  assert.deepEqual(http.details.sample_stats, sampleStats);
+  assert.deepEqual(http.details.stage_timing, stageTiming);
+  const dns = normalizeResult(result({ kind: 'dns', status: 'healthy', details: { addresses: ['192.0.2.1'], answer_count: 1, sample_stats: sampleStats, resolver_comparison: comparison } }));
+  assert.deepEqual(dns.details.resolver_comparison, comparison);
+
+  // A computed aggregate carries every registered field, so a block that drifts
+  // from its registered key set is refused. The phase block is the one exception:
+  // a phase that never happened has no duration the producer could report, so a
+  // live plain-HTTP check over an IP literal legitimately carries only connect
+  // and TTFB.
+  const observedPhaseSubset = normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, stage_timing: { connect_ms: 50, ttfb_ms: 1500 } } }));
+  assert.deepEqual(observedPhaseSubset.details.stage_timing, { connect_ms: 50, ttfb_ms: 1500 });
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, stage_timing: { ttfb_ms: 1500, extra_key: 1 } } })), /unexpected closed block key/);
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, stage_timing: {} } })), /closed block is empty/);
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, sample_stats: {} } })), /required own enumerable data field is missing/);
+
+  // Only the blocks the producer could have written for this kind, outcome and code
+  // are accepted, and each refusal below names the check that fired.
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'unreachable', error_code: 'connection_failed', message: 'connection failed', details: { sample_stats: sampleStats, stage_timing: stageTiming } })), /unsupported result kind, status, error code, and details combination/);
+  assert.throws(() => normalizeResult(result({ kind: 'dns', status: 'healthy', details: { addresses: ['192.0.2.1'], answer_count: 1, stage_timing: stageTiming } })), /unexpected closed block for this kind and outcome/);
+  assert.throws(() => normalizeResult(result({ kind: 'traceroute', status: 'healthy', details: { attempts_total: 1, attempts: [], sample_stats: sampleStats } })), /expected exact enumerable data fields/);
+
+  // Internal consistency, not just key presence.
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, sample_stats: { ...sampleStats, successes: 1, success_rate: 33 } } })), /counts do not add up|sample/i);
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, sample_stats: { ...sampleStats, success_rate: 66 } } })), /success rate/i);
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, sample_stats: { ...sampleStats, p50_ms: 120 } } })), /percentiles|distribution/i);
+  assert.throws(() => normalizeResult(result({ kind: 'http', status: 'healthy', details: { status_code: 200, sample_stats: { ...sampleStats, latency_distribution_available: false } } })), /zeroed|distribution/i);
+  assert.throws(() => normalizeResult(result({ kind: 'dns', status: 'healthy', details: { addresses: ['192.0.2.1'], answer_count: 1, resolver_comparison: { ...comparison, comparable: false } } })), /divergence/i);
+  assert.throws(() => normalizeResult(result({ kind: 'dns', status: 'healthy', details: { addresses: ['192.0.2.1'], answer_count: 1, resolver_comparison: { comparable: false, match: false, only_system: [], only_reference: [], gap_side: 'sideways' } } })), /gap side/i);
+});
+
+// The fixture lists the union of blocks a shape's kinds may carry, so a row for one
+// kind can name a block only another kind in the same shape could have written. The
+// per-kind rule is what a single result may hold, and it must refuse the union here.
+test('the shape block union does not license every kind inside the shape', async () => {
+  const contract = await findingContractFixture();
+  const shape = contract.result_shapes.find((entry) => entry.error_code === 'cancelled' && entry.kinds.includes('traceroute'));
+  assert.ok(shape, 'the cancelled shape must span traceroute and at least one other kind');
+  assert.ok(shape.optional_details.some((detail) => detail.type === 'sample_stats_block'), 'the fixture lists the block union over its kinds');
+
+  const details = {};
+  for (const detail of [...shape.required_details, ...shape.optional_details]) details[detail.key] = resultDetailValue(detail);
+  assert.throws(() => normalizeResult(result({ kind: 'traceroute', status: shape.status, error_code: shape.error_code, details })),
+    /unsupported result kind, status, error code, and details combination/);
+  const accepted = normalizeResult(result({ kind: 'tcp', status: shape.status, error_code: shape.error_code, details }));
+  assert.deepEqual(accepted.details.sample_stats, details.sample_stats);
 });
 
 test('producer observation witness preserves measured RTT and ASN without inventing coordinates', async () => {

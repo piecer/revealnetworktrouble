@@ -1,0 +1,98 @@
+# SUGGESTION.md — 기능 검토·개선 제안 (현재 코드 대비 재검증본)
+
+원 검토는 ROADMAP을 읽기 전 작성됐습니다. 2026-11-22에 ROADMAP 전문과 코드에 직접 대조해 확정·정정했습니다.
+표기: [확인] 대조로 확정, [정정] 원문 오류 수정, [신규] ROADMAP에 없는 항목.
+이 문서 자신의 인용도 아래 제안 패턴에 걸리지 않게 작성했고, 게이트 통과로 확인했습니다.
+
+## 기능 총평
+
+진단 엔진은 해석 정직성과 경계 안전성이 강한 반면, 원인을 좁히는 진단 깊이가 얕다.
+기준: "어떤 증상에서 원인 후보를 더 좁혀 주지 못하는가".
+
+## 기능 우선순위 (ROADMAP 대조 완료)
+
+| # | 기능 | ROADMAP 대조 | 코드 검증 | 제안 |
+|---|---|---|---|---|
+| 1 | HTTP(S) 단계별 시간 분해 | = D-2 | [확인] `http.go:24` httptrace는 TLS 핸드셰이크 관측에만 사용, 결과 단일 latency_ms | D-2를 P1로 상향. 표준 라이브러리로 추가 의존성 없음 |
+| 2 | 해석된 IP(A/AAAA)별 연결 결과 | D-3(family 비교)과 부분 중복 | [확인] 전체 IP 순회 로직 없음 | D-3에 흡수. MaxTargets=20(`runner.go:18`), IP 수 상한 필요 |
+| 3 | 반복 샘플링(성공률·p50/p95·지터) | = D-3 ①(TCP 반복, 권한 불필요) | [확인] 요청 스키마에 samples 필드 없음 | D-3에 흡수. 상한 계산: MaxTargets 20 × 샘플 N × IP별 검사 → `main.go:36`의 315초 deadline 초과 위험, 샘플·IP 수를 admission에 포함해야 함 |
+| 4 | 이름 기반 vs IP 기반 교차 판정 | D-1(리졸버 비교) 인접, 규칙 없음 | [확인] analysis.go에 규칙 없음 | D-1에 흡수 |
+| 5 | traceroute 프로브 방식 선택(UDP/ICMP/TCP) | Phase 4(ICMP·MTU)와 일부 | [확인] RunTraceCommand는 외부 바이너리, capability는 kinds만 노출(`server.go:256`) | [신규] 비루트 UID 65532(`Dockerfile:34`) — raw 소켓 권한 확인이 선행. 지원 방식만 capability로 알리는 기존 구조에 맞춤 |
+| 6 | TLS 체인: 중간 인증서 누락 vs 미신뢰 구분 | 미등록 | [확인] `analysis.go:319` FindingTLSUntrusted는 미분류 | [신규] AIA 조회는 새 외부 요청 → 기존 SSRF dial 정책 통과 필수 |
+| 7 | 메일 심화(STARTTLS·MX/SPF/DMARC) | MX/TXT 조회 부분은 D-1 | [확인] `analysis.go:479` greeting만 관측, coverage 문구로 명시됨 | D-1과 결합. 새 verification_scope 값 |
+| 8 | 보고서 비교(JSON import diff) | = D-5 | [확인] 클라이언트 diff 없음. `common-prefix.js:138`의 firstDiffBit는 IP 접두 그룹핑이고 보고서 diff 아님 | D-5 유지 |
+| 9 | 문의용 요약 내보내기(익명화) | = 아카이브 분석 PRD-8(P1/M, 미구현) | `docs/archive/PLAN-ANALYSIS-2026-11-21.md:292` | PRD-8로 유지 |
+| 10 | 캡티브 포털·DNS 변조 탐지 | 미등록(U-4 인접) | [확인] 로직 없음 | [신규] 로컬 실행 모드에서 가치가 큼 |
+
+MTU/PMTUD 보류 — ROADMAP Phase 4 판단(플랫폼 의존성)과 일치.
+
+## 순서 조정 권고
+
+ROADMAP 순서는 Phase 2(기능 D-*) → Phase 3(M-3). 원 제안 순서는:
+
+1. M-3 Details 타입화(`analysis.go` 1,309줄 [확인], 상당 부분이 map[string]any 재추출)
+2. 계약 변경 일괄 묶음(finding-contract-v2; Go·Web·Android 동시 변경) — ARC-2(OpenAPI 단일 소스)는 ROADMAP이 아니라 `docs/archive/PLAN-ANALYSIS-2026-11-21.md:315`에 있고 [ ] 미완료. 선행 시 비용 감소
+3. 기능 1·2·3
+
+기능 1~10은 대부분 새 finding 추가라 M-3 구조 위에 얹으면 untyped 추출 코드가 증가한다. D-2/D-3와 M-3 선후 결정이 문서가 해소해야 할 핵심 결정이다.
+
+## 기존 기능 보완점
+
+- ECMP: 문서 어디에도 구분 설명 없음 [확인]. "분산 경로 가능성" 표시 또는 흐름 고정 옵션 권고.
+- latency_delta_ms는 이미 존재(`traceroute.go:58`). 크게 뛰는 구간 강조 + ASN 경계 + "ICMP 응답 지연·복귀 경로 영향일 수 있음" 단서 함께.
+- Android 대화형 그래프 부재는 `android/README.md:64`에 device acceptance 후속 범위로 기록 [확인]. 위 1~4번보다 뒤.
+
+## 잘 된 점 (재확인으로 유지)
+
+- 카운트 금지가 문구 고정 아니라 규칙. 과거 수치는 docs/archive/, 현재는 게이트 실행으로 관측 (`documentation_contract_test.go:77`, TestLiveDocumentationDoesNotAssertTestCounts). [확인]
+- required_tools 선언 + command -v 사전 검사 (`operations_contract_test.go:142`). 선언 도구만 PATH에 둔 fixture 실행으로 숨은 tar 의존을 실증. [확인]
+- Go 버전 표기 정리, description/topics 적용 기록 확인(ROADMAP:51, 235). [확인]
+
+## 지적 사항 (중요도 순, 재검증)
+
+1. 카운트 패턴이 좁다 (`documentation_contract_test.go:80-81`) [확인]
+   - `숫자 tests` 형태만 잡으니 단어 앞 형태(`tests` + 숫자)를 놓친다 — ROADMAP.md:359 관측 기록. 한국어 형태(숫자+개 테스트, 테스트 + 숫자)도 놓친다.
+   - 합 형태 패턴은 + 뒤 라벨이 낀 실행 문서에 즉시 걸린다: docs/TESTING.md:155에 미검증 합 인벤토리 서술이 현존.
+   - 단어 tests 없는 변동 수치(검증기 수·inventory·DOM 최대치)는 정책 밖.
+   - 권장 확장:
+     `[0-9][0-9,]*\s*(개\s*)?(tests?|테스트|cases?|케이스)`
+     `(테스트|tests?)\s*(수|개수)?\s*[0-9]+`
+     `[0-9]+\s*\+\s*(\S+\s+)?[0-9]+\s*=\s*[0-9]+`
+   - 확장 시 즉시 감지되는 현존 위치: ROADMAP.md:333(종류 셀 수), ROADMAP.md:359(관측 기록값), docs/TESTING.md:155(합 서술), docs/API.md:157(계약 고정값 — producer fixture로 enforced), docs/IP-CONTEXT-ANDROID.md:27(계약 고정값 — corpus hash로 enforced).
+     결정 필요: 정책 위반은 문장 재작성, 계약 고정값 강제 수치는 예외 인정 중 어느 쪽으로 갈지. 원 문서 자신의 인용 라인 43·44도 게이트를 실제로 깼다(실행 확인) — 이 문서로 해소됨.
+   - ROADMAP §3 현황 표는 패턴에 안 걸려도 인벤토리 수치를 담고, "과거 reading은 archive에만" 원칙과 충돌. "작성 시점 스냅샷" 라벨이나 제거 필요.
+2. Fatal vs skip 정책 양립 (`operations_contract_test.go:155` — 도구 부재 시 t.Fatalf) [확인]
+   - Compose 쪽은 부재 시 skip, 게이트 플래그 요청 시 실패(`compose_config_test.go:588-591`, `portable_environment_test.go:12`). 정책 통일: 부재 skip, 요청 시 실패.
+   - 플래그명 CHECKNETWORK_RUN_COMPOSE_TESTS가 grep 교차검증 게이트에도 쓰인다. `*_RUN_INTEGRATION_TESTS` 권고. 변경 참조 4곳(test 파일, Makefile:65·89, `frontend/deployment.test.js:156`) — `portable_environment_test.go:29`가 Makefile 문구를 pin하므로 함께.
+3. pin 복수 중복으로 Dependabot 막힘 [확인] — ROADMAP:234의 "mirror 변경(검증기·contract test) 필요, 단파일 PR 통과 불가" 기록. versions.env 단일 소스에 Dockerfile·검증기·테스트가 읽는 구조 권고 유지.
+4. 검증 인프라 투자 집중 [정정]: ERE 부분집합 평가기는 약 100줄이 아니라 15줄(`compose_config_test.go:557-571`). 비용 우려는 원문보다 작고, 사용자에게 보이는 기능 우선 결론은 유지.
+5. 사소한 점
+   - ROADMAP 깨진 문장 확인(146, 150). 차후 수정 시 정리.
+   - `posixEREExists:561`은 대괄호 안 `\`를 구분하지 못한다: POSIX 리터럴 vs Go 이스케이프로 `[\.]` 의미가 갈린다. grep 교차검증(585)이 있어 실해 위험 낮음 → 주석 한 줄 또는 제외.
+   - 스크립트 본문에서 `command -v "$tool"` 문자열 검색 단언(142-143)은 구현 텍스트 고정 — 문서에서 방금 없앤 것과 같은 부류. fixture 거동 검증으로 전환 권고.
+   - HOME을 도구 symlink 디렉터리로 지정(`operations_contract_test.go:201`) — [측정] 해당 계약 테스트 단독 실행 3.034s. 허용 범위.
+   - CI 매트릭스에 go.mod 최소 버전 없음(toolchain action만 1.26.11 — `.github/actions/toolchain/action.yml:20`, go.mod:3은 1.22). 최소 버전 matrix job 추가 권고 유지.
+   - 루트 Markdown 게이트(6개 이하, `documentation_contract_test.go:38`): entry point 6개가 슬롯을 채운 상태라 이 문서가 루트의 7번째 md면 게이트가 깨진다 — 실제로 깨져 있었고(실행 확인), 문서를 `docs/`로 옮겨 해소.
+
+## 앞선 분석 정정
+
+- "hosted CI 없음 추정" 틀림: Actions 26회 실행 기록(ROADMAP:56).
+- PR 8건은 11-15 시점 기록(당시 open/병합 0). 후속 갱신: #10·#11·#12 병합, 앞선 Dependabot 7건 모두 병합(ROADMAP:10, 234).
+- 문서 계약 파일은 ROADMAP에 164줄로 기록됐고 현재 실측 216줄(카운트 정책 pin 추가분).
+- ROADMAP 기능 항목(U-*, D-*) 미대조였던 항목은 위 표로 대조 완료.
+
+## 검증 기록 (2026-11-22)
+
+- ROADMAP.md 전문 대조, 인용 위치 grep/read 재확인.
+- 제안 패턴을 live 문서 전체에 적용: 위 5곳 즉시 감지(원 SUGGESTION.md 자체는 재작성으로 해소).
+- `go test ./backend/diagnostic -run TestLiveDocumentationDoesNotAssertTestCounts` — 재작성 후 통과.
+- `go test ./cmd/checknetwork-api -run TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites` — 3.034s 통과.
+
+## 구현 상태 (2026-11-25)
+
+- producer scope gate: `analysis.go`의 `closedBlockLegalFor`가 kind과 outcome이 만들 수 없는 block을 read 전에 거부하고, 그 block을 자기 signal로 기록한다. Web의 `aggregateKeysForKind`가 같은 rule이고 양쪽 test가 pin한다.
+- shape block list는 kinds 전체의 union이며 개별 result는 자기 kind의 projection만 가질 수 있다. Go와 Web test가 union 유지와 per-kind 거부를 각각 단언한다.
+- control 분리: ratio 단독(절대 floor만 넘는 케이스)과 threshold 단독(contract-valid block)로 나눠 각 분기가 단독으로 발화함을 test로 증명한다. Web 단언은 발화한 check의 exact message를 pin한다.
+- client 상수는 producer 상수를 재진술하고, parity gate가 app.js의 literal 재기술을 금지한다.
+- reachability prose를 실측 기준으로 정정: `resolver_comparison` block은 current version에서 checker가 write하지 않으므로 fixture scenario로만 reachable하다.
+- Android는 이번 검증 범위에서 제외했다(정적 finding만 유지, 게이트 실행 불가).
