@@ -348,8 +348,8 @@ const SEVERITIES = new Set(['critical', 'warning', 'info']);
 const CONFIDENCES = new Set(['direct', 'corroborated', 'limited']);
 const CATEGORIES = new Set(['name_resolution', 'connectivity', 'application', 'security', 'routing', 'execution', 'input']);
 const PROVENANCES = new Set(['result', 'details']);
-const COVERAGE_CODES = new Set(['missing_details', 'malformed_details', 'unsupported_details']);
-const ENRICHMENT_SOURCES = new Set(['upstream', 'cache', 'mixed', 'none']);
+const COVERAGE_CODES = new Set(['configuration_disabled', 'malformed_details', 'missing_details', 'unsupported_details']);
+const ENRICHMENT_SOURCES = new Set(['disabled', 'upstream', 'cache', 'mixed', 'none']);
 const ENRICHMENT_FAILURE_RETRYABLE = Object.freeze({
   busy: true,
   cancelled: false,
@@ -367,7 +367,8 @@ const COMPACT_TRUNCATION_REASONS = Object.freeze(['node_limit', 'link_limit', 'r
 const COMPACT_MAX_ROUTES = SCHEMA_LIMITS.results * 10;
 const COMPACT_LIMITS = Object.freeze({ nodes: 500, links: 1000, maxResponseBytesExclusive: 1 << 20, maxGeoBundleBytes: 4096 });
 const FINDING_CODES = new Set([
-  'dns_resolution_failed', 'endpoint_connect_failed', 'http_unexpected_status', 'invalid_target',
+  'dns_resolution_failed', 'endpoint_connect_failed', 'http_slow_server_response', 'http_unexpected_status',
+  'intermittent_connectivity', 'invalid_target', 'local_resolver_divergence',
   'execution_timeout', 'execution_cancelled', 'service_greeting_unverified', 'tls_downgrade', 'tls_certificate_expired',
   'tls_certificate_expiring', 'tls_certificate_not_yet_valid', 'tls_handshake_failed',
   'tls_hostname_mismatch', 'tls_untrusted', 'target_policy_blocked',
@@ -1535,12 +1536,141 @@ const TRACE_RESULT_DETAIL_VALIDATORS = Object.freeze({
   topology: (value, path) => normalizeTopology(value, path)
 });
 
+// Closed aggregate blocks travel as whole objects on the wire. The client reads
+// a block whole or refuses it: a block that drifts from its registered key set
+// is a coverage limitation at the producer, so a partial aggregate is never read.
+// The phase block is the single exception, because a phase that never happened
+// has no duration the producer could report.
+const STAGE_TIMING_KEYS = new Set(['dns_ms', 'connect_ms', 'tls_ms', 'ttfb_ms']);
+const SAMPLE_STATS_KEYS = new Set(['count', 'successes', 'failures', 'success_rate', 'p50_ms', 'p95_ms', 'jitter_ms', 'latency_distribution_available']);
+const COMPARISON_KEYS = new Set(['comparable', 'match', 'only_system', 'only_reference', 'gap_side']);
+const COMPARISON_GAP_SIDES = new Set(['system', 'reference']);
+const MAX_STAGE_TIMING_MS = 301000; // MaxRequestBudget: MaxTimeout * MaxTraceAttempts + RequestBudgetGrace
+const MAX_SAMPLES = 10;
+const MAX_COMPARISON_VALUES = 64;
+
+// These bounds are the producer's limits, restated for the parser. The parity gate
+// (backend/diagnostic/client_limits_parity_test.go) fails if a client constant drifts
+// from the producer constant, so nothing here may be a free-floating literal.
+export const AGGREGATE_LIMITS = Object.freeze({
+  stageTimingMS: MAX_STAGE_TIMING_MS,
+  samples: MAX_SAMPLES,
+  comparisonValues: MAX_COMPARISON_VALUES
+});
+
+function stageTimingBlock(value, path) {
+  const block = object(value, path);
+  const keys = Object.keys(block).sort();
+  if (keys.length === 0) throw schemaError(path, 'closed block is empty');
+  const normalized = {};
+  for (const key of keys) {
+    if (!STAGE_TIMING_KEYS.has(key)) throw schemaError(`${path}.${key}`, 'unexpected closed block key');
+    normalized[key] = integer(block[key], `${path}.${key}`, 0, MAX_STAGE_TIMING_MS);
+  }
+  return normalized;
+}
+
+function sampleStatsBlock(value, path) {
+  const block = object(value, path);
+  allowedFields(block, [...SAMPLE_STATS_KEYS], [], path);
+  const count = integer(block.count, `${path}.count`, 1, MAX_SAMPLES);
+  const successes = integer(block.successes, `${path}.successes`, 0, MAX_SAMPLES);
+  const failures = integer(block.failures, `${path}.failures`, 0, MAX_SAMPLES);
+  const rate = integer(block.success_rate, `${path}.success_rate`, 0, 100);
+  const p50 = integer(block.p50_ms, `${path}.p50_ms`);
+  const p95 = integer(block.p95_ms, `${path}.p95_ms`);
+  const jitter = integer(block.jitter_ms, `${path}.jitter_ms`);
+  const available = boolean(block.latency_distribution_available, `${path}.latency_distribution_available`);
+  if (successes + failures !== count) throw schemaError(path, 'sample counts do not add up');
+  if (rate !== Math.round((successes * 100) / count)) throw schemaError(`${path}.success_rate`, 'success rate does not match the counts');
+  if (!available) {
+    if (successes !== 0 || p50 !== 0 || p95 !== 0 || jitter !== 0) throw schemaError(path, 'unavailable distribution must be zeroed');
+  } else if (successes === 0 || p95 < p50 || jitter !== p95 - p50) {
+    throw schemaError(path, 'distribution contradicts its percentiles');
+  }
+  return {
+    count, successes, failures, success_rate: rate,
+    p50_ms: p50, p95_ms: p95, jitter_ms: jitter,
+    latency_distribution_available: available
+  };
+}
+
+function resolverComparisonBlock(value, path) {
+  const block = object(value, path);
+  allowedFields(block, [...COMPARISON_KEYS], [], path);
+  const comparable = boolean(block.comparable, `${path}.comparable`);
+  const match = boolean(block.match, `${path}.match`);
+  const onlySystem = array(block.only_system, `${path}.only_system`, MAX_COMPARISON_VALUES)
+    .map((entry, index) => text(entry, `${path}.only_system[${index}]`));
+  const onlyReference = array(block.only_reference, `${path}.only_reference`, MAX_COMPARISON_VALUES)
+    .map((entry, index) => text(entry, `${path}.only_reference[${index}]`));
+  const gapSide = text(block.gap_side, `${path}.gap_side`, { required: false });
+  if (!comparable) {
+    // A lookup that never completed is a gap, never a divergence claim.
+    if (match || onlySystem.length > 0 || onlyReference.length > 0) {
+      throw schemaError(path, 'incomplete comparison cannot assert a divergence');
+    }
+    if (!COMPARISON_GAP_SIDES.has(gapSide)) throw schemaError(`${path}.gap_side`, 'unknown comparison gap side');
+  } else if (gapSide !== '' || (match && (onlySystem.length > 0 || onlyReference.length > 0))) {
+    throw schemaError(path, 'completed comparison is inconsistent');
+  }
+  return { comparable, match, only_system: onlySystem, only_reference: onlyReference, gap_side: gapSide };
+}
+
+// A shape can only carry the blocks its producer could have written, so the
+// accepted key set depends on the kind, the outcome, and the error code.
+const UNOBSERVED_OUTCOME_CODES = new Set(['checker_capacity_unavailable', 'checker_panic', 'network_policy_blocked']);
+
+function aggregateKeysForKind(kind, status, code) {
+  const keys = {};
+  // Outcomes recorded before any target observation happened can never have had
+  // an aggregate computed for them.
+  if (kind === 'traceroute' || UNOBSERVED_OUTCOME_CODES.has(code)) return keys;
+  keys.sample_stats = (value, fieldPath) => sampleStatsBlock(value, fieldPath);
+  // A comparison block and a timing block only exist when the lookup or the
+  // response actually completed, so a failed outcome cannot carry them.
+  if (status === 'healthy' && code === '') {
+    if (kind === 'dns') keys.resolver_comparison = (value, fieldPath) => resolverComparisonBlock(value, fieldPath);
+    if (kind === 'http' || kind === 'https') keys.stage_timing = (value, fieldPath) => stageTimingBlock(value, fieldPath);
+  }
+  return keys;
+}
+
+function aggregateOnlyDetailsForKind(details, kind, status, code) {
+  const allowed = aggregateKeysForKind(kind, status, code);
+  const keys = Object.keys(details);
+  return keys.length > 0 && keys.every((key) => Object.hasOwn(allowed, key));
+}
+
+// An aggregate block that is present must be read whole against its registered
+// key set; a drifted block cannot be trusted as an inert payload. The legacy
+// paths tolerate extra inert keys, but a registered block is a claim rather than
+// payload, so a block this kind, outcome, and code could never have produced is
+// refused there too.
+const AGGREGATE_BLOCK_KEYS = new Set(['sample_stats', 'resolver_comparison', 'stage_timing']);
+
+function validatePresentAggregateBlocks(source, path, kind, status, code) {
+  const details = ownValue(source, 'details');
+  const allowed = aggregateKeysForKind(kind, status, code);
+  for (const key of Object.keys(details)) {
+    if (AGGREGATE_BLOCK_KEYS.has(key) && !Object.hasOwn(allowed, key)) {
+      throw schemaError(`${path}.${key}`, 'unexpected closed block for this kind and outcome');
+    }
+  }
+  for (const [key, validator] of Object.entries(allowed)) {
+    if (Object.hasOwn(details, key)) validator(ownValue(details, key), `${path}.details.${key}`);
+  }
+}
+
 function enforceProducerResultShape(source, normalized, path) {
   const hasDetails = Object.hasOwn(source, 'details');
   const hasErrorCode = Object.hasOwn(source, 'error_code');
   const code = normalized.error_code;
   const noDetails = !hasDetails;
-  const validNoDetailsTerminal = normalized.status === 'unreachable' && hasErrorCode && noDetails && (
+  // A shape may still list the aggregate blocks its producer could have
+  // carried, so a terminal outcome can be detail-free apart from those blocks.
+  const aggregateOnlyDetails = hasDetails && aggregateOnlyDetailsForKind(ownValue(source, 'details'), normalized.kind, normalized.status, code);
+  const validNoDetailsTerminal = normalized.status === 'unreachable' && hasErrorCode && (noDetails || aggregateOnlyDetails) && (
     COMMON_TERMINAL_RESULT_ERRORS.has(code) ||
     (code === 'invalid_address' && INVALID_ADDRESS_RESULT_KINDS.has(normalized.kind)) ||
     (code === 'invalid_url' && (normalized.kind === 'http' || normalized.kind === 'https')) ||
@@ -1550,18 +1680,24 @@ function enforceProducerResultShape(source, normalized, path) {
     (TLS_FAILURE_CODES.has(code) && !['tls_certificate_expired', 'tls_certificate_not_yet_valid'].includes(code) && TLS_FAILURE_KINDS.has(normalized.kind)) ||
     (code === 'traceroute_unavailable' && normalized.kind === 'traceroute')
   );
-  if (validNoDetailsTerminal) return;
+  if (validNoDetailsTerminal) {
+    if (aggregateOnlyDetails) validatePresentAggregateBlocks(source, path, normalized.kind, normalized.status, code);
+    return;
+  }
 
   if ((normalized.kind === 'dns' || normalized.kind === 'tcp') && normalized.status === 'unreachable' &&
       hasErrorCode && code !== 'cancelled' && COMMON_TERMINAL_RESULT_ERRORS.has(code) && hasDetails) {
     // Legacy reports retained checker details on DNS/TCP terminal outcomes.
-    // The semantic tuple is still closed; only the inert detail payload is kept.
+    // The semantic tuple is still closed; only the inert detail payload is kept,
+    // and an aggregate block on that path must still be read whole.
+    validatePresentAggregateBlocks(source, path, normalized.kind, normalized.status, code);
     return;
   }
 
   if (normalized.kind === 'dns' && normalized.status === 'healthy' && !hasErrorCode && hasDetails) {
     // Legacy v1 DNS reports may carry additional checker observations. They
     // still require a details object, while the tuple itself remains closed.
+    validatePresentAggregateBlocks(source, path, normalized.kind, normalized.status, code);
     return;
   }
 
@@ -1569,7 +1705,7 @@ function enforceProducerResultShape(source, normalized, path) {
     normalized.details = normalizeExactResultDetails(source, path, {
       local_address: (value, fieldPath) => text(value, fieldPath, { required: false }),
       remote_address: (value, fieldPath) => text(value, fieldPath, { required: false })
-    });
+    }, aggregateKeysForKind(normalized.kind, normalized.status, code));
     return;
   }
 
@@ -1577,12 +1713,21 @@ function enforceProducerResultShape(source, normalized, path) {
     (normalized.status === 'healthy' && !hasErrorCode) ||
     (normalized.status === 'unreachable' && hasErrorCode && code === 'unexpected_status')
   )) {
-    if (hasDetails) normalized.details = normalizeExactResultDetails(source, path, {}, HTTP_RESULT_DETAIL_VALIDATORS);
+    if (hasDetails) normalized.details = normalizeExactResultDetails(source, path, {}, {
+      ...HTTP_RESULT_DETAIL_VALIDATORS,
+      ...aggregateKeysForKind(normalized.kind, normalized.status, code)
+    });
     return;
   }
 
+  // A greeting that could not be verified may still carry the aggregate block its
+  // producer computed for the repeated observation, so that path reads the block whole.
   if (SERVICE_KINDS.has(normalized.kind) && normalized.status === 'degraded' &&
-      hasErrorCode && code === 'service_greeting_unverified' && noDetails) return;
+      hasErrorCode && code === 'service_greeting_unverified') {
+    if (!hasDetails) return;
+    normalized.details = normalizeExactResultDetails(source, path, {}, aggregateKeysForKind(normalized.kind, normalized.status, code));
+    return;
+  }
 
   if (PLAIN_SERVICE_KINDS.has(normalized.kind) && normalized.status === 'healthy' && !hasErrorCode) {
     normalized.details = normalizeExactResultDetails(source, path, {
@@ -1590,7 +1735,7 @@ function enforceProducerResultShape(source, normalized, path) {
         if (value !== 'server_greeting') throw schemaError(fieldPath, 'unsupported verification scope');
         return value;
       }
-    });
+    }, aggregateKeysForKind(normalized.kind, normalized.status, code));
     return;
   }
 
@@ -1604,7 +1749,8 @@ function enforceProducerResultShape(source, normalized, path) {
       certificate_expires_at: (value, fieldPath) => utcTimestamp(value, fieldPath),
       certificate_subject: (value, fieldPath) => text(value, fieldPath, { required: false }),
       cipher_suite: (value, fieldPath) => text(value, fieldPath, { required: false }),
-      tls_version: nonEmptyResultText
+      tls_version: nonEmptyResultText,
+      ...aggregateKeysForKind(normalized.kind, normalized.status, code)
     });
     return;
   }
@@ -1614,7 +1760,7 @@ function enforceProducerResultShape(source, normalized, path) {
     normalized.details = normalizeExactResultDetails(source, path, {
       certificate_not_after: (value, fieldPath) => utcTimestamp(value, fieldPath, true),
       certificate_not_before: (value, fieldPath) => utcTimestamp(value, fieldPath, true)
-    });
+    }, aggregateKeysForKind(normalized.kind, normalized.status, code));
     if (Date.parse(normalized.details.certificate_not_before) >= Date.parse(normalized.details.certificate_not_after)) {
       throw schemaError(`${path}.details`, 'certificate validity range is invalid');
     }

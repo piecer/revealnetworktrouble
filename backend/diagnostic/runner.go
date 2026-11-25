@@ -481,6 +481,12 @@ func (r *Runner) runChecker(runCtx context.Context, timeout time.Duration, targe
 	if len(observations) > 1 {
 		stats := computeSampleStats(observations)
 		result.sampleStats = &stats
+		// The aggregate travels as the registered detail block, not as private
+		// state, so every client reads the same keys.
+		if result.Details == nil {
+			result.Details = map[string]any{}
+		}
+		result.Details[ResultDetailSampleStats] = stats.DetailValue()
 	}
 	completedAt = time.Now()
 }

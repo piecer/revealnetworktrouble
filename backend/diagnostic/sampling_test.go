@@ -115,15 +115,15 @@ func TestSamplingExecutesRequestedObservationsAndAggregates(t *testing.T) {
 		t.Fatalf("checker must run once per sample, got %d calls", calls)
 	}
 	result := report.Results[0]
-	if result.sampleStats == nil {
-		t.Fatalf("sampled result must carry aggregate stats")
+	block, ok := result.Details[ResultDetailSampleStats].(map[string]any)
+	if !ok {
+		t.Fatalf("sampled result must carry the aggregate as a wire detail block, got %+v", result.Details)
 	}
-	stats := result.sampleStats
-	if stats.Count != 3 || stats.Successes != 2 || stats.Failures != 1 || stats.SuccessRate != 67 {
-		t.Fatalf("aggregate mismatch: %+v", stats)
+	if block["count"] != 3.0 || block["successes"] != 2.0 || block["failures"] != 1.0 || block["success_rate"] != 67.0 {
+		t.Fatalf("aggregate mismatch: %+v", block)
 	}
-	if stats.P50MS != 100 || stats.P95MS != 110 || stats.JitterMS != 10 {
-		t.Fatalf("nearest-rank distribution over successes [100,110] must be p50=100 p95=110 jitter=10: %+v", stats)
+	if block["p50_ms"] != 100.0 || block["p95_ms"] != 110.0 || block["jitter_ms"] != 10.0 {
+		t.Fatalf("nearest-rank distribution over successes [100,110] must be p50=100 p95=110 jitter=10: %+v", block)
 	}
 	if result.LatencyMS != 110 || result.ErrorCode != "" {
 		t.Fatalf("representative must be the last observation: %+v", result)
@@ -142,7 +142,7 @@ func TestSamplingWithoutSamplesKeepsLegacySingleResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
-	if report.Results[0].sampleStats != nil {
+	if _, exists := report.Results[0].Details[ResultDetailSampleStats]; exists {
 		t.Fatalf("legacy single observation must not carry aggregate stats")
 	}
 }

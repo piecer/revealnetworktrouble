@@ -119,13 +119,13 @@ func TestProducerFindingContractFreezesClosedResultShapes(t *testing.T) {
 	expired := byName["tls_certificate_expired"]
 	if expired.Status != StatusUnreachable || expired.ErrorCode != ResultErrorTLSCertificateExpired ||
 		!reflect.DeepEqual(expired.RequiredDetails, []ResultDetailContract{{Key: "certificate_not_after", Type: DetailTypeCanonicalUTCRFC3339}, {Key: "certificate_not_before", Type: DetailTypeCanonicalUTCRFC3339}}) ||
-		len(expired.OptionalDetails) != 0 {
+		!reflect.DeepEqual(detailKeys(expired.OptionalDetails), []string{ResultDetailSampleStats}) {
 		t.Fatalf("expired TLS shape drifted: %+v", expired)
 	}
 	verified := byName["service_greeting_verified_plain"]
 	if verified.Status != StatusHealthy || verified.ErrorCode != "" ||
 		!reflect.DeepEqual(verified.RequiredDetails, []ResultDetailContract{{Key: "verification_scope", Type: DetailTypeString, Const: VerificationScopeServerGreeting}}) ||
-		len(verified.OptionalDetails) != 0 {
+		!reflect.DeepEqual(detailKeys(verified.OptionalDetails), []string{ResultDetailSampleStats}) {
 		t.Fatalf("plain service shape drifted: %+v", verified)
 	}
 	unavailable := byName["traceroute_unavailable"]
@@ -160,7 +160,8 @@ func detailKeys(details []ResultDetailContract) []string {
 func validFindingCodesForTest() []string {
 	codes := []string{
 		"checker_capacity_unavailable", "checker_panic", "dns_resolution_failed", "endpoint_connect_failed",
-		"execution_cancelled", "execution_timeout", "http_unexpected_status", "invalid_target",
+		"execution_cancelled", "execution_timeout", "http_slow_server_response", "http_unexpected_status",
+		"intermittent_connectivity", "invalid_target", "local_resolver_divergence",
 		"service_greeting_unverified", "target_policy_blocked", "tls_certificate_expired",
 		"tls_certificate_expiring", "tls_certificate_not_yet_valid", "tls_downgrade", "tls_handshake_failed",
 		"tls_hostname_mismatch", "tls_untrusted", "traceroute_execution_failed", "traceroute_partial_reachability",

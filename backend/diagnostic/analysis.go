@@ -36,6 +36,11 @@ type normalizedResultFacts struct {
 	tracePathReached   int
 	tracePathDegraded  bool
 	tracePathUnstable  bool
+	// Closed detail blocks are carried as typed values, never as raw maps, so a
+	// block that drifts from its registered key set cannot be read partially.
+	stageTiming map[string]int64
+	sampleStats *SampleStats
+	comparison  *recordComparison
 }
 
 type analysisBuilder struct {
@@ -124,6 +129,45 @@ func (b *analysisBuilder) analyzeFact(fact normalizedResultFacts, now time.Time)
 		// healthy aggregate can still contain multiple completed hop sequences.
 		if fact.kind == KindTraceroute && fact.tracePathUnstable {
 			b.analyzeTrace(fact)
+		}
+		if phase, phaseMS, totalMS, ok := dominantObservedPhase(fact); ok {
+			b.add(fact, FindingHTTPSlowServerResponse, SeverityWarning, CategoryApplication,
+				"Server response time dominated the observed phases",
+				"The phase after the request was sent was clearly larger than every phase before it, so the delay sits past the connection.",
+				ConfidenceDirect, "stage_timing",
+				fmt.Sprintf("dominant observed phase %s %d ms of %d ms total", phase, phaseMS, totalMS),
+				"", ProvenanceDetails,
+				"Measure the server side of the same request",
+				"Compare the observed response delay with the server's own handler and upstream timings.",
+				"Server-side timings account for the observed response delay.",
+				"Escalate to the service owner if the handler or an upstream dependency is the slow stage.")
+		}
+		if stats, ok := intermittentSamplePattern(fact); ok {
+			b.add(fact, FindingIntermittentConnectivity, SeverityWarning, CategoryConnectivity,
+				"Outcomes varied across repeated samples",
+				"The same target produced different outcomes across its samples, so the behaviour is intermittent rather than consistently failing.",
+				ConfidenceDirect, "sample_stats",
+				fmt.Sprintf("%d samples: %d succeeded, %d failed, %d percent success rate", stats.Count, stats.Successes, stats.Failures, stats.SuccessRate),
+				"", ProvenanceDetails,
+				"Repeat the check over a longer window",
+				"Sample the same target again with more observations and compare the failure share.",
+				"A stable failure share appears over the longer window.",
+				"Escalate if the failure share keeps appearing on the same target.")
+		}
+		// The comparison block is only evidence when a checker wrote it. In this
+		// version no checker calls the record comparison, so a live run cannot reach
+		// this finding; it is pinned through the fixture scenarios.
+		if fact.comparison != nil && fact.comparison.Comparable && !fact.comparison.Match {
+			b.add(fact, FindingLocalResolverDivergence, SeverityWarning, CategoryNameResolution,
+				"Local resolver answer differs from the reference",
+				"The comparable record set from the local resolver does not match the reference resolver, so local resolution diverges.",
+				ConfidenceDirect, "resolver_comparison",
+				fmt.Sprintf("record sets differ: %d system-only, %d reference-only", len(fact.comparison.OnlySystem), len(fact.comparison.OnlyReference)),
+				"", ProvenanceDetails,
+				"Confirm which resolver the client actually used",
+				"Compare the local resolver answer against the reference answer on the same record type from the client network.",
+				"The record sets agree once the resolver path is known.",
+				"Escalate if a resolver in the client path keeps returning a different record set.")
 		}
 		return
 	}
@@ -558,6 +602,11 @@ func normalizeResults(results []Result, coverage *Coverage, now time.Time) []nor
 				enrichment, ok := normalizedEnrichmentCoverage(enrichmentValue, legacyGeoIPFailures, legacyGeoIPFailuresOK)
 				if ok && index < MaxTargets && mergeEnrichmentCoverage(coverage, enrichment) {
 					coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.geoip_enrichment", index))
+					if enrichment.Source == EnrichmentSourceDisabled {
+						// A configuration skip limits what could be observed. It is
+						// not a provider failure and must not be counted as one.
+						coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageConfigurationDisabled, ResultIndex: index, Kind: result.Kind, Signal: "geoip_enrichment", Reason: "geolocation lookup was disabled by configuration, so no geolocation evidence was available"})
+					}
 				} else {
 					coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "geoip_enrichment", Reason: "GeoIP enrichment coverage was malformed, contradictory, or exceeded its bound"})
 				}
@@ -647,6 +696,7 @@ func normalizeResults(results []Result, coverage *Coverage, now time.Time) []nor
 				coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "trace_attempts", Reason: "traceroute counters were missing, malformed, or inconsistent"})
 			}
 		}
+		observeClosedDetailBlocks(index, result, &fact, coverage)
 		facts = append(facts, fact)
 	}
 	return facts
@@ -695,7 +745,11 @@ func normalizedEnrichmentCoverage(value any, legacyFailures int, legacyFailuresO
 	if normalized.Provider != "geoip" || normalized.CacheHits < 0 || normalized.UpstreamFetches < 0 || normalized.MaxAgeMS < 0 || normalized.MaxAgeMS > defaultGeoIPCacheTTL.Milliseconds() || lookupCount < 0 || lookupCount > maxGeoIPLookupsPerResult {
 		return EnrichmentCoverage{}, false
 	}
-	if normalized.Source != enrichmentSource(normalized.CacheHits, normalized.UpstreamFetches) {
+	if normalized.Source != EnrichmentSourceDisabled && normalized.Source != enrichmentSource(normalized.CacheHits, normalized.UpstreamFetches) {
+		return EnrichmentCoverage{}, false
+	}
+	if normalized.Source == EnrichmentSourceDisabled && lookupCount != 0 {
+		// A skipped lookup cannot claim cache hits, fetches, or failures.
 		return EnrichmentCoverage{}, false
 	}
 	if legacyFailuresOK && legacyFailures >= 0 && legacyFailures != failureCount {
@@ -761,6 +815,302 @@ func hasOnlyKeys(object map[string]any, keys ...string) bool {
 		}
 	}
 	return true
+}
+
+// closedBlockLegalFor reports whether this kind and outcome could have produced
+// the block at all. A shape lists the union of blocks its kinds may carry, so one
+// result may only hold the blocks its own kind wrote; reading a block from outside
+// that scope would let a finding come from data the pinned contract declares
+// impossible, and would report it as observed evidence.
+func closedBlockLegalFor(kind Kind, status Status, code, key string) bool {
+	for _, detail := range aggregateBlocks([]Kind{kind}, status, code) {
+		if detail.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// observeClosedDetailBlocks validates the registered closed detail blocks. A block
+// is read only when this kind and outcome could have produced it and its key set
+// and values match the contract, so no consumer sees a partial or out-of-scope
+// aggregate. The phase block is the single exception on key sets: only the phases
+// that actually happened have a duration the producer could write.
+func observeClosedDetailBlocks(index int, result Result, fact *normalizedResultFacts, coverage *Coverage) {
+	if result.Details == nil {
+		return
+	}
+	// The scope check runs before the key sets, so an out-of-scope block is named
+	// as itself instead of being absorbed into another signal's limitation. Each
+	// signal is emitted as its own literal so the presentation registry stays
+	// statically auditable.
+	outOfScope := make(map[string]bool, 3)
+	if fact.statusValid {
+		if _, exists := result.Details[ResultDetailStageTiming]; exists && !closedBlockLegalFor(fact.kind, fact.status, fact.errorCode, ResultDetailStageTiming) {
+			outOfScope[ResultDetailStageTiming] = true
+			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: index, Kind: fact.kind, Signal: "stage_timing", Reason: "closed block is outside the scope this kind and outcome could produce"})
+		}
+		if _, exists := result.Details[ResultDetailSampleStats]; exists && !closedBlockLegalFor(fact.kind, fact.status, fact.errorCode, ResultDetailSampleStats) {
+			outOfScope[ResultDetailSampleStats] = true
+			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: index, Kind: fact.kind, Signal: "sample_stats", Reason: "closed block is outside the scope this kind and outcome could produce"})
+		}
+		if _, exists := result.Details[ResultDetailResolverComparison]; exists && !closedBlockLegalFor(fact.kind, fact.status, fact.errorCode, ResultDetailResolverComparison) {
+			outOfScope[ResultDetailResolverComparison] = true
+			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageUnsupportedDetails, ResultIndex: index, Kind: fact.kind, Signal: "resolver_comparison", Reason: "closed block is outside the scope this kind and outcome could produce"})
+		}
+	}
+	if _, exists := result.Details[ResultDetailStageTiming]; exists && !outOfScope[ResultDetailStageTiming] {
+		block, ok := typedStageTimingBlock(result.Details)
+		if ok {
+			fact.stageTiming = block
+			coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.stage_timing", index))
+		} else {
+			fact.detailsValid = false
+			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "stage_timing", Reason: "stage timing block did not match the closed detail contract"})
+		}
+	}
+	if _, exists := result.Details[ResultDetailSampleStats]; exists && !outOfScope[ResultDetailSampleStats] {
+		stats, ok := typedSampleStatsBlock(result.Details)
+		if ok {
+			fact.sampleStats = &stats
+			coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.sample_stats", index))
+		} else {
+			fact.detailsValid = false
+			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "sample_stats", Reason: "sampling aggregate block did not match the closed detail contract"})
+		}
+	}
+	if _, exists := result.Details[ResultDetailResolverComparison]; exists && !outOfScope[ResultDetailResolverComparison] {
+		comparison, ok := typedRecordComparisonBlock(result.Details)
+		if !ok {
+			fact.detailsValid = false
+			coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMalformedDetails, ResultIndex: index, Kind: result.Kind, Signal: "resolver_comparison", Reason: "record comparison block did not match the closed detail contract"})
+			return
+		}
+		fact.comparison = &comparison
+		if comparison.Comparable {
+			coverage.Available = append(coverage.Available, fmt.Sprintf("results[%d].details.resolver_comparison", index))
+			return
+		}
+		// A side that could not be resolved is a coverage gap, never a divergence claim.
+		coverage.Missing = append(coverage.Missing, fmt.Sprintf("results[%d].details.resolver_comparison", index))
+		coverage.Limitations = append(coverage.Limitations, CoverageIssue{Code: CoverageMissingDetails, ResultIndex: index, Kind: result.Kind, Signal: "resolver_comparison", Reason: fmt.Sprintf("record comparison was not completed on the %s side", comparison.GapSide)})
+	}
+}
+
+// maxStageTimingPhaseMS bounds one observed phase to the whole request budget,
+// so a drifting block cannot report a phase longer than any execution could run.
+const maxStageTimingPhaseMS int64 = int64(MaxRequestBudget / time.Millisecond)
+
+// maxComparisonRecordValues bounds a record-set difference to what a single
+// comparable lookup could ever produce.
+const maxComparisonRecordValues = 64
+
+func typedStageTimingBlock(details map[string]any) (map[string]int64, bool) {
+	switch value := details[ResultDetailStageTiming].(type) {
+	case map[string]int64:
+		if len(value) == 0 {
+			return nil, false
+		}
+		block := make(map[string]int64, len(value))
+		for key, ms := range value {
+			if !isStageTimingKey(key) || ms < 0 || ms > maxStageTimingPhaseMS {
+				return nil, false
+			}
+			block[key] = ms
+		}
+		return block, true
+	case map[string]any:
+		if len(value) == 0 {
+			return nil, false
+		}
+		block := make(map[string]int64, len(value))
+		for key := range value {
+			if !isStageTimingKey(key) {
+				return nil, false
+			}
+			ms, ok := integerDetail(value, key)
+			if !ok || ms < 0 || int64(ms) > maxStageTimingPhaseMS {
+				return nil, false
+			}
+			block[key] = int64(ms)
+		}
+		return block, true
+	}
+	return nil, false
+}
+
+func isStageTimingKey(key string) bool {
+	return key == ResultDetailDNSPhaseMS || key == ResultDetailConnectPhaseMS || key == ResultDetailTLSPhaseMS || key == ResultDetailTTFBPhaseMS
+}
+
+func typedSampleStatsBlock(details map[string]any) (SampleStats, bool) {
+	switch value := details[ResultDetailSampleStats].(type) {
+	case SampleStats:
+		return validateSampleStatsBlock(value)
+	case *SampleStats:
+		if value == nil {
+			return SampleStats{}, false
+		}
+		return validateSampleStatsBlock(*value)
+	case map[string]any:
+		if !hasOnlyKeys(value, "count", "successes", "failures", "success_rate", "p50_ms", "p95_ms", "jitter_ms", "latency_distribution_available") {
+			return SampleStats{}, false
+		}
+		count, countOK := integerDetail(value, "count")
+		successes, successesOK := integerDetail(value, "successes")
+		failures, failuresOK := integerDetail(value, "failures")
+		successRate, rateOK := integerDetail(value, "success_rate")
+		p50, p50OK := integerDetail(value, "p50_ms")
+		p95, p95OK := integerDetail(value, "p95_ms")
+		jitter, jitterOK := integerDetail(value, "jitter_ms")
+		available, availableOK := value["latency_distribution_available"].(bool)
+		if !countOK || !successesOK || !failuresOK || !rateOK || !p50OK || !p95OK || !jitterOK || !availableOK {
+			return SampleStats{}, false
+		}
+		return validateSampleStatsBlock(SampleStats{Count: count, Successes: successes, Failures: failures, SuccessRate: successRate, P50MS: int64(p50), P95MS: int64(p95), JitterMS: int64(jitter), LatencyDistributionAvailable: available})
+	}
+	return SampleStats{}, false
+}
+
+// validateSampleStatsBlock requires the aggregate to be internally consistent:
+// a distribution claimed without a successful observation is a contradiction,
+// not a value that can be presented.
+func validateSampleStatsBlock(stats SampleStats) (SampleStats, bool) {
+	if stats.Count < 1 || stats.Count > MaxSamples || stats.Successes < 0 || stats.Failures < 0 || stats.Successes+stats.Failures != stats.Count {
+		return SampleStats{}, false
+	}
+	if stats.SuccessRate != int(math.Round(float64(stats.Successes)*100/float64(stats.Count))) {
+		return SampleStats{}, false
+	}
+	if !stats.LatencyDistributionAvailable {
+		if stats.Successes != 0 || stats.P50MS != 0 || stats.P95MS != 0 || stats.JitterMS != 0 {
+			return SampleStats{}, false
+		}
+		return stats, true
+	}
+	if stats.Successes == 0 || stats.P50MS < 0 || stats.P95MS < stats.P50MS || stats.JitterMS != stats.P95MS-stats.P50MS {
+		return SampleStats{}, false
+	}
+	return stats, true
+}
+
+func typedRecordComparisonBlock(details map[string]any) (recordComparison, bool) {
+	switch value := details[ResultDetailResolverComparison].(type) {
+	case recordComparison:
+		return validateRecordComparisonBlock(value)
+	case *recordComparison:
+		if value == nil {
+			return recordComparison{}, false
+		}
+		return validateRecordComparisonBlock(*value)
+	case map[string]any:
+		if !hasOnlyKeys(value, "comparable", "match", "only_system", "only_reference", "gap_side") {
+			return recordComparison{}, false
+		}
+		comparable, ok := value["comparable"].(bool)
+		if !ok {
+			return recordComparison{}, false
+		}
+		match, ok := value["match"].(bool)
+		if !ok {
+			return recordComparison{}, false
+		}
+		onlySystem, ok := stringSliceDetail(value, "only_system")
+		if !ok || onlySystem == nil {
+			return recordComparison{}, false
+		}
+		onlyReference, ok := stringSliceDetail(value, "only_reference")
+		if !ok || onlyReference == nil {
+			return recordComparison{}, false
+		}
+		gapSide, ok := value["gap_side"].(string)
+		if !ok {
+			return recordComparison{}, false
+		}
+		return validateRecordComparisonBlock(recordComparison{Comparable: comparable, Match: match, OnlySystem: onlySystem, OnlyReference: onlyReference, GapSide: gapSide})
+	}
+	return recordComparison{}, false
+}
+
+func validateRecordComparisonBlock(comparison recordComparison) (recordComparison, bool) {
+	if len(comparison.OnlySystem) > maxComparisonRecordValues || len(comparison.OnlyReference) > maxComparisonRecordValues {
+		return recordComparison{}, false
+	}
+	if !comparison.Comparable {
+		if comparison.Match || len(comparison.OnlySystem) != 0 || len(comparison.OnlyReference) != 0 {
+			return recordComparison{}, false
+		}
+		if comparison.GapSide != "system" && comparison.GapSide != "reference" {
+			return recordComparison{}, false
+		}
+		return comparison, true
+	}
+	if comparison.GapSide != "" {
+		return recordComparison{}, false
+	}
+	if comparison.Match && (len(comparison.OnlySystem) != 0 || len(comparison.OnlyReference) != 0) {
+		return recordComparison{}, false
+	}
+	return comparison, true
+}
+
+// minSlowServerResponseMS is the absolute floor for a response-phase finding.
+// Being the largest phase of a short window is not a finding on its own.
+const minSlowServerResponseMS int64 = 1000
+
+// minIntermittentSamples keeps a single failure inside two observations from
+// being reported as intermittent behaviour.
+const minIntermittentSamples = 3
+
+// dominantObservedPhase reports the response phase that is both large on its
+// own and clearly larger than every phase that preceded it.
+func dominantObservedPhase(fact normalizedResultFacts) (string, int64, int64, bool) {
+	if fact.kind != KindHTTP || fact.stageTiming == nil {
+		return "", 0, 0, false
+	}
+	response, ok := fact.stageTiming[ResultDetailTTFBPhaseMS]
+	if !ok || response < minSlowServerResponseMS {
+		return "", 0, 0, false
+	}
+	var preceding int64
+	var total int64
+	for key, ms := range fact.stageTiming {
+		total += ms
+		if key != ResultDetailTTFBPhaseMS {
+			preceding += ms
+		}
+	}
+	if response <= 3*preceding {
+		return "", 0, 0, false
+	}
+	return stageTimingPhaseName(ResultDetailTTFBPhaseMS), response, total, true
+}
+
+func stageTimingPhaseName(key string) string {
+	switch key {
+	case ResultDetailDNSPhaseMS:
+		return "dns"
+	case ResultDetailConnectPhaseMS:
+		return "connect"
+	case ResultDetailTLSPhaseMS:
+		return "tls"
+	case ResultDetailTTFBPhaseMS:
+		return "ttfb"
+	}
+	return ""
+}
+
+// intermittentSamplePattern needs at least three observations and a failure
+// share of at least a third, so a mixed pair of samples stays quiet.
+func intermittentSamplePattern(fact normalizedResultFacts) (SampleStats, bool) {
+	if fact.sampleStats == nil {
+		return SampleStats{}, false
+	}
+	stats := *fact.sampleStats
+	if stats.Count < minIntermittentSamples || stats.Failures < 1 || 3*stats.Failures < stats.Count {
+		return SampleStats{}, false
+	}
+	return stats, true
 }
 
 func mergeEnrichmentCoverage(coverage *Coverage, addition EnrichmentCoverage) bool {

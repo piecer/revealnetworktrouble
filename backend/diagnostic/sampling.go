@@ -56,6 +56,23 @@ func computeSampleStats(observations []sampleObservation) SampleStats {
 	return stats
 }
 
+// DetailValue renders the aggregate as the registered closed detail block, so
+// the wire report, the web client, and the Android client read the same keys
+// instead of an unexported field. Numbers are the wire-canonical JSON number,
+// so an in-process block and a decoded wire block carry the same type.
+func (s SampleStats) DetailValue() map[string]any {
+	return map[string]any{
+		"count":                          float64(s.Count),
+		"successes":                      float64(s.Successes),
+		"failures":                       float64(s.Failures),
+		"success_rate":                   float64(s.SuccessRate),
+		"p50_ms":                         float64(s.P50MS),
+		"p95_ms":                         float64(s.P95MS),
+		"jitter_ms":                      float64(s.JitterMS),
+		"latency_distribution_available": s.LatencyDistributionAvailable,
+	}
+}
+
 // nearestRank is the ceiling-rank percentile over a sorted ascending slice.
 func nearestRank(sorted []int64, quantile float64) int64 {
 	rank := int(math.Ceil(quantile * float64(len(sorted))))

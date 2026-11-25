@@ -59,7 +59,7 @@ func TestPresentationContractRegistryCardinalityAndOrdering(t *testing.T) {
 	if got, want := presentationSemanticKeys, []string{"cause", "supporting_evidence", "expectation", "evidence_directness", "coverage_limitation", "next_action"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("semantic keys = %v, want %v", got, want)
 	}
-	if len(presentationEvidenceSignalRegistry) != 10 || len(presentationCoverageSignalRegistry) != 21 {
+	if len(presentationEvidenceSignalRegistry) != 13 || len(presentationCoverageSignalRegistry) != 24 {
 		t.Fatalf("registry counts = evidence %d coverage %d", len(presentationEvidenceSignalRegistry), len(presentationCoverageSignalRegistry))
 	}
 	if !sort.StringsAreSorted(presentationCoverageSignalRegistry) {
