@@ -39,6 +39,17 @@ public final class ReportParser {
     private static final Set<String> SERVICE_RESULT_ERRORS = Set.of(
             "network_policy_blocked", "invalid_address", "timeout", "cancelled", "connection_failed",
             "checker_panic", "checker_capacity_unavailable");
+    /** Registered closed aggregate blocks, read whole or refused. */
+    private static final Set<String> AGGREGATE_BLOCK_KEYS = Set.of("resolver_comparison", "sample_stats", "stage_timing");
+    private static final Set<String> UNOBSERVED_OUTCOME_CODES = Set.of(
+            "checker_capacity_unavailable", "checker_panic", "network_policy_blocked");
+    private static final Set<String> STAGE_TIMING_PHASES = Set.of("dns_ms", "connect_ms", "tls_ms", "ttfb_ms");
+    private static final Set<String> SAMPLE_STATS_KEYS = Set.of(
+            "count", "successes", "failures", "success_rate", "p50_ms", "p95_ms", "jitter_ms",
+            "latency_distribution_available");
+    private static final Set<String> COMPARISON_KEYS = Set.of(
+            "comparable", "match", "only_system", "only_reference", "gap_side");
+    private static final Set<String> COMPARISON_GAP_SIDES = Set.of("system", "reference");
 
     private ReportParser() {}
 
@@ -232,6 +243,7 @@ public final class ReportParser {
             rawDetails=object(value.get("details"),path+".details");
             details=immutableObject(rawDetails,path+".details",0);
             validateKnownDetails(rawDetails,path+".details",kind,status);
+            validateAggregateBlocks(rawDetails,path+".details",kind,status,errorCode);
         }
         validateClosedResultShape(value,path,kind,status,errorCode,rawDetails);
         return new Report.Result(kind,address,status,latency,started,errorCode,message,details);
@@ -250,7 +262,8 @@ public final class ReportParser {
             if(status!=Report.Status.UNREACHABLE||!hasErrorCode)throw error(path+".status","contradicts terminal error");
             if(kind==CheckKind.TRACEROUTE&&hasDetails&&(errorCode.equals("cancelled")||errorCode.equals("timeout"))){
                 validateTraceResultShape(path,status,errorCode,details,!errorCode.equals("cancelled"));
-            }else if(hasDetails&&kind!=CheckKind.DNS&&kind!=CheckKind.TCP)
+            }else if(hasDetails&&!nonBlockKeys(details).isEmpty()
+                    &&!((kind==CheckKind.DNS||kind==CheckKind.TCP)&&!"cancelled".equals(errorCode)))
                 throw error(path+".details","must be absent");
             return;
         }
@@ -315,7 +328,7 @@ public final class ReportParser {
             Set<String> allowed=isImplicitTlsServiceKind(kind)
                     ?Set.of("certificate_expires_at","certificate_subject","cipher_suite","tls_version","verification_scope")
                     :Set.of("verification_scope");
-            if(!allowed.containsAll(jsonKeys(details))||!details.has("verification_scope")
+            if(!allowed.containsAll(nonBlockKeys(details))||!details.has("verification_scope")
                     ||(isImplicitTlsServiceKind(kind)&&!jsonKeys(details).containsAll(allowed)))
                 throw error(path+".details","does not match a producer service detail shape");
             if(!"server_greeting".equals(text(details,"verification_scope",path+".details.verification_scope",true,64)))
@@ -341,7 +354,7 @@ public final class ReportParser {
     private static void validateHTTPDetails(JSONObject details,String path)throws JSONException{
         Set<String> allowed=Set.of("certificate_expires_at","certificate_subject","cipher_suite","content_type",
                 "expected_status","protocol","status_code","tls_version");
-        if(!allowed.containsAll(jsonKeys(details)))throw error(path,"contains unsupported HTTP detail");
+        if(!allowed.containsAll(nonBlockKeys(details)))throw error(path,"contains unsupported HTTP detail");
         if(details.has("content_type"))text(details,"content_type",path+".content_type",false,ContractLimits.MAX_STRING_CHARS);
         if(details.has("expected_status"))integer(details,"expected_status",path+".expected_status",0,Integer.MAX_VALUE);
         if(details.has("protocol"))text(details,"protocol",path+".protocol",false,ContractLimits.MAX_STRING_CHARS);
@@ -367,7 +380,7 @@ public final class ReportParser {
 
     private static void requireDetails(JSONObject result,JSONObject details,String path,Set<String> keys)throws JSONException{
         if(!result.has("details")||details==null)throw error(path+".details","required");
-        exactFields(details,keys,path+".details");
+        exactDetailFields(details,keys,path+".details");
     }
 
     private static void validateTLSObservationDetails(JSONObject details,String path,boolean includesScope)throws JSONException{
@@ -403,7 +416,7 @@ public final class ReportParser {
         if(!topologyAllowed&&hasTopology)
             throw error(path+".details.topology","contradicts traceroute outcome");
         if(hasTopology)allowed.add("topology");
-        if(!allowed.containsAll(jsonKeys(details)))throw error(path+".details","contains unsupported traceroute detail");
+        if(!allowed.containsAll(nonBlockKeys(details)))throw error(path+".details","contains unsupported traceroute detail");
         boolean hasAttempts=details.has("attempts");
         boolean hasCounters=details.has("attempts_total")||details.has("attempts_reached")
                 ||details.has("attempts_failed")||details.has("attempts_unreached")
@@ -446,10 +459,12 @@ public final class ReportParser {
         if(actual!=expected)throw error(path+".status","contradicts error code");
         if(!kinds.contains(kind))throw error(path+".kind","contradicts error code");
         if(detailKeys.isEmpty()){
-            if(result.has("details"))throw error(path+".details","must be absent");
+            // A closed shape may still carry an in-scope aggregate block on its own; only a
+            // non-block detail key would contradict "details must be absent".
+            if(result.has("details")&&!nonBlockKeys(details).isEmpty())throw error(path+".details","must be absent");
         }else{
             if(details==null)throw error(path+".details","required");
-            exactFields(details,detailKeys,path+".details");
+            exactDetailFields(details,detailKeys,path+".details");
         }
     }
 
@@ -520,6 +535,96 @@ public final class ReportParser {
             if((resultStatus==Report.Status.HEALTHY&&parsedReached!=parsedTotal)||(resultStatus==Report.Status.DEGRADED&&parsedReached==0)||(resultStatus==Report.Status.UNREACHABLE&&parsedReached!=0))throw error(path,"trace counters contradict result status");
         }
         if(details.has("topology")&&!details.isNull("topology")) validateTopology(object(details.get("topology"),path+".topology"),path+".topology",1024,2048);
+    }
+
+    // A closed aggregate block is read whole or refused. The scope check runs before the
+    // key sets, so a block this kind and outcome could never have produced is refused by
+    // name instead of being read as inert payload. The producer owns this rule; the web
+    // client enforces the same projection.
+    private static void validateAggregateBlocks(JSONObject details,String path,CheckKind kind,
+                                                Report.Status status,String errorCode)throws JSONException{
+        for(String key:jsonKeys(details)){
+            if(!AGGREGATE_BLOCK_KEYS.contains(key))continue;
+            if(!aggregateKeysForKind(kind,status,errorCode).contains(key))
+                throw error(path+"."+key,"unexpected closed block for this kind and outcome");
+            JSONObject block=object(details.get(key),path+"."+key);
+            switch(key){
+                case "sample_stats"->validateSampleStatsBlock(block,path+"."+key);
+                case "stage_timing"->validateStageTimingBlock(block,path+"."+key);
+                default->validateResolverComparisonBlock(block,path+"."+key);
+            }
+        }
+    }
+
+    private static Set<String> aggregateKeysForKind(CheckKind kind,Report.Status status,String errorCode){
+        Set<String> keys=new HashSet<>();
+        // Outcomes recorded before any target observation happened can never have had an
+        // aggregate computed for them.
+        if(UNOBSERVED_OUTCOME_CODES.contains(errorCode))return keys;
+        if(kind!=CheckKind.TRACEROUTE)keys.add("sample_stats");
+        // A comparison or timing block only exists when the lookup or the response
+        // actually completed, so a failed outcome cannot carry one.
+        if(status==Report.Status.HEALTHY&&errorCode.isEmpty()){
+            if(kind==CheckKind.DNS)keys.add("resolver_comparison");
+            if(kind==CheckKind.HTTP||kind==CheckKind.HTTPS)keys.add("stage_timing");
+        }
+        return keys;
+    }
+
+    private static void validateSampleStatsBlock(JSONObject block,String path)throws JSONException{
+        exactFields(block,SAMPLE_STATS_KEYS,path);
+        long count=integer(block,"count",path+".count",1,ContractLimits.MAX_SAMPLES);
+        long successes=integer(block,"successes",path+".successes",0,Long.MAX_VALUE);
+        long failures=integer(block,"failures",path+".failures",0,Long.MAX_VALUE);
+        if(successes+failures!=count)throw error(path,"counts do not add up");
+        long rate=integer(block,"success_rate",path+".success_rate",0,100);
+        if(rate!=Math.round(successes*100.0/count))throw error(path,"success rate contradicts counts");
+        long p50=integer(block,"p50_ms",path+".p50_ms",0,Long.MAX_VALUE);
+        long p95=integer(block,"p95_ms",path+".p95_ms",0,Long.MAX_VALUE);
+        long jitter=integer(block,"jitter_ms",path+".jitter_ms",0,Long.MAX_VALUE);
+        boolean distribution=booleanValue(block,"latency_distribution_available",path+".latency_distribution_available");
+        if(!distribution){
+            if(successes!=0||p50!=0||p95!=0||jitter!=0)
+                throw error(path,"distribution claimed without a successful observation");
+            return;
+        }
+        if(successes==0||p95<p50||jitter!=p95-p50)throw error(path,"distribution statistics contradict each other");
+    }
+
+    // Only the phases that actually ran have a duration the producer could write, so an
+    // observed subset is accepted while a drifted key or an out-of-bound value is not.
+    private static void validateStageTimingBlock(JSONObject block,String path)throws JSONException{
+        if(block.length()==0)throw error(path,"closed block is empty");
+        Iterator<String> keys=block.keys();
+        while(keys.hasNext()){
+            String key=keys.next();
+            if(!STAGE_TIMING_PHASES.contains(key))throw error(path,"expected exact enumerable data fields");
+            integer(block,key,path+"."+key,0,ContractLimits.MAX_STAGE_TIMING_MS);
+        }
+    }
+
+    private static void validateResolverComparisonBlock(JSONObject block,String path)throws JSONException{
+        exactFields(block,COMPARISON_KEYS,path);
+        boolean comparable=booleanValue(block,"comparable",path+".comparable");
+        boolean match=booleanValue(block,"match",path+".match");
+        List<String> onlySystem=stringArray(block,"only_system",path+".only_system",ContractLimits.MAX_COMPARISON_VALUES);
+        List<String> onlyReference=stringArray(block,"only_reference",path+".only_reference",ContractLimits.MAX_COMPARISON_VALUES);
+        String gapSide=text(block,"gap_side",path+".gap_side",false,ContractLimits.MAX_STRING_CHARS);
+        if(!comparable){
+            if(match||!onlySystem.isEmpty()||!onlyReference.isEmpty())
+                throw error(path,"incomplete comparison cannot assert a divergence");
+            if(!COMPARISON_GAP_SIDES.contains(gapSide))throw error(path,"unknown comparison gap side");
+            return;
+        }
+        if(!gapSide.isEmpty())throw error(path,"completed comparison is inconsistent");
+        if(match&&(!onlySystem.isEmpty()||!onlyReference.isEmpty()))
+            throw error(path,"completed comparison is inconsistent");
+    }
+
+    private static Set<String> nonBlockKeys(JSONObject details){
+        Set<String> keys=new HashSet<>();
+        for(String key:jsonKeys(details))if(!AGGREGATE_BLOCK_KEYS.contains(key))keys.add(key);
+        return keys;
     }
 
     private static boolean allAttemptsHealthy(JSONArray attempts)throws JSONException{
@@ -882,6 +987,13 @@ public final class ReportParser {
     private static void exactFields(JSONObject value,Set<String> expected,String path){
         if(value.length()!=expected.size())throw error(path,"expected exact fields");
         Iterator<String> keys=value.keys();while(keys.hasNext())if(!expected.contains(keys.next()))throw error(path,"expected exact fields");
+    }
+
+    // The detail key set is checked without the aggregate blocks, which are validated
+    // whole by their own closed key sets.
+    private static void exactDetailFields(JSONObject details,Set<String> expected,String path){
+        Set<String> actual=nonBlockKeys(details);
+        if(actual.size()!=expected.size()||!expected.containsAll(actual))throw error(path,"expected exact fields");
     }
     private static void allowedFields(JSONObject value,Set<String> allowed,String path){
         Iterator<String> keys=value.keys();while(keys.hasNext())if(!allowed.contains(keys.next()))throw error(path,"contains unsupported field");

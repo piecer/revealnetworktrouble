@@ -16,6 +16,10 @@ public final class ContractLimits {
     public static final int MAX_DETAIL_ARRAY_ITEMS = 2_048;
     public static final int MAX_DETAIL_KEYS = 256;
     public static final int MAX_DETAIL_DEPTH = 8;
+    /** Aggregate bounds restate the producer's own limits; the parity gate pins them. */
+    public static final int MAX_SAMPLES = 10;
+    public static final int MAX_STAGE_TIMING_MS = 301_000;
+    public static final int MAX_COMPARISON_VALUES = 64;
     /** Global lexical container depth bound applied before JSON materialization. */
     public static final int MAX_JSON_DEPTH = 16;
     public static final int MAX_TOPOLOGY_NODES_TOTAL = 8_192;

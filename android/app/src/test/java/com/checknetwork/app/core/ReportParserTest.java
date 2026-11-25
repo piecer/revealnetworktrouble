@@ -598,6 +598,13 @@ public final class ReportParserTest {
                 "checker_panic","connection_failed","network_policy_blocked","timeout"}){
             JSONObject legacy=oneResultReport(resultObject(kind,"unreachable").put("error_code",code)
                     .put("details",new JSONObject().put("legacy_observation","retained")));
+            // DNS/TCP terminal outcomes keep the inert legacy payload, but `cancelled` is a
+            // closed tuple that may carry only the aggregate blocks its producer computed.
+            if("cancelled".equals(code)){
+                assertThrows(code+" keeps the tuple closed",ReportParseException.class,
+                        ()->{ReportParser.parse(legacy.toString());});
+                continue;
+            }
             assertEquals(code,ReportParser.parse(legacy.toString()).results().get(0).errorCode());
         }
         String[] witnesses={"traceroute-command-failure-compact-report.json","traceroute-command-failure-full-report.json",
@@ -994,9 +1001,9 @@ public final class ReportParserTest {
         if(shape.getString("name").startsWith("traceroute_")&&required.length()>0){
             details=traceContractDetails(shape);
         }else{
-            for (int i = 0; i < required.length(); i++) putContractDetail(details, required.getJSONObject(i), shape.getString("name"));
+            for (int i = 0; i < required.length(); i++) putContractDetail(details, required.getJSONObject(i), shape, kind);
             JSONArray optional = shape.getJSONArray("optional_details");
-            for (int i = 0; i < optional.length(); i++) putContractDetail(details, optional.getJSONObject(i), shape.getString("name"));
+            for (int i = 0; i < optional.length(); i++) putContractDetail(details, optional.getJSONObject(i), shape, kind);
         }
         if (required.length() > 0 || shape.getJSONArray("optional_details").length() > 0) result.put("details", details);
         return oneResultReport(result);
@@ -1042,9 +1049,82 @@ public final class ReportParserTest {
         return details;
     }
 
-    private static void putContractDetail(JSONObject details, JSONObject detail, String shapeName) throws Exception {
+    // Producer scope, asserted here rather than assumed: the shape block union is not a
+    // licence for every kind inside the shape.
+    private static Set<String> producerBlockScope(String kind, String status, String errorCode) {
+        Set<String> keys = new HashSet<>();
+        if (Set.of("checker_capacity_unavailable", "checker_panic", "network_policy_blocked").contains(errorCode)) return keys;
+        if (!"traceroute".equals(kind)) keys.add("sample_stats");
+        if ("healthy".equals(status) && errorCode.isEmpty()) {
+            if ("dns".equals(kind)) keys.add("resolver_comparison");
+            if ("http".equals(kind) || "https".equals(kind)) keys.add("stage_timing");
+        }
+        return keys;
+    }
+
+    private static JSONObject blockValueFor(String key) throws Exception {
+        if ("sample_stats".equals(key)) return new JSONObject(new JSONObject()
+                .put("count", 3).put("successes", 2).put("failures", 1).put("success_rate", 67)
+                .put("p50_ms", 10).put("p95_ms", 20).put("jitter_ms", 10)
+                .put("latency_distribution_available", true).toString());
+        if ("stage_timing".equals(key)) return new JSONObject(new JSONObject()
+                .put("dns_ms", 10).put("connect_ms", 20).put("tls_ms", 30).put("ttfb_ms", 40).toString());
+        return new JSONObject(new JSONObject().put("comparable", true).put("match", false)
+                .put("only_system", new JSONArray().put("192.0.2.1"))
+                .put("only_reference", new JSONArray().put("198.51.100.1"))
+                .put("gap_side", "").toString());
+    }
+
+    @Test public void closedBlockUnionIsNotALicenceForEveryKindInsideTheShape() throws Exception {
+        JSONArray shapes = findingContract().getJSONArray("result_shapes");
+        int inScope = 0, refused = 0;
+        for (int i = 0; i < shapes.length(); i++) {
+            JSONObject shape = shapes.getJSONObject(i);
+            JSONArray blocks = new JSONArray();
+            for (String section : new String[]{"required_details", "optional_details"}) {
+                JSONArray list = shape.getJSONArray(section);
+                for (int j = 0; j < list.length(); j++) {
+                    JSONObject detail = list.getJSONObject(j);
+                    if (detail.getString("type").endsWith("_block")) blocks.put(detail);
+                }
+            }
+            if (blocks.length() == 0) continue;
+            String errorCode = shape.has("error_code") ? shape.getString("error_code") : "";
+            for (int k = 0; k < shape.getJSONArray("kinds").length(); k++) {
+                String kind = shape.getJSONArray("kinds").getString(k);
+                for (int j = 0; j < blocks.length(); j++) {
+                    String key = blocks.getJSONObject(j).getString("key");
+                    JSONObject mutated = new JSONObject(reportForResultShape(shape, kind).toString());
+                    JSONObject result = mutated.getJSONArray("results").getJSONObject(0);
+                    JSONObject details = result.has("details") ? result.getJSONObject("details") : new JSONObject();
+                    details.put(key, blockValueFor(key));
+                    result.put("details", details);
+                    String label = shape.getString("name") + "/" + kind + ":" + key;
+                    if (producerBlockScope(kind, shape.getString("status"), errorCode).contains(key)) {
+                        ReportParser.parse(mutated.toString());
+                        inScope++;
+                    } else {
+                        ReportParseException failure = assertThrows(label, ReportParseException.class,
+                                () -> ReportParser.parse(mutated.toString()));
+                        assertTrue(label + " must be refused by its own name",
+                                failure.getMessage().contains("unexpected closed block for this kind and outcome"));
+                        refused++;
+                    }
+                }
+            }
+        }
+        assertTrue("no in-scope block row was exercised", inScope > 0);
+        assertTrue("no out-of-scope block row was exercised", refused > 0);
+    }
+
+    private static void putContractDetail(JSONObject details, JSONObject detail, JSONObject shape, String kind) throws Exception {
         String key = detail.getString("key");
         String type=detail.getString("type");
+        String shapeName = shape.getString("name");
+        // The producer can only compute an aggregate for a kind and outcome it actually
+        // observed, so a canonical report carries a block only inside that scope.
+        if (type.endsWith("_block") && !producerBlockScope(kind, shape.getString("status"),
+                shape.has("error_code") ? shape.getString("error_code") : "").contains(key)) return;
         if (detail.has("const")) details.put(key, detail.getString("const"));
         else if ("certificate_not_before".equals(key)) details.put(key,
                 "tls_certificate_not_yet_valid".equals(shapeName) ? "2027-01-01T00:00:00Z" : "2023-01-01T00:00:00Z");
@@ -1054,6 +1134,15 @@ public final class ReportParserTest {
         else if ("string_array".equals(type)) details.put(key,new JSONArray().put("192.0.2.1"));
         else if ("nonnegative_integer".equals(type)) details.put(key,key.equals("answer_count")?1:200);
         else if ("nonempty_string".equals(type)) details.put(key,"TLS 1.3");
+        else if ("sample_stats_block".equals(type)) details.put(key,new JSONObject()
+                .put("count",3).put("successes",2).put("failures",1).put("success_rate",67)
+                .put("p50_ms",10).put("p95_ms",20).put("jitter_ms",10)
+                .put("latency_distribution_available",true));
+        else if ("stage_timing_block".equals(type)) details.put(key,new JSONObject()
+                .put("dns_ms",10).put("connect_ms",20).put("tls_ms",30).put("ttfb_ms",40));
+        else if ("resolver_comparison_block".equals(type)) details.put(key,new JSONObject()
+                .put("comparable",true).put("match",true).put("only_system",new JSONArray())
+                .put("only_reference",new JSONArray()).put("gap_side",""));
         else details.put(key, key + "-value");
     }
 
