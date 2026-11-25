@@ -359,6 +359,31 @@ func TestSlowServerResponseRatioControlStaysQuietAboveTheFloor(t *testing.T) {
 	}
 }
 
+// The observer records stage timings for HTTPS too and the contract allows the
+// block there, so a rule that only covers plain HTTP leaves the same symptom
+// undiagnosed on the other kind. The rule scope must match the contract scope.
+func TestSlowServerResponseRuleCoversHTTPSWhichTheContractAllows(t *testing.T) {
+	analysis := Analyze([]Result{{
+		Kind:   KindHTTPS,
+		Status: StatusHealthy,
+		Details: map[string]any{
+			"status_code":     200,
+			"expected_status": 200,
+			ResultDetailStageTiming: map[string]int64{
+				ResultDetailConnectPhaseMS: 20,
+				ResultDetailTLSPhaseMS:     40,
+				ResultDetailTTFBPhaseMS:    2000,
+			},
+		},
+	}}, time.Now().UTC())
+	if !contractV2FindingPresent(analysis, FindingHTTPSlowServerResponse) {
+		t.Fatalf("the contract allows this block for https, so the rule must cover it, got %v", analysis.Findings)
+	}
+	if contractV2LimitationForSignal(analysis, ResultDetailStageTiming) != nil {
+		t.Fatalf("an https block inside its scope must be read, not refused, got %+v", analysis.Coverage.Limitations)
+	}
+}
+
 func TestClosedBlockOutsideItsKindScopeIsRefusedAndNeverRead(t *testing.T) {
 	// A record comparison can only come from a lookup that completed, so a well
 	// formed block from another kind's scope cannot become evidence or a finding.

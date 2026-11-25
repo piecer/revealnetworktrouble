@@ -1063,9 +1063,11 @@ const minSlowServerResponseMS int64 = 1000
 const minIntermittentSamples = 3
 
 // dominantObservedPhase reports the response phase that is both large on its
-// own and clearly larger than every phase that preceded it.
+// own and clearly larger than every phase that preceded it. The stage timing
+// observer runs for plain HTTP and HTTPS, and the contract allows the block for
+// both kinds, so the rule covers both.
 func dominantObservedPhase(fact normalizedResultFacts) (string, int64, int64, bool) {
-	if fact.kind != KindHTTP || fact.stageTiming == nil {
+	if fact.kind != KindHTTP && fact.kind != KindHTTPS || fact.stageTiming == nil {
 		return "", 0, 0, false
 	}
 	response, ok := fact.stageTiming[ResultDetailTTFBPhaseMS]
