@@ -26,7 +26,7 @@ import org.robolectric.RobolectricTestRunner;
 
 @RunWith(RobolectricTestRunner.class)
 public final class PresentationFixtureContractTest {
-    private static final String FIXTURE_SHA256 = "d4268ebb2208ccc666bf79016824a5656ff1683b6f5dfb8fda43c6e6a5749607";
+    private static final String FIXTURE_SHA256 = "179402b9cb8c8eec212baf6ce4e95f68f2800747f4429e931ab9d59a28b13cf9";
     private static final String GREETING_SCOPE = AnalysisPresentationRegistry.GREETING_SCOPE;
 
     @Test public void exactProducerFixtureClosesEveryLocalRegistryAndEveryScenarioRenders() throws Exception {
@@ -37,12 +37,12 @@ public final class PresentationFixtureContractTest {
         assertEquals("presentation-contract-v1", fixture.getString("schema"));
 
         assertEquals(strings(fixture.getJSONArray("semantic_keys")), AnalysisPresentationRegistry.semanticKeys());
-        assertEquals(21, fixture.getJSONArray("coverage_signals").length());
+        assertEquals(24, fixture.getJSONArray("coverage_signals").length());
         assertEquals(new HashSet<>(strings(fixture.getJSONArray("coverage_signals"))),
                 AnalysisPresentationRegistry.registeredCoverageSignals());
 
         JSONArray evidenceSignals = fixture.getJSONArray("evidence_signals");
-        assertEquals(10, evidenceSignals.length());
+        assertEquals(13, evidenceSignals.length());
         Set<String> expectedEvidenceSignals = new HashSet<>();
         for (int index = 0; index < evidenceSignals.length(); index++) {
             JSONObject evidence = evidenceSignals.getJSONObject(index);
@@ -54,7 +54,7 @@ public final class PresentationFixtureContractTest {
         assertEquals(expectedEvidenceSignals, AnalysisPresentationRegistry.registeredEvidenceSignals());
 
         JSONArray relationships = fixture.getJSONArray("action_relationships");
-        assertEquals(23, relationships.length());
+        assertEquals(26, relationships.length());
         Set<String> expectedActions = new HashSet<>();
         for (int index = 0; index < relationships.length(); index++) {
             JSONObject relationship = relationships.getJSONObject(index);
@@ -69,7 +69,7 @@ public final class PresentationFixtureContractTest {
         assertEquals(expectedActions, AnalysisPresentationRegistry.registeredActionKeys());
 
         JSONArray scenarios = fixture.getJSONArray("scenarios");
-        assertEquals(33, scenarios.length());
+        assertEquals(36, scenarios.length());
         Set<String> observedActions = new HashSet<>();
         Set<String> observedEvidence = new HashSet<>();
         Set<String> observedFindingKeys = new HashSet<>();
@@ -115,7 +115,7 @@ public final class PresentationFixtureContractTest {
                 assertFalse(scenario.getString("name"), markdown.contains("No validated supporting evidence was linked."));
             }
         }
-        assertEquals(23, observedFindingKeys.size());
+        assertEquals(26, observedFindingKeys.size());
         assertEquals(expectedActions, observedActions);
         assertEquals(expectedEvidenceSignals, observedEvidence);
     }
@@ -280,6 +280,12 @@ public final class PresentationFixtureContractTest {
                     assertTrue(rendered.contains("2 reached completed attempts had multiple path signatures"));
             case "traceroute.path_status" ->
                     assertTrue(rendered.contains("1 completed attempt contained a producer-classified degraded segment"));
+            case "resolver_comparison" -> assertTrue(rendered.contains(
+                    "Observed local resolver record set: record sets differ: 1 system-only, 1 reference-only"));
+            case "sample_stats" -> assertTrue(rendered.contains(
+                    "Observed repeated sample outcomes: 3 samples: 1 succeeded, 2 failed, 33 percent success rate"));
+            case "stage_timing" -> assertTrue(rendered.contains(
+                    "Observed dominant response phase: dominant observed phase ttfb 1500 ms of 1970 ms total"));
             default -> fail("fixture introduced untested evidence signal " + signal);
         }
     }
