@@ -31,6 +31,9 @@ public final class AnalysisPresentationRegistry {
     private static final Pattern PATH_COUNT = Pattern.compile("degraded segment observed among (\\d{1,2}) completed attempts?");
     private static final Pattern PATH_SIGNATURES = Pattern.compile("multiple successful completed path signatures among (\\d{1,2}) reached completed attempts");
     private static final Pattern EXECUTION_CLASSES = Pattern.compile("(\\d{1,2}) execution failures: (\\d{1,2}) timed out, (\\d{1,2}) cancelled, (\\d{1,2}) command errors");
+    private static final Pattern PHASE_SUMMARY = Pattern.compile("dominant observed phase (dns|connect|tls|ttfb) (\\d{1,6}) ms of (\\d{1,6}) ms total");
+    private static final Pattern SAMPLE_SUMMARY = Pattern.compile("(\\d{1,2}) samples: (\\d{1,2}) succeeded, (\\d{1,2}) failed, (\\d{1,2}) percent success rate");
+    private static final Pattern RECORD_SET_SUMMARY = Pattern.compile("record sets differ: (\\d{1,3}) system-only, (\\d{1,3}) reference-only");
     private static final Set<String> SAFE_ERROR_CODES = Set.of(
             "cancelled", "checker_capacity_unavailable", "checker_panic", "connection_failed",
             "destination_unreached", "invalid_address", "invalid_url", "network_policy_blocked",
@@ -258,6 +261,41 @@ public final class AnalysisPresentationRegistry {
             if (!matcher.matches() || Integer.parseInt(matcher.group(1)) > 10) return null;
             return new SafeEvidence("Observed path-signature count", matcher.group(1) + " reached completed attempts had multiple path signatures", ignored -> null);
         }
+        // Accepted aggregate forms are the exact strings the producer can emit, so a
+        // summary that is only shaped like one is not presented.
+        if ("sample_stats".equals(signal)) {
+            Matcher matcher = SAMPLE_SUMMARY.matcher(observed);
+            if (!matcher.matches()) return null;
+            int count = Integer.parseInt(matcher.group(1));
+            int successes = Integer.parseInt(matcher.group(2));
+            int failures = Integer.parseInt(matcher.group(3));
+            int rate = Integer.parseInt(matcher.group(4));
+            if (count < 1 || count > ContractLimits.MAX_SAMPLES || successes + failures != count || rate > 100) return null;
+            return new SafeEvidence("Observed repeated sample outcomes",
+                    count + " samples: " + successes + " succeeded, " + failures + " failed, " + rate + " percent success rate",
+                    ignored -> null);
+        }
+        if ("stage_timing".equals(signal)) {
+            Matcher matcher = PHASE_SUMMARY.matcher(observed);
+            if (!matcher.matches()) return null;
+            int phase = Integer.parseInt(matcher.group(2));
+            int total = Integer.parseInt(matcher.group(3));
+            if (phase > total || total > ContractLimits.MAX_STAGE_TIMING_MS) return null;
+            return new SafeEvidence("Observed dominant response phase",
+                    "dominant observed phase " + matcher.group(1) + " " + phase + " ms of " + total + " ms total",
+                    ignored -> null);
+        }
+        if ("resolver_comparison".equals(signal)) {
+            Matcher matcher = RECORD_SET_SUMMARY.matcher(observed);
+            if (!matcher.matches()) return null;
+            int systemOnly = Integer.parseInt(matcher.group(1));
+            int referenceOnly = Integer.parseInt(matcher.group(2));
+            if (systemOnly > ContractLimits.MAX_COMPARISON_VALUES || referenceOnly > ContractLimits.MAX_COMPARISON_VALUES
+                    || systemOnly + referenceOnly == 0) return null;
+            return new SafeEvidence("Observed local resolver record set",
+                    "record sets differ: " + systemOnly + " system-only, " + referenceOnly + " reference-only",
+                    ignored -> null);
+        }
         if ("traceroute.execution_failures".equals(signal)) {
             Matcher matcher = EXECUTION_CLASSES.matcher(observed);
             if (!matcher.matches()) return null;
@@ -297,6 +335,7 @@ public final class AnalysisPresentationRegistry {
             case MISSING_DETAILS -> "Required observation was not available";
             case MALFORMED_DETAILS -> "Observation did not match the bounded contract";
             case UNSUPPORTED_DETAILS -> "Observation is outside this analysis version's supported scope";
+            case CONFIGURATION_DISABLED -> "A configured lookup was disabled, so its evidence was never attempted";
         };
     }
 
@@ -388,6 +427,9 @@ public final class AnalysisPresentationRegistry {
         Map<String, EvidenceSpec> values = new HashMap<>();
         putEvidence(values, "error_code", "closed_error_code", "none");
         putEvidence(values, "http.status_code", "http_status", "http_status");
+        putEvidence(values, "resolver_comparison", "record_set_summary", "none");
+        putEvidence(values, "sample_stats", "sample_stats_summary", "none");
+        putEvidence(values, "stage_timing", "stage_timing_summary", "none");
         putEvidence(values, "tls.certificate_expires_at", "utc_timestamp", "none");
         putEvidence(values, "traceroute.attempts_cancelled", "count", "count");
         putEvidence(values, "traceroute.attempts_execution_failed", "count", "count");
@@ -396,7 +438,7 @@ public final class AnalysisPresentationRegistry {
         putEvidence(values, "traceroute.execution_failures", "execution_failure_counts", "count");
         putEvidence(values, "traceroute.path_signatures", "path_count", "none");
         putEvidence(values, "traceroute.path_status", "path_count", "none");
-        if (values.size() != 10) throw new IllegalStateException("closed evidence registry is incomplete");
+        if (values.size() != 13) throw new IllegalStateException("closed evidence registry is incomplete");
         return Collections.unmodifiableMap(values);
     }
 
@@ -419,8 +461,11 @@ public final class AnalysisPresentationRegistry {
         putCoverage(values, "kind", "checker kind");
         putCoverage(values, "response_body", "bounded response sample");
         putCoverage(values, "result", "result observation");
+        putCoverage(values, "resolver_comparison", "record comparison");
+        putCoverage(values, "sample_stats", "repeat sample aggregate");
         putCoverage(values, "service_verification_details", "server-greeting verification details");
         putCoverage(values, "service_verification_scope", "server-greeting verification scope");
+        putCoverage(values, "stage_timing", "observed phase timings");
         putCoverage(values, "status", "result status");
         putCoverage(values, "tls", "TLS verification");
         putCoverage(values, "tls_certificate", "TLS certificate");
@@ -429,7 +474,7 @@ public final class AnalysisPresentationRegistry {
         putCoverage(values, "trace_error", "traceroute error classification");
         putCoverage(values, "trace_paths", "bounded traceroute paths");
         putCoverage(values, "trace_topology", "bounded topology evidence");
-        if (values.size() != 21) throw new IllegalStateException("closed coverage registry is incomplete");
+        if (values.size() != 24) throw new IllegalStateException("closed coverage registry is incomplete");
         return Collections.unmodifiableMap(values);
     }
 
@@ -445,8 +490,11 @@ public final class AnalysisPresentationRegistry {
         put(values, Report.FindingCode.ENDPOINT_CONNECT_FAILED, "An endpoint connection was not established.", "The intended endpoint accepts a connection on the configured port.", "Application and authentication behavior were not tested without a connection.", "Verify listener availability and approved network access, then repeat the check.", "error_code");
         put(values, Report.FindingCode.EXECUTION_CANCELLED, "The check was cancelled before a complete observation was available.", "The bounded check remains active through completion.", "Cancellation does not establish service health or failure.", "Repeat the check when it can remain active through completion.", "error_code", "traceroute.attempts_cancelled");
         put(values, Report.FindingCode.EXECUTION_TIMEOUT, "The check did not complete within its bounded deadline.", "The check completes before the configured deadline.", "A timeout does not identify the underlying network or service cause.", "Repeat once with the same bounded deadline and verify endpoint availability independently.", "error_code", "traceroute.attempts_timed_out");
+        put(values, Report.FindingCode.HTTP_SLOW_SERVER_RESPONSE, "The response phase was clearly larger than every phase that preceded it, so the measured delay sits past the connection.", "The response phase stays comparable with the phases that preceded it.", "Only the phases this observation point measured were compared; the server-side handler and upstream timings were not observed.", "Compare the same request against the server-side handler and upstream timings.", "stage_timing");
         put(values, Report.FindingCode.HTTP_UNEXPECTED_STATUS, "The observed HTTP status differed from the configured expectation.", "The endpoint returns the configured expected HTTP status.", "Status alone does not establish response-body or end-to-end application behavior.", "Verify the configured expected status and endpoint route, then repeat the request.", "http.status_code", "error_code");
+        put(values, Report.FindingCode.INTERMITTENT_CONNECTIVITY, "The same target produced different outcomes across its repeated samples.", "Repeated samples of the same target stay in one outcome class.", "The sample window is bounded; a failure share does not identify which element caused it.", "Repeat the check over a longer window and compare the failure share.", "sample_stats");
         put(values, Report.FindingCode.INVALID_TARGET, "The target was rejected before a network observation was made.", "The target has accepted syntax, scheme, hostname, and port.", "No network or service behavior was tested.", "Correct the target configuration and run the check again.", "error_code");
+        put(values, Report.FindingCode.LOCAL_RESOLVER_DIVERGENCE, "The local resolver record set did not match the reference record set for the same name.", "The local resolver and the reference resolver return the same record set.", "Only completed record sets were compared; the resolver path actually used by the client was not established.", "Confirm which resolver the client path uses, then recompare the same record type.", "resolver_comparison");
         put(values, Report.FindingCode.SERVICE_GREETING_UNVERIFIED, "A transport connection occurred, but the expected server-first greeting was not verified.", "The intended service returns its expected bounded server-first greeting without client input.", "Command, authentication, STARTTLS, mailbox, and end-to-end service behavior were not tested.", "Verify the listener and server-first greeting configuration, then repeat the check.", "error_code");
         put(values, Report.FindingCode.TARGET_POLICY_BLOCKED, "Deployment policy blocked the target before a network connection was attempted.", "The target is approved under the selected deployment policy.", "No network or service behavior was tested.", "Use an approved target or an explicitly authorized trusted-local deployment.", "error_code");
         put(values, Report.FindingCode.TLS_CERTIFICATE_EXPIRED, "The certificate was outside its validity period at verification time.", "The endpoint presents a certificate valid at verification time.", "Application behavior beyond certificate verification was not established.", "Renew and deploy the intended certificate chain, then repeat the check.", "error_code", "tls.certificate_expires_at");
@@ -480,8 +528,11 @@ public final class AnalysisPresentationRegistry {
             case ENDPOINT_CONNECT_FAILED -> "action.endpoint_connect_failed";
             case EXECUTION_CANCELLED -> "action.execution_cancelled";
             case EXECUTION_TIMEOUT -> "action.execution_timeout";
+            case HTTP_SLOW_SERVER_RESPONSE -> "action.http_slow_server_response";
             case HTTP_UNEXPECTED_STATUS -> "action.http_unexpected_status";
+            case INTERMITTENT_CONNECTIVITY -> "action.intermittent_connectivity";
             case INVALID_TARGET -> "action.invalid_target";
+            case LOCAL_RESOLVER_DIVERGENCE -> "action.local_resolver_divergence";
             case SERVICE_GREETING_UNVERIFIED -> "action.service_greeting_unverified";
             case TARGET_POLICY_BLOCKED -> "action.target_policy_blocked";
             case TLS_CERTIFICATE_EXPIRED -> "action.tls_certificate_expired";

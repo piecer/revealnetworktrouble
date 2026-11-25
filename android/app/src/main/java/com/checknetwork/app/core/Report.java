@@ -18,8 +18,11 @@ public final class Report {
         ENDPOINT_CONNECT_FAILED,
         EXECUTION_CANCELLED,
         EXECUTION_TIMEOUT,
+        HTTP_SLOW_SERVER_RESPONSE,
         HTTP_UNEXPECTED_STATUS,
+        INTERMITTENT_CONNECTIVITY,
         INVALID_TARGET,
+        LOCAL_RESOLVER_DIVERGENCE,
         SERVICE_GREETING_UNVERIFIED,
         TARGET_POLICY_BLOCKED,
         TLS_CERTIFICATE_EXPIRED,
@@ -44,8 +47,11 @@ public final class Report {
                 case "endpoint_connect_failed" -> ENDPOINT_CONNECT_FAILED;
                 case "execution_cancelled" -> EXECUTION_CANCELLED;
                 case "execution_timeout" -> EXECUTION_TIMEOUT;
+                case "http_slow_server_response" -> HTTP_SLOW_SERVER_RESPONSE;
                 case "http_unexpected_status" -> HTTP_UNEXPECTED_STATUS;
+                case "intermittent_connectivity" -> INTERMITTENT_CONNECTIVITY;
                 case "invalid_target" -> INVALID_TARGET;
+                case "local_resolver_divergence" -> LOCAL_RESOLVER_DIVERGENCE;
                 case "service_greeting_unverified" -> SERVICE_GREETING_UNVERIFIED;
                 case "target_policy_blocked" -> TARGET_POLICY_BLOCKED;
                 case "tls_certificate_expired" -> TLS_CERTIFICATE_EXPIRED;
@@ -69,7 +75,7 @@ public final class Report {
     public enum Category { NAME_RESOLUTION, CONNECTIVITY, APPLICATION, SECURITY, ROUTING, EXECUTION, INPUT }
     public enum Confidence { DIRECT, CORROBORATED, LIMITED }
     public enum Provenance { RESULT, DETAILS }
-    public enum CoverageCode { MISSING_DETAILS, MALFORMED_DETAILS, UNSUPPORTED_DETAILS }
+    public enum CoverageCode { MISSING_DETAILS, MALFORMED_DETAILS, UNSUPPORTED_DETAILS, CONFIGURATION_DISABLED }
     public enum EnrichmentSource { UPSTREAM, CACHE, MIXED, NONE }
     public enum EnrichmentFailureKind { BUSY, CANCELLED, MALFORMED, NOT_FOUND, POLICY, RATE_LIMITED, TIMEOUT, UNAVAILABLE }
 
