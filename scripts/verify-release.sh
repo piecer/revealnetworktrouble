@@ -19,6 +19,12 @@ fail() {
     exit 1
 }
 
+# Flush one path only. The release must not wait for every filesystem on the
+# host: a wedged device elsewhere makes a system-wide sync never return.
+flush_file() {
+    python3 -c 'import os,sys; fd=os.open(sys.argv[1], os.O_RDONLY); os.fsync(fd); os.close(fd)' "$1"
+}
+
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || {
     printf 'usage: %s EXACT_HEAD_SHA [GIT_ARCHIVE_TAR]\n' "$0" >&2
     exit 2
@@ -521,12 +527,13 @@ if [ "$release_output" != "" ]; then
     publication_state=prepared
     # Keep the canonical extracted artifact immutable: only the destination-local
     # staging file is copied and chmodded.  cp/chmod are fixed POSIX operations;
-    # POSIX has no per-file fsync utility, so use sync when one is available.
+    # the durable commit boundary flushes exactly what this script wrote — the
+    # staging file and the directory holding the rename — never the whole host,
+    # because a wedged filesystem elsewhere makes a system-wide sync never return.
     cp "$api_extract_one/checknetwork-api" "$publish_tmp"
     chmod 0755 "$publish_tmp"
-    if command -v sync >/dev/null 2>&1; then
-        sync
-    fi
+    flush_file "$publish_tmp"
+    flush_file "$output_dir"
     # This is deliberately the last operation before the atomic rename. State
     # changes first because a signal may arrive after rename but before mv exits.
     revalidate_original_tree
