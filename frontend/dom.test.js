@@ -3052,3 +3052,93 @@ test('common prefix view stays within the document element budget', async () => 
   await flush();
   assert.ok(document.querySelectorAll('*').length <= 1200, `document elements ${document.querySelectorAll('*').length}`);
 });
+
+test('every text color clears WCAG AA against the surface that rule renders on', async () => {
+  const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+  const tokens = Object.fromEntries(css.match(/:root\s*\{([^{}]*)\}/)[1].split(';')
+    .filter((entry) => entry.includes(':'))
+    .map((entry) => {
+      const [key, value] = entry.split(':');
+      return [key.trim(), value.trim()];
+    }));
+  const hex = (value) => {
+    const resolved = /^var\(--[a-z0-9-]+\)$/.test(value) ? tokens[value.slice(4, -1)] : value;
+    return /^#[0-9a-f]{6}$/.test(resolved) ? resolved.slice(1) : null;
+  };
+  const luminance = (digits) => {
+    const channels = [0, 2, 4].map((index) => parseInt(digits.slice(index, index + 2), 16) / 255);
+    const linear = (channel) => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    return 0.2126 * linear(channels[0]) + 0.7152 * linear(channels[1]) + 0.0722 * linear(channels[2]);
+  };
+  const contrast = (foreground, background) => {
+    const values = [luminance(foreground), luminance(background)];
+    return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
+  };
+  // A rule resolves on the background it declares, otherwise on its container surface.
+  const containerSurface = {
+    'body': 'body', '.panel': '--panel', '.mapping-table th': '#10120f', '.mapping-table td': '#101210',
+    '.common-prefix-card': '#101210', '.topology': '#0b0e0b', '.topology-foot': '#0e110e',
+    '.topology-color-legend': '#162014', '.ip-context-panel': '#101510', '.geo-target-legend': '#101510',
+    '.geo-node-panel': '#101510', '.topology-geo-list button': '#101510', '.node-card': '#131612',
+    '.finding': '#151713', '.standalone-topology .topology-node': '#111510', '.topology-link': '#0e1313',
+    '.topology-route': '#101217', '.topology-inspector': '#101210', '.secondary-results': '#0b0d0b',
+    '.connection-settings': '--panel', '.error': '#271412', '.request-alert': '#271412',
+    'input': '#0f110f', 'textarea': '#0f110f', '.mapping-table input': '#10120f',
+    '.target-filter-actions button': '#111410', '.target-toggles label': '#111410',
+    '.unknown-node-toggle': '#111410', '.finding-toggle': '#111410',
+    '.topology-view-controls span': '#0d110d', '.common-family': '#0d0f0c', '.common-members li': '#0d0f0c',
+    '.ip-context-controls button': '#1b251b', '.mapping-delete': '#271412', '.topology-node-tooltip': '#0b1729',
+    '.common-prefix-skipped': '#101210', '.topology-badge': '#0b0e0b', '.summary': '--panel',
+    '.result': '--panel', 'h1': 'body', '.lead': 'body', '.section-description': '--panel',
+    'dl div': '--panel', '.main-nav a': 'body'
+  };
+  const offenders = [];
+  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const name = match[1].trim();
+    const block = match[2];
+    if (name.includes('::')) continue;
+    const foreground = hex(block.match(/(?:^|[;\s])color:(#[0-9a-f]{6})/)?.[1]);
+    if (!foreground) continue;
+    const surface = containerSurface[name];
+    const background = hex(block.match(/(?:^|[;\s])background(?:-color)?:([^;]+)/)?.[1])
+      || (surface ? hex(surface.startsWith('--') ? `var(${surface})` : surface) : hex('var(--panel)'));
+    if (!background) continue;
+    const bold = /font:\s*700|font-weight:700/.test(block);
+    const size = Number(block.match(/font:(?:\d+ )?([\d.]+)px/)?.[1] || block.match(/font-size:([\d.]+)px/)?.[1] || 0);
+    const required = size >= 18 || (bold && size >= 14) ? 3.0 : 4.5;
+    const ratio = contrast(foreground, background);
+    if (ratio < required) offenders.push(`${name}: #${foreground} on #${background} = ${ratio.toFixed(2)}, needs ${required}`);
+  }
+  assert.equal(offenders.length, 0, `text colors below AA:\n${offenders.join('\n')}`);
+});
+
+test('the presentation resolves radius, spacing, numeric alignment, and loading from one scale', async () => {
+  const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+  const root = css.match(/:root\s*\{([^{}]*)\}/)[1];
+  const tokens = ['--page', '--surface', '--radius', '--radius-sm', '--space-2', '--space-3', '--space-4', '--text-3', '--ease'];
+  for (const token of tokens) {
+    assert.ok(root.includes(`${token}:`), `missing design token ${token}`);
+    assert.ok(css.includes(`var(${token})`), `design token ${token} is declared but never consumed`);
+  }
+  assert.match(css, /\.panel\s*\{[^}]*border-radius:var\(--radius\)/s);
+  assert.match(css, /input,select\s*\{[^}]*border-radius:var\(--radius-sm\)/s);
+  assert.match(css, /font-variant-numeric:tabular-nums/s);
+  assert.match(css, /@keyframes [a-z-]+loading/);
+  assert.match(css, /\[data-state="loading"\][^}]*animation:/s);
+  assert.match(css, /\.evidence-scroll\s*\{[^}]*scrollbar-color/s);
+  assert.match(css, /\.ip-context-facts\s*\{[^}]*scrollbar-color/s);
+});
+
+test('every transition has a state that actually changes it', async () => {
+  const css = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  const parts = (selector) => selector.split(',').map((part) => part.replace(/::[\w-]+$/, '').trim());
+  const animated = rules.filter((match) => /transition:(?!\s*none)/.test(match[2])).flatMap((match) => parts(match[1]));
+  const stateful = new Set(rules.flatMap((match) => match[1].split(',').map((part) => {
+    const match2 = part.trim().match(/^(.*?)(?::hover|:focus(?:-visible|-within)?)$/);
+    return match2 ? match2[1].trim() : null;
+  }).filter(Boolean)));
+  const dead = animated.filter((part) => !stateful.has(part));
+  assert.ok(animated.length > 0, 'no transition rule was found at all');
+  assert.deepEqual(dead, [], `transitions with no state that changes them: ${dead.join(', ')}`);
+});
