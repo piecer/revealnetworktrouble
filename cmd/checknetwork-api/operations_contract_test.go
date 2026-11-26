@@ -506,6 +506,19 @@ func TestReleaseVerifierPublishesOnlyTheVerifiedArchiveBinary(t *testing.T) {
 	}
 }
 
+func TestReleaseVerifierFlushesOnlyTheBytesItWrote(t *testing.T) {
+	script := repositoryFile(t, "scripts/verify-release.sh")
+	if !strings.Contains(script, "flush_file \"$publish_tmp\"") {
+		t.Fatal("the publication flush must target the staging file this script wrote")
+	}
+	if matched := regexp.MustCompile(`(?m)^\s*sync\s*$`).FindString(script); matched != "" {
+		t.Fatalf("system-wide sync makes the release hostage to any wedged filesystem: found %q", matched)
+	}
+	if strings.Index(script, "flush_file \"$publish_tmp\"") > strings.Index(script, "mv -f \"$publish_tmp\" \"$release_output\"") {
+		t.Fatal("the durable commit boundary must close before the atomic rename")
+	}
+}
+
 func TestReleaseVerifierRunsBoundedFunctionalTraceroute(t *testing.T) {
 	script := repositoryFile(t, "scripts/verify-release.sh")
 	if !strings.Contains(script, "traceroute -n -m 1 -w 1 127.0.0.1") {
