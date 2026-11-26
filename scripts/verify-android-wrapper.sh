@@ -7,8 +7,8 @@ jar="$wrapper_dir/gradle-wrapper.jar"
 properties="$wrapper_dir/gradle-wrapper.properties"
 # Independently checked against Gradle's version-specific official checksum endpoints.
 expected_jar_sha="621008afc4f5d59357fcf06ffa644dd5aade5e091bdc363742710445f73cdaf8"
-expected_distribution_sha="d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228"
-expected_distribution_url='distributionUrl=https\://services.gradle.org/distributions/gradle-9.9.1-bin.zip'
+expected_distribution_sha="971fcd7150ca4ba04852c0b2ca0d2d0ab9468e14b03473eab19528809914c76b"
+expected_distribution_url='distributionUrl=https\://services.gradle.org/distributions/gradle-9.9.2-bin.zip'
 
 [ -f "$jar" ] || { printf 'missing Gradle wrapper JAR: %s\n' "$jar" >&2; exit 1; }
 [ -f "$properties" ] || { printf 'missing Gradle wrapper properties: %s\n' "$properties" >&2; exit 1; }
@@ -83,6 +83,6 @@ actual_distribution_url=$(awk '$0 ~ /^distributionUrl=/ { print }' "$properties"
     exit 1
 }
 
-printf 'Gradle wrapper verified: 9.9.1\n'
+printf 'Gradle wrapper verified: 9.9.2\n'
 printf 'wrapper JAR SHA-256: %s\n' "$actual_jar_sha"
 printf 'distribution SHA-256: %s\n' "$actual_distribution_sha"

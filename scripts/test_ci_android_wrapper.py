@@ -30,7 +30,7 @@ class AndroidWrapperVerificationTests(unittest.TestCase):
     def test_checked_in_wrapper_matches_independently_pinned_release(self):
         result = self.verify()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Gradle wrapper verified: 9.9.1", result.stdout)
+        self.assertIn("Gradle wrapper verified: 9.9.2", result.stdout)
 
     def test_canonical_comments_and_blank_lines_are_accepted(self):
         properties = self.wrapper / "gradle-wrapper.properties"
@@ -77,7 +77,7 @@ class AndroidWrapperVerificationTests(unittest.TestCase):
 
     def test_other_distribution_url_is_rejected(self):
         properties = self.wrapper / "gradle-wrapper.properties"
-        properties.write_text(properties.read_text().replace("gradle-9.9.1-bin.zip", "gradle-9.9.2-bin.zip"))
+        properties.write_text(properties.read_text().replace("gradle-9.9.2-bin.zip", "gradle-9.9.3-bin.zip"))
         result = self.verify()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unexpected Gradle distribution URL", result.stdout + result.stderr)
