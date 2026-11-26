@@ -10,7 +10,7 @@ Go 진단 API를 사용하는 네이티브 Android 클라이언트입니다. And
 - SDK는 `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `~/Android/Sdk`, `~/.local/share/checknetwork-android/sdk` 순으로 선택
 - 첫 Gradle 실행에서 플러그인 및 테스트 의존성을 받을 수 있는 네트워크 연결
 
-저장소 루트에서 환경과 체크인된 Gradle 9.9.1 wrapper의 출처/해시를 각각 확인할 수 있습니다.
+저장소 루트에서 환경과 체크인된 Gradle 9.9.2 wrapper의 출처/해시를 각각 확인할 수 있습니다.
 
 ```sh
 make android-wrapper-verify

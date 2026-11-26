@@ -1,11 +1,11 @@
 # Gradle wrapper provenance
 
-The checked-in wrapper selects Gradle **9.9.1** and the binary distribution. Its JAR and distribution checksum were independently compared with the official version-specific checksum endpoints. To regenerate the same pinned wrapper:
+The checked-in wrapper selects Gradle **9.9.2** and the binary distribution. Its JAR and distribution checksum were independently compared with Gradle's official sources: the JAR with the wrapper JAR at tag `v9.9.2` (byte-identical to the previously pinned value), the distribution with the version-specific checksum endpoint. To regenerate the same pinned wrapper:
 
 ```sh
 # Regenerate the complete wrapper with the independently verified distribution pin.
-gradle wrapper --gradle-version 9.9.1 --distribution-type bin \
-  --gradle-distribution-sha256-sum d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228
+gradle wrapper --gradle-version 9.9.2 --distribution-type bin \
+  --gradle-distribution-sha256-sum 971fcd7150ca4ba04852c0b2ca0d2d0ab9468e14b03473eab19528809914c76b
 ```
 
 The wrapper JAR is intentionally committed. Do not add it to `.gitignore`, replace it from an untrusted build, or update only part of the wrapper. Regenerate all wrapper files together and review their diff when upgrading Gradle.
@@ -15,10 +15,10 @@ The wrapper JAR is intentionally committed. Do not add it to `.gitignore`, repla
 | Artifact | SHA-256 |
 | --- | --- |
 | `gradle-wrapper.jar` | `621008afc4f5d59357fcf06ffa644dd5aade5e091bdc363742710445f73cdaf8` |
-| `gradle-9.9.1-bin.zip` | `d8a18a7a841dd5df825d35a685fad6f2d7f12ac0c280e57b67c27b4a520ba228` |
+| `gradle-9.9.2-bin.zip` | `971fcd7150ca4ba04852c0b2ca0d2d0ab9468e14b03473eab19528809914c76b` |
 
 The distribution checksum is published at:
-<https://services.gradle.org/distributions/gradle-9.9.1-bin.zip.sha256>
+<https://services.gradle.org/distributions/gradle-9.9.2-bin.zip.sha256>
 
 `gradle-wrapper.properties` pins that value with `distributionSha256Sum`, so Gradle verifies a downloaded distribution before use. The repository-level verifier also pins the checked-in JAR, the distribution checksum, and the expected HTTPS distribution URL:
 
