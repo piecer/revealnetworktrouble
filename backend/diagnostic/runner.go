@@ -20,7 +20,9 @@ const (
 	MaxTraceAttempts          = 10
 	MaxSamples                = 10
 	RequestBudgetGrace        = time.Second
-	MaxRequestBudget          = MaxTimeout*MaxTraceAttempts + RequestBudgetGrace
+	// The budget must cover the largest multiplier any valid request can ask for:
+	// attempts for traceroute, samples for the kinds that repeat an observation.
+	MaxRequestBudget          = MaxTimeout*max(MaxTraceAttempts, MaxSamples) + RequestBudgetGrace
 	DefaultCheckerCapacity    = 80
 	MaxCheckerCapacity        = 1024
 	reportIDEncodedByteLength = 12
@@ -35,14 +37,17 @@ func RequestBudget(req Request) time.Duration {
 	}
 	longest := timeout
 	for _, target := range req.Targets {
-		if target.Kind != KindTraceroute {
-			continue
+		multiplier := 1
+		if target.Kind == KindTraceroute {
+			attempts := target.Attempts
+			if attempts == 0 {
+				attempts = DefaultTraceAttempts
+			}
+			multiplier = attempts
+		} else if target.Samples > 1 {
+			multiplier = target.Samples
 		}
-		attempts := target.Attempts
-		if attempts == 0 {
-			attempts = DefaultTraceAttempts
-		}
-		if candidate := timeout * time.Duration(attempts); candidate > longest {
+		if candidate := timeout * time.Duration(multiplier); candidate > longest {
 			longest = candidate
 		}
 	}
@@ -436,12 +441,19 @@ func (r *Runner) RunWithID(ctx context.Context, reportID string, req Request) (R
 func (r *Runner) runChecker(runCtx context.Context, timeout time.Duration, target Target, lease *checkerLease, terminal *targetTerminal) {
 	workerCtx, cancelWorker := context.WithCancel(runCtx)
 	stopSupervisorCancel := context.AfterFunc(r.supervisor.ctx, cancelWorker)
+	samples := 1
+	if target.Samples > 1 {
+		samples = target.Samples
+	}
 	checkCtx := context.Context(workerCtx)
 	cancelCheck := func() {}
 	if target.Kind == KindTraceroute {
 		checkCtx = withAttemptTimeout(workerCtx, timeout)
 	} else {
-		checkCtx, cancelCheck = context.WithTimeout(workerCtx, timeout)
+		// The window is one timeout per sample, so a sample that runs long only
+		// spends its own share instead of consuming the window the later samples
+		// need. Admission sizes the request deadline for the same product.
+		checkCtx, cancelCheck = context.WithTimeout(workerCtx, timeout*time.Duration(samples))
 	}
 	started := time.Now().UTC()
 	result := Result{}
@@ -462,16 +474,11 @@ func (r *Runner) runChecker(runCtx context.Context, timeout time.Duration, targe
 			terminal.outcomes <- outcome
 		}
 	}()
-	samples := 1
-	if target.Samples > 1 {
-		samples = target.Samples
-	}
 	var observations []sampleObservation
 	for i := 0; i < samples; i++ {
-		// Each sample runs inside the remaining check window; request admission
-		// sizes the deadline for samples x timeout, so a sample that runs out of
-		// window reports its own error rather than silently distorting the
-		// distribution.
+		// Each sample runs inside the remaining share of the window sized for
+		// samples x timeout, so a sample that runs out of window reports its own
+		// error rather than silently distorting the distribution.
 		sample := r.checkers[target.Kind].Check(checkCtx, target)
 		observations = append(observations, observationFromResult(sample))
 		result = sample

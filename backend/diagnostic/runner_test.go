@@ -798,3 +798,82 @@ func mustSupervisor(t *testing.T, capacity int) *CheckerSupervisor {
 	}
 	return s
 }
+
+// A sampled target must get a window that can hold every sample. The runner
+// comment claims admission sizes the deadline for samples x timeout, so the
+// window is the contract: a sample that starts after the window is exhausted
+// records a budget artifact, not an observation, and the aggregate then claims
+// statistical confidence over data the request could not have observed.
+func TestSampledTargetWindowCanHoldEverySample(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	timeout := 200 * time.Millisecond
+	samples := 3
+	var remaining []time.Duration
+	checker := checkerFunc{kind: KindTCP, fn: func(ctx context.Context, target Target) Result {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("sampled checker context has no deadline")
+		}
+		remaining = append(remaining, time.Until(deadline))
+		return Result{Kind: KindTCP, Status: StatusHealthy}
+	}}
+	req := Request{TimeoutMS: int(timeout.Milliseconds()), Targets: []Target{{Kind: KindTCP, Address: "127.0.0.1:9", Samples: samples}}}
+	if _, err := NewRunnerWithSupervisor(supervisor, checker).Run(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != samples {
+		t.Fatalf("samples observed=%d, want %d", len(remaining), samples)
+	}
+	// Tolerance is the microsecond cost of reaching the checker. It is two
+	// orders of magnitude below the failure being detected, so the gate still
+	// reports a window that cannot hold the samples it is supposed to cover.
+	const measurementTolerance = 10 * time.Millisecond
+	for i, window := range remaining {
+		want := timeout * (time.Duration(samples) - time.Duration(i)) - measurementTolerance
+		if window < want {
+			t.Fatalf("sample %d window=%s, want at least %s (samples x timeout)", i, window, want)
+		}
+	}
+}
+
+// Control below the multiplier: an unsampled target must keep a one-timeout
+// window, so the gate proves the multiplier applies to samples rather than
+// inflating every window.
+func TestUnsampledTargetWindowIsOneTimeout(t *testing.T) {
+	supervisor := mustSupervisor(t, 1)
+	timeout := 200 * time.Millisecond
+	checker := checkerFunc{kind: KindDNS, fn: func(ctx context.Context, target Target) Result {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("unsampled checker context has no deadline")
+		}
+		if window := time.Until(deadline); window > timeout {
+			t.Fatalf("window=%s, want exactly %s for a target without samples", window, timeout)
+		}
+		return Result{Kind: KindDNS, Status: StatusHealthy}
+	}}
+	req := Request{TimeoutMS: int(timeout.Milliseconds()), Targets: []Target{{Kind: KindDNS, Address: "example.test"}}}
+	if _, err := NewRunnerWithSupervisor(supervisor, checker).Run(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := RequestBudget(req); got != timeout+RequestBudgetGrace {
+		t.Fatalf("RequestBudget()=%s, want %s", got, timeout+RequestBudgetGrace)
+	}
+}
+
+// The published budget must cover the largest valid request for both
+// multipliers: attempts for traceroute, samples for the repeating kinds.
+func TestRequestBudgetCoversRepeatedSamples(t *testing.T) {
+	runner := NewRunner(fakeChecker{kind: KindHTTP, status: StatusHealthy})
+	req := Request{TimeoutMS: int(MaxTimeout.Milliseconds()), Targets: []Target{{Kind: KindHTTP, Address: "http://example.test", Samples: MaxSamples}}}
+	if err := runner.Validate(req); err != nil {
+		t.Fatalf("maximum sampled request was rejected: %v", err)
+	}
+	want := MaxTimeout*MaxSamples + RequestBudgetGrace
+	if got := RequestBudget(req); got != want {
+		t.Fatalf("RequestBudget()=%s, want %s (timeout x samples + grace)", got, want)
+	}
+	if MaxRequestBudget < MaxTimeout*MaxSamples+RequestBudgetGrace {
+		t.Fatalf("MaxRequestBudget=%s cannot cover timeout x samples", MaxRequestBudget)
+	}
+}

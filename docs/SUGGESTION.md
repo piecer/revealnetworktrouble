@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | HTTP(S) 단계별 시간 분해 | = D-2 | [확인] `http.go:24` httptrace는 TLS 핸드셰이크 관측에만 사용, 결과 단일 latency_ms | D-2를 P1로 상향. 표준 라이브러리로 추가 의존성 없음 |
 | 2 | 해석된 IP(A/AAAA)별 연결 결과 | D-3(family 비교)과 부분 중복 | [확인] 전체 IP 순회 로직 없음 | D-3에 흡수. MaxTargets=20(`runner.go:18`), IP 수 상한 필요 |
-| 3 | 반복 샘플링(성공률·p50/p95·지터) | = D-3 ①(TCP 반복, 권한 불필요) | [확인] 요청 스키마에 samples 필드 없음 | D-3에 흡수. 상한 계산: MaxTargets 20 × 샘플 N × IP별 검사 → `main.go:36`의 315초 deadline 초과 위험, 샘플·IP 수를 admission에 포함해야 함 |
+| 3 | 반복 샘플링(성공률·p50/p95·지터) | = D-3 ①(TCP 반복, 권한 불필요) | [구현] `model.go:45` `Samples`(1~10, traceroute 금지)와 `sample_stats` block이 contract에 존재 | [처리] 실질적 gap은 admission 계산이 아니라 window였다: 반복 window가 `samples × timeout`이 아니라 `timeout` 하나분이라 뒤 샘플이 observation 대신 budget artifact로 채워졌다. window와 deadline을 같은 rule로 gate에 pin. IP 수 상한(#2)은 별도 항목으로 남아 있다 |
 | 4 | 이름 기반 vs IP 기반 교차 판정 | D-1(리졸버 비교) 인접, 규칙 없음 | [확인] analysis.go에 규칙 없음 | D-1에 흡수 |
 | 5 | traceroute 프로브 방식 선택(UDP/ICMP/TCP) | Phase 4(ICMP·MTU)와 일부 | [확인] RunTraceCommand는 외부 바이너리, capability는 kinds만 노출(`server.go:256`) | [신규] 비루트 UID 65532(`Dockerfile:34`) — raw 소켓 권한 확인이 선행. 지원 방식만 capability로 알리는 기존 구조에 맞춤 |
 | 6 | TLS 체인: 중간 인증서 누락 vs 미신뢰 구분 | 미등록 | [확인] `analysis.go:319` FindingTLSUntrusted는 미분류 | [신규] AIA 조회는 새 외부 요청 → 기존 SSRF dial 정책 통과 필수 |
@@ -107,7 +107,7 @@ ROADMAP 순서는 Phase 2(기능 D-*) → Phase 3(M-3). 원 제안 순서는:
 
 ## 기능 항목 구현 상태 (2026-11-27 실측)
 
-- [x] #3 반복 샘플링 — `Samples` 필드와 `p50_ms`/`p95_ms`/`jitter_ms` block이 contract에 존재.
+- [x] #3 반복 샘플링 — `Samples` 필드와 `p50_ms`/`p95_ms`/`jitter_ms` block이 contract에 존재. window 계산이 admission 계산과 같은 rule을 따르게 했다: window가 `timeout` 하나분이라 `samples × timeout`을 담지 못했고, 뒤 샘플은 observation이 아니라 window artifact로 집계됐다. window = `timeout × samples`, deadline = `timeout × max(attempts, samples) + grace`. RED-first로 gate를 쓴 뒤 mutation probe(창을 `timeout` 하나로 되돌리기)에서 RED가 재현되는지 확인했다. control: samples 없는 대상은 `timeout` 하나로 유지.
 - [ ] #1 HTTP 단계별 시간 분해 — `httptrace`가 `TLSHandshakeDone`만 관측(`backend/diagnostic/http.go:24-26`), 결과에 단일 latency 필드. D-2 P1 상향 권고 유효.
 - [ ] #2 해석된 IP별 연결 결과 — target 개수 validation만 있고 IP 단위 traversing rule 없음(`runner.go:256`). D-3과 겹침.
 - [ ] #4 이름 vs IP 교차 판정 — rule 없음.
