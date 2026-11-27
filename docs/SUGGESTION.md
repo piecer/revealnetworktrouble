@@ -50,7 +50,7 @@ ROADMAP 순서는 Phase 2(기능 D-*) → Phase 3(M-3). 원 제안 순서는:
 
 ## 지적 사항 (중요도 순, 재검증)
 
-1. 카운트 패턴이 좁다 (`documentation_contract_test.go:80-81`) [확인]
+1. 카운트 패턴이 좁다 (`documentation_contract_test.go`) [구현] — 권장 확장 form을 gate에 추가했다.
    - `숫자 tests` 형태만 잡으니 단어 앞 형태(`tests` + 숫자)를 놓친다 — ROADMAP.md:359 관측 기록. 한국어 형태(숫자+개 테스트, 테스트 + 숫자)도 놓친다.
    - 합 형태 패턴은 + 뒤 라벨이 낀 실행 문서에 즉시 걸린다: docs/TESTING.md:155에 미검증 합 인벤토리 서술이 현존.
    - 단어 tests 없는 변동 수치(검증기 수·inventory·DOM 최대치)는 정책 밖.
@@ -59,26 +59,26 @@ ROADMAP 순서는 Phase 2(기능 D-*) → Phase 3(M-3). 원 제안 순서는:
      `(테스트|tests?)\s*(수|개수)?\s*[0-9]+`
      `[0-9]+\s*\+\s*(\S+\s+)?[0-9]+\s*=\s*[0-9]+`
    - 확장 시 즉시 감지되는 현존 위치: ROADMAP.md:333(종류 셀 수), ROADMAP.md:359(관측 기록값), docs/TESTING.md:155(합 서술), docs/API.md:157(계약 고정값 — producer fixture로 enforced), docs/IP-CONTEXT-ANDROID.md:27(계약 고정값 — corpus hash로 enforced).
-     결정 필요: 정책 위반은 문장 재작성, 계약 고정값 강제 수치는 예외 인정 중 어느 쪽으로 갈지. 원 문서 자신의 인용 라인 43·44도 게이트를 실제로 깼다(실행 확인) — 이 문서로 해소됨.
-   - ROADMAP §3 현황 표는 패턴에 안 걸려도 인벤토리 수치를 담고, "과거 reading은 archive에만" 원칙과 충돌. "작성 시점 스냅샷" 라벨이나 제거 필요.
-2. Fatal vs skip 정책 양립 (`operations_contract_test.go:155` — 도구 부재 시 t.Fatalf) [확인]
+     결정(2026-11-27): 예외 없이 문장 재작성. contract-pinned cardinality는 test가 enforcement하고 live prose는 enforcing gate를 참조한다. 원 문서 자신의 인용도 게이트를 실제로 깼다(실행 확인) — code-span 처리로 해소됨.
+   - ROADMAP 현황 표는 패턴에 안 걸려도 인벤토리 수치를 담고, "과거 reading은 archive에만" 원칙과 충돌했다. → 구현: 부록 A 스냅샷을 `docs/archive/ROADMAP-APPENDIX-A-SNAPSHOT.md`로 옮기고 live 문서에는 gate 실행으로 관측한다는 pointer만 남겼다.
+2. Fatal vs skip 정책 양립 (`operations_contract_test.go` — 도구 부재 시 t.Fatalf) [구현] — `declaredToolPath` 하나의 policy로 통일(부재 skip, 요청 시 실패).
    - Compose 쪽은 부재 시 skip, 게이트 플래그 요청 시 실패(`compose_config_test.go:588-591`, `portable_environment_test.go:12`). 정책 통일: 부재 skip, 요청 시 실패.
-   - 플래그명 CHECKNETWORK_RUN_COMPOSE_TESTS가 grep 교차검증 게이트에도 쓰인다. `*_RUN_INTEGRATION_TESTS` 권고. 변경 참조 4곳(test 파일, Makefile:65·89, `frontend/deployment.test.js:156`) — `portable_environment_test.go:29`가 Makefile 문구를 pin하므로 함께.
+   - 플래그명도 grep 교차검증 게이트에까지 쓰이는 issue였다. → 구현: `CHECKNETWORK_RUN_INTEGRATION_TESTS`로 renaming(test 파일, Makefile `test-integration`·deployment target, `frontend/deployment.test.js`)하고 `TestComposeIntegrationMakeTargetRunsExplicitChecks`의 Makefile pin과 `TestDeclaredToolAbsencePolicySkipsUnlessGateRequested`가 함께 pin한다.
 3. pin 복수 중복으로 Dependabot 막힘 [확인] — ROADMAP:234의 "mirror 변경(검증기·contract test) 필요, 단파일 PR 통과 불가" 기록. versions.env 단일 소스에 Dockerfile·검증기·테스트가 읽는 구조 권고 유지.
 4. 검증 인프라 투자 집중 [정정]: ERE 부분집합 평가기는 약 100줄이 아니라 15줄(`compose_config_test.go:557-571`). 비용 우려는 원문보다 작고, 사용자에게 보이는 기능 우선 결론은 유지.
 5. 사소한 점
-   - ROADMAP 깨진 문장 확인(146, 150). 차후 수정 시 정리.
-   - `posixEREExists:561`은 대괄호 안 `\`를 구분하지 못한다: POSIX 리터럴 vs Go 이스케이프로 `[\.]` 의미가 갈린다. grep 교차검증(585)이 있어 실해 위험 낮음 → 주석 한 줄 또는 제외.
-   - 스크립트 본문에서 `command -v "$tool"` 문자열 검색 단언(142-143)은 구현 텍스트 고정 — 문서에서 방금 없앤 것과 같은 부류. fixture 거동 검증으로 전환 권고.
+   - ROADMAP 깨진 문장(146, 150) → 정리 완료. 같은 부류의 "실행complete"이 `docs/TESTING.md:28`에도 있어 함께 정리했다.
+   - `posixEREExists`는 대괄호 안 `\`를 구분하지 못했다: POSIX 리터럴 vs Go 이스케이프로 `[\.]` 의미가 갈린다. → 구현: `posixERETranslation`이 대괄호 안 `\`를 POSIX member로 번역하고 `TestBracketExpressionsKeepBackslashAsLiteralMember`가 pin한다. grep 교차검증도 같은 패턴으로 disagreement를 확인한다.
+   - 스크립트 본문의 `command -v "$tool"` 문자열 검색 단언은 구현 텍스트 고정이었다 → 구현: text pin을 제거하고 omitted tool을 fixture로 실행해 actionable named error를 요구하는 behavior pin으로 전환(`git`과 `awk` 두 도구로 확인; probe에서 script의 사전 검사 block을 제거하면 RED).
    - HOME을 도구 symlink 디렉터리로 지정(`operations_contract_test.go:201`) — [측정] 해당 계약 테스트 단독 실행 3.034s. 허용 범위.
-   - CI 매트릭스에 go.mod 최소 버전 없음(toolchain action만 1.26.11 — `.github/actions/toolchain/action.yml:20`, go.mod:3은 1.22). 최소 버전 matrix job 추가 권고 유지.
+   - CI 매트릭스에 go.mod 최소 버전이 없었다(toolchain action이 고정 patch 버전만 사용) → 구현: `min_go` job이 `go-version-file: go.mod`로 선언 최소 버전을 읽고 build/vet를 실행한다. `scripts/ci-status.py`는 그 job result를 필수로 요구하고 `scripts/test_ci_definition.py`가 job과 toolchain≥go.mod 관계를 pin한다. post-1.22 API scan: 없음. 로컬 실행은 toolchain download 차단으로 불가 — CI 첫 실행으로 확인된다.
    - 루트 Markdown 게이트(6개 이하, `documentation_contract_test.go:38`): entry point 6개가 슬롯을 채운 상태라 이 문서가 루트의 7번째 md면 게이트가 깨진다 — 실제로 깨져 있었고(실행 확인), 문서를 `docs/`로 옮겨 해소.
 
 ## 앞선 분석 정정
 
 - "hosted CI 없음 추정" 틀림: Actions 26회 실행 기록(ROADMAP:56).
 - PR 8건은 11-15 시점 기록(당시 open/병합 0). 후속 갱신: #10·#11·#12 병합, 앞선 Dependabot 7건 모두 병합(ROADMAP:10, 234).
-- 문서 계약 파일은 ROADMAP에 164줄로 기록됐고 현재 실측 216줄(카운트 정책 pin 추가분).
+- 문서 계약 파일에 기록됐던 줄 수 inventory는 live 문서에 두지 않는다. 과거 reading은 archive에만 남기고 현재 크기는 gate 실행으로 관측한다.
 - ROADMAP 기능 항목(U-*, D-*) 미대조였던 항목은 위 표로 대조 완료.
 
 ## 검증 기록 (2026-11-22)
@@ -96,3 +96,26 @@ ROADMAP 순서는 Phase 2(기능 D-*) → Phase 3(M-3). 원 제안 순서는:
 - client 상수는 producer 상수를 재진술하고, parity gate가 app.js의 literal 재기술을 금지한다.
 - reachability prose를 실측 기준으로 정정: `resolver_comparison` block은 current version에서 checker가 write하지 않으므로 fixture scenario로만 reachable하다.
 - Android는 이번 검증 범위에서 제외했다(정적 finding만 유지, 게이트 실행 불가).
+
+## 지적 사항 처리 결과 (2026-11-27)
+
+- [x] 1 카운트 패턴 확장 + live 문서 수치 제거 + archive move. decision = 예외 없는 문장 재작성. gate가 실제로 패턴을 보는지 probe로 확인(probe 실패 → RED, restore → GREEN).
+- [x] 2 tool-absence policy: `declaredToolPath`로 skip/fail 한 policy 통일, flag name 정합성 확보. `TestDeclaredToolAbsencePolicySkipsUnlessGateRequested`가 양쪽 거동을 pin.
+- [x] 3 문자열 검색 pin: required_tools declaration + omitted-tool fixture 실행(behavior)으로 전환. 남은 string pin(`TestDocumentationLinksResolve`의 file+line, `test_ci_definition.py`의 shell literal)은 의도된 선언 pin으로 유지 — 문서가 "본문 문자열 검색"을 금지하는 부류가 아니다.
+- [x] 4 정정 유지(ERI 평가기 15줄).
+- [x] 5 깨진 문장 정리, bracket backslash 처리, text pin → behavior pin, CI toolchain floor.
+
+## 기능 항목 구현 상태 (2026-11-27 실측)
+
+- [x] #3 반복 샘플링 — `Samples` 필드와 `p50_ms`/`p95_ms`/`jitter_ms` block이 contract에 존재.
+- [ ] #1 HTTP 단계별 시간 분해 — `httptrace`가 `TLSHandshakeDone`만 관측(`backend/diagnostic/http.go:24-26`), 결과에 단일 latency 필드. D-2 P1 상향 권고 유효.
+- [ ] #2 해석된 IP별 연결 결과 — target 개수 validation만 있고 IP 단위 traversing rule 없음(`runner.go:256`). D-3과 겹침.
+- [ ] #4 이름 vs IP 교차 판정 — rule 없음.
+- [ ] #5 traceroute probe choice — external binary 경로(`RunTraceCommand`)만; non-root UID raw socket 권한 확인 선행 필요.
+- [ ] #6 TLS chain vs trust — `FindingTLSUntrusted`은 있으나 chain-completeness 구분 없음. AIA 조회는 추가 external request → SSRF dial policy 통과 필수.
+- [ ] #7 mail depth — greeting observation만(`analysis.go:523`).
+- [ ] #8 보고서 diff — `common-prefix.js:138`은 IP prefix grouping만, report diff 없음.
+- [ ] #9 anonymized export — 구현 없음.
+- [ ] #10 captive portal / tamper — rule 없음.
+
+순서 권고 그대로: M-3 상세 타입화 → contract change bundle → 기능 #1/#2/#3. 진행 판단은 사용자 결정.
