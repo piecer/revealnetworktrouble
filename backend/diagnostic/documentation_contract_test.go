@@ -79,6 +79,9 @@ func TestLiveDocumentationDoesNotAssertTestCounts(t *testing.T) {
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`[0-9]+[- ]tests?\b`),
 		regexp.MustCompile(`[0-9]+ \+ [0-9]+ = [0-9]+`),
+		regexp.MustCompile(`[0-9][0-9,]*\s*(개\s*)?(tests?|테스트|cases?|케이스)`),
+		regexp.MustCompile(`(테스트|tests?)\s*(수|개수)?\s*[0-9]+`),
+		regexp.MustCompile(`[0-9]+\s*\+\s*(\S+\s+)?[0-9]+\s*=\s*[0-9]+`),
 	}
 	var live []string
 	entries, err := os.ReadDir(root)

@@ -143,11 +143,11 @@
 - **현상 [실행]:**
   - `TestRunTraceCommandNormalParentExitKillsChildAndGrandchildHoldingPipes` — 자식 프로세스는 실제로 종료됐지만 PID 1이 수거하지 않아 좀비(`Z`)로 남았고, 헬퍼 `processPIDExists`가 `kill(pid, 0)`만 확인해 **좀비를 생존으로 오판**했습니다(3회 재실행 모두 동일). `docker run`을 `--init` 없이 쓰는 환경에서도 같은 문제가 날 수 있습니다. [추정]
   - `TestComposeResolvedExposureBoundary`, `TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable` — `docker` 바이너리가 없으면 skip이 아니라 **실패**.
-  - `TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS` — 오래된 로컬 Go에서 더 높은 toolchain을 내려받으려다 외부망 차단 시 실패했다. now the harness pins `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOSUMDB=off`, so no download is attempted.
-- **문제:** README는 `make test`에 Go·Node·npm·make만 요구한다고 안내하지만 실제로는 Docker와 외부망이 필요합니다. 기여자가 클론 직후 빨간 테스트를 보게 됩니다.
+  - `TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS` — 오래된 로컬 Go에서 더 높은 toolchain을 내려받으려다 외부망 차단 시 실패했다. 지금은 harness가 `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOSUMDB=off`를 pin하므로 다운로드를 시도하지 않는다.
+- **문제:** README는 `make test`에 Go·Node·npm·make만 요구한다고 안내하지만 실제로는 Docker와 외부망이 필요하다. 기여자가 클론 직후 빨간 테스트를 보게 된다.
 - **권고:** Docker·외부망 의존 테스트는 `exec.LookPath("docker")` 실패 시 `t.Skip` 하거나 `//go:build integration` 태그로 분리. `processPIDExists`는 `/proc/<pid>/stat`의 상태가 `Z`면 종료로 간주. `make test`(빠른 계층)와 `make test-integration`을 문서에 구분.
-- **현재 [실행]:** Compose 계약은 pure-Go resolver로 기본 suite에서 강제된다 — Compose CLI 부재와 무관하게 실행된다. 실제 CLI는 Docker가 존재할 때만 같은 결과를 교차 검증하고, 부재 시 그 gate만 skip되며 명시적으로 요청한 gate는 actionable error로 실패한다. 회귀 검사(`TestComposeContractIsEnforcedWithoutDocker`, `TestComposeChecksAreOptionalWithoutDocker`, `TestRequestedComposeChecksFailWithoutDocker`)가 skip 경로와 CLI 호출 없음을 확인한다. resolver는 `compose.yaml`이 쓰는 YAML subset만 허용하고 subset 밖의 구성(anchor, merge key, tag, multi-document, flow mapping, compact mapping, duplicate key)은 조용히 오독하지 않고 gate가 실패한다. 계약은 external binary에 의존하지 않는다 — canonical SemVer ERE 판정도 pure Go subset evaluator로 하고 `grep -E`가 존재할 때만 같은 corpus로 교차 검증한다. 두 경로 실행의 일치는 gate로 관측한다: Compose CLI가 존재할 때만 실행되는 교차 검증 gate가 다른 Compose CLI 버전과 diverge하면 빨간 된다.
-클린 환경 completion: clean-archive contract는 work 전에 스스로 선언한 tool prerequisite set(`required_tools`)을 검사하고, 부재하면 cryptic exec error가 아니라 tool 이름을 지정한 actionable error로 실패한다. fixture는 선언된 tool만으로 구성한 PATH에서 실행complete — 이 실행이 undeclared binary 의존이 없음을 증명한다(`tar`가 이렇게 발견되어 선언 set에 추가됐다). `make`은 gate prerequisite이고 fixture는 fake make로 대체한다. `TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites`가 set과 actionable error를 pin한다.
+- **현재 [실행]:** Compose 계약은 pure-Go resolver로 기본 suite에서 강제된다 — Compose CLI 부재와 무관하게 실행된다. 실제 CLI는 Docker가 존재할 때만 같은 결과를 교차 검증하고, 부재 시 그 gate만 skip되며 명시적으로 요청한 gate는 actionable error로 실패한다. 선언 prerequisite tool도 같은 규칙을 따른다 — 부재하면 기본 suite는 skip하고 gate를 요청한 실행에서만 실패한다(`docs/TESTING.md:43`의 fail-closed 문구와 일치). 회귀 검사(`TestComposeContractIsEnforcedWithoutDocker`, `TestComposeChecksAreOptionalWithoutDocker`, `TestRequestedComposeChecksFailWithoutDocker`, `TestDeclaredToolAbsencePolicySkipsUnlessGateRequested`)가 skip 경로와 CLI 호출 없음을 확인한다. resolver는 `compose.yaml`이 쓰는 YAML subset만 허용하고 subset 밖의 구성(anchor, merge key, tag, multi-document, flow mapping, compact mapping, duplicate key)은 조용히 오독하지 않고 gate가 실패한다. 계약은 external binary에 의존하지 않는다 — canonical SemVer ERE 판정도 pure Go subset evaluator로 하고 `grep -E`가 존재할 때만 같은 corpus로 교차 검증한다. 두 경로 실행의 일치는 gate로 관측한다: Compose CLI가 존재할 때만 실행되는 교차 검증 gate가 다른 Compose CLI 버전과 diverge하면 빨간 된다.
+클린 환경 completion: clean-archive contract는 work 전에 스스로 선언한 tool prerequisite set(`required_tools`)을 검사하고, 부재하면 cryptic exec error가 아니라 tool 이름을 지정한 actionable error로 실패한다. fixture는 선언된 tool만으로 구성한 PATH에서 실행된다 — 이 실행이 undeclared binary 의존이 없음을 증명한다(`tar`가 이렇게 발견되어 선언 set에 추가됐다). `make`은 gate prerequisite이고 fixture는 fake make로 대체한다. `TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites`가 set과 actionable error를 pin한다.
 
 #### M-2. 계약 테스트·검증 체계의 과중함 (P2)
 - **현상:** Go 테스트 코드가 프로덕션의 약 1.9배이고, 문서 contract는 원래 산문 속 숫자를 단언했다(858줄 버전). DOC-1에서 축소해 현재는 링크 무결성·필수 파일 존재·API 오류 테이블만 단언한다(164줄). 남은 문제는 live 문서에 남아 있던 과거 inventory 문장 복사본이었다: live 테스트 수 주장이 실측과, 그리고 같은 문서의 자체 서술과 충돌했다. [코드]
@@ -330,7 +330,7 @@
 ## 9. 이번 주 체크리스트
 
 1. 7절의 결정 1·2를 확정한다 (나머지는 Phase 1 시작 전까지).
-2. `processPIDExists`가 좀비(`Z`)를 종료로 판정하도록 수정하고, Docker 의존 테스트 2종에 `LookPath` 기반 `t.Skip` 추가.
+2. `processPIDExists`가 좀비(`Z`)를 종료로 판정하도록 수정하고, Docker 의존 테스트에 `LookPath` 기반 `t.Skip` 추가.
 3. `cmd/checknetwork-api/operations_contract_test.go`의 toolchain 다운로드 의존을 `GOTOOLCHAIN=local` 또는 skip 조건으로 정리.
 4. GitHub 설정: private vulnerability reporting 활성화, Description·Topics 입력, `main` 브랜치 보호(필수 체크) 현황 확인.
 5. Dependabot #1, #4(실패)의 원인 확인; 통과한 Android PR은 하나씩 검토.
@@ -342,27 +342,7 @@
 
 ## 부록 A. 직접 확인한 실행 결과 요약
 
-```text
-go build ./...                      OK
-go vet ./...                        OK
-go test ./...
-  backend/api                       ok   (12.1s)
-  backend/diagnostic                FAIL TestRunTraceCommandNormalParentExitKillsChildAndGrandchildHoldingPipes
-                                         "descendant PID ... survived runTraceCommand"
-                                         (ps: sh/sh/sleep 이 PPID 1 의 Z 상태 — 종료되었으나 미수거)
-  cmd/checknetwork-api              FAIL TestComposeResolvedExposureBoundary
-                                         exec: "docker": executable file not found in $PATH
-                                    FAIL TestComposeResolvedBuildIdentityIsValidSharedAndOverrideable
-                                         docker compose config: exec: "docker": not found
-                                    FAIL TestCleanArchiveDisablesAmbientVCSStampingWithoutDroppingCallerGOFLAGS
-                                         go: downloading go1.25 ... lookup proxy.golang.org: no such host
-npm ci && npm test (Node 22.23.4)   tests 892 / pass 891 / skipped 1 / fail 0 / 64.4s
-API smoke (127.0.0.1)               /readyz 200, /api/v1/health 200, /api/v1/checks 13 kinds
-                                    POST /api/v1/reports (tcp ok, http ok, tcp closed, dns localhost)
-                                      -> 200, 4ms, 2,389B, status=degraded, analysis.verdict=attention
-                                    CORS: localhost:3000 / 127.0.0.1:3000 허용, 임의 origin 거부
-                                    Headers: Cache-Control: no-store, X-Content-Type-Options: nosniff
-```
+작성 시점 관측 기록은 live 문서에 두지 않는다. 실행 결과 스냅샷은 [docs/archive/ROADMAP-APPENDIX-A-SNAPSHOT.md](docs/archive/ROADMAP-APPENDIX-A-SNAPSHOT.md)에 있고, 현재 수치는 gate를 실행해 관측한다.
 
 ## 부록 B. 근거 위치 인덱스
 
