@@ -13,8 +13,8 @@
 
 | # | 기능 | ROADMAP 대조 | 코드 검증 | 제안 |
 |---|---|---|---|---|
-| 1 | HTTP(S) 단계별 시간 분해 | = D-2 | [확인] `http.go:24` httptrace는 TLS 핸드셰이크 관측에만 사용, 결과 단일 latency_ms | D-2를 P1로 상향. 표준 라이브러리로 추가 의존성 없음 |
-| 2 | 해석된 IP(A/AAAA)별 연결 결과 | D-3(family 비교)과 부분 중복 | [확인] 전체 IP 순회 로직 없음 | D-3에 흡수. MaxTargets=20(`runner.go:18`), IP 수 상한 필요 |
+| 1 | HTTP(S) 단계별 시간 분해 | = D-2 | [구현] httptrace가 DNS/connect/TLS/TTFB 네 phase를 관측하고 producer가 `details.stage_timing` block을 기록(`backend/diagnostic/http.go:175`), rule이 dominant phase를 slow-server 판정에 사용(`analysis.go:133`), Web·Android contract가 같은 block을 pin | D-2 구현 완료. phase별 finding code 분리(단일 slow-server rule)와 IP 단위 attribution(#2)이 남아 있다 |
+| 2 | 해석된 IP(A/AAAA)별 연결 결과 | D-3(family 비교)과 부분 중복 | [확인] 전체 IP 순회 로직 없음 | D-3에 흡수. MaxTargets=20(`runner.go:18`), IP 수 상한 필요. 반복 window rule(`runner.go:48`)이 samples를 계산에 넣는다 |
 | 3 | 반복 샘플링(성공률·p50/p95·지터) | = D-3 ①(TCP 반복, 권한 불필요) | [구현] `model.go:45` `Samples`(1~10, traceroute 금지)와 `sample_stats` block이 contract에 존재 | [처리] 실질적 gap은 admission 계산이 아니라 window였다: 반복 window가 `samples × timeout`이 아니라 `timeout` 하나분이라 뒤 샘플이 observation 대신 budget artifact로 채워졌다. window와 deadline을 같은 rule로 gate에 pin. IP 수 상한(#2)은 별도 항목으로 남아 있다 |
 | 4 | 이름 기반 vs IP 기반 교차 판정 | D-1(리졸버 비교) 인접, 규칙 없음 | [확인] analysis.go에 규칙 없음 | D-1에 흡수 |
 | 5 | traceroute 프로브 방식 선택(UDP/ICMP/TCP) | Phase 4(ICMP·MTU)와 일부 | [확인] RunTraceCommand는 외부 바이너리, capability는 kinds만 노출(`server.go:256`) | [신규] 비루트 UID 65532(`Dockerfile:34`) — raw 소켓 권한 확인이 선행. 지원 방식만 capability로 알리는 기존 구조에 맞춤 |
@@ -108,7 +108,7 @@ ROADMAP 순서는 Phase 2(기능 D-*) → Phase 3(M-3). 원 제안 순서는:
 ## 기능 항목 구현 상태 (2026-11-27 실측)
 
 - [x] #3 반복 샘플링 — `Samples` 필드와 `p50_ms`/`p95_ms`/`jitter_ms` block이 contract에 존재. window 계산이 admission 계산과 같은 rule을 따르게 했다: window가 `timeout` 하나분이라 `samples × timeout`을 담지 못했고, 뒤 샘플은 observation이 아니라 window artifact로 집계됐다. window = `timeout × samples`, deadline = `timeout × max(attempts, samples) + grace`. RED-first로 gate를 쓴 뒤 mutation probe(창을 `timeout` 하나로 되돌리기)에서 RED가 재현되는지 확인했다. control: samples 없는 대상은 `timeout` 하나로 유지.
-- [ ] #1 HTTP 단계별 시간 분해 — `httptrace`가 `TLSHandshakeDone`만 관측(`backend/diagnostic/http.go:24-26`), 결과에 단일 latency 필드. D-2 P1 상향 권고 유효.
+- [x] #1 HTTP 단계별 시간 분해 — observer가 DNS/connect/TLS/TTFB를 관측하고 `backend/diagnostic/http.go:175`이 block을 result에 기록한다. gate는 live HTTP run으로 block이 실제로 생산됨을 확인한다(`TestHTTPCheckerLivePathRecordsConnectAndTTFBPhases`): producer 기록을 지우면 RED로 실패함을 mutation probe로 재현했다. reused connection에서 connect phase가 없고 cached lookup에서 DNS phase가 없음도 별도 gate로 pin된다 — absence는 zero 값이 아니라 생략이다. 남은 것은 phase별 finding code 분리다(현재 단일 slow-server rule, `analysis.go:133`).
 - [ ] #2 해석된 IP별 연결 결과 — target 개수 validation만 있고 IP 단위 traversing rule 없음(`runner.go:256`). D-3과 겹침.
 - [ ] #4 이름 vs IP 교차 판정 — rule 없음.
 - [ ] #5 traceroute probe choice — external binary 경로(`RunTraceCommand`)만; non-root UID raw socket 권한 확인 선행 필요.
