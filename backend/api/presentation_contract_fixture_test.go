@@ -175,7 +175,13 @@ func presentationScenarioSources(t *testing.T) []diagnostic.PresentationScenario
 	for index, kind := range serviceKinds {
 		details := map[string]any{diagnostic.ResultDetailVerificationScope: diagnostic.VerificationScopeServerGreeting}
 		if kind == diagnostic.KindIMAPS || kind == diagnostic.KindPOP3S || kind == diagnostic.KindSMTPS {
+			// The checker writes the cipher suite for every TLS greeting and the
+			// subject whenever it verified a certificate, so a scenario that
+			// claims a verified certificate must carry both. A partial block here
+			// would describe a producer outcome that cannot happen.
 			details[diagnostic.ResultDetailTLSVersion] = "TLS 1.3"
+			details[diagnostic.ResultDetailCipherSuite] = "TLS_AES_128_GCM_SHA256"
+			details[diagnostic.ResultDetailCertificateSubject] = "CN=fixture-greeting"
 			details[diagnostic.ResultDetailCertificateExpires] = future
 		}
 		result := diagnostic.Result{Status: diagnostic.StatusHealthy, Details: details}

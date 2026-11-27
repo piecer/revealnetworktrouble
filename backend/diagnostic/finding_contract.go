@@ -207,6 +207,27 @@ func aggregateBlocks(kinds []Kind, status Status, code string) []ResultDetailCon
 	return details
 }
 
+// traceAggregateKeys are the attempt counters a traceroute observation can carry.
+// The same keys are what traceShape registers as required for a traceroute shape,
+// so the registry states the aggregate once instead of in two places.
+var traceAggregateKeys = []string{
+	"attempts",
+	"attempts_cancelled",
+	"attempts_execution_failed",
+	"attempts_failed",
+	"attempts_reached",
+	"attempts_timed_out",
+	"attempts_total",
+	"attempts_unreached",
+}
+
+func traceAggregateType(key string) string {
+	if key == "attempts" {
+		return DetailTypeTraceAttempts
+	}
+	return DetailTypeNonNegativeInteger
+}
+
 func ContainsKind(kinds []Kind, want Kind) bool {
 	for _, kind := range kinds {
 		if kind == want {
@@ -257,14 +278,12 @@ func tlsServiceDetails(certificate bool) []ResultDetailContract {
 }
 
 func traceShape(name string, status Status, code string, topologyAllowed bool) ResultShapeContract {
-	required := []ResultDetailContract{
-		{Key: "attempts_cancelled", Type: DetailTypeNonNegativeInteger},
-		{Key: "attempts_execution_failed", Type: DetailTypeNonNegativeInteger},
-		{Key: "attempts_failed", Type: DetailTypeNonNegativeInteger},
-		{Key: "attempts_reached", Type: DetailTypeNonNegativeInteger},
-		{Key: "attempts_timed_out", Type: DetailTypeNonNegativeInteger},
-		{Key: "attempts_total", Type: DetailTypeNonNegativeInteger},
-		{Key: "attempts_unreached", Type: DetailTypeNonNegativeInteger},
+	required := make([]ResultDetailContract, 0, len(traceAggregateKeys)-1)
+	for _, key := range traceAggregateKeys {
+		if key == "attempts" {
+			continue
+		}
+		required = append(required, ResultDetailContract{Key: key, Type: traceAggregateType(key)})
 	}
 	optional := []ResultDetailContract{
 		{Key: "attempts", Type: DetailTypeTraceAttempts},
