@@ -62,7 +62,7 @@ test: android-env-bootstrap-test ci-policy
 	$(MAKE) web-test
 
 test-integration:
-	CHECKNETWORK_RUN_COMPOSE_TESTS=1 go test -count=1 ./cmd/checknetwork-api -run '^TestComposeResolved|^TestRealComposeCLI'
+	CHECKNETWORK_RUN_INTEGRATION_TESTS=1 go test -count=1 ./cmd/checknetwork-api -run '^TestComposeResolved|^TestRealComposeCLI'
 
 frontend-deps:
 	npm --prefix frontend ci
@@ -86,7 +86,7 @@ web-test-cors-browser:
 	CHECKNETWORK_RUN_BROWSER_TESTS=1 go test ./backend/api -run '^TestCORSRetryAfterBrowser$$' -count=1 -v
 
 web-test-deployment:
-	CHECKNETWORK_RUN_COMPOSE_TESTS=1 node --test frontend/deployment.test.js
+	CHECKNETWORK_RUN_INTEGRATION_TESTS=1 node --test frontend/deployment.test.js
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_deployment_ownership.py -v
 
 web-test-deployment-live:
