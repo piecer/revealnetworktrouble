@@ -555,19 +555,66 @@ func TestComposeYAMLSubsetValidatorRejectsUnsupportedConstructs(t *testing.T) {
 // submatch or greediness, so leftmost-longest and Go's leftmost-first cannot
 // disagree. grep -E cross-checks the same pattern when it is present.
 func posixEREExists(pattern, candidate string) (bool, error) {
+	compiled, err := posixERETranslation(pattern)
+	if err != nil {
+		return false, err
+	}
+	return compiled.MatchString(candidate), nil
+}
+
+// posixERETranslation maps a POSIX ERE onto a Go regexp that means the same thing.
+// The construct where the two languages disagree about existence is a backslash
+// inside a bracket expression: POSIX makes it an ordinary member, Go reads it as an
+// escape and drops it from the set. Keeping the backslash as a member is what the
+// reference implementation does, so the translation writes it as a literal member
+// instead of silently checking a different set.
+func posixERETranslation(pattern string) (*regexp.Regexp, error) {
+	const members = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.^$|?*+()[]{}-"
+	var translated strings.Builder
+	inBracket := false
+	openedAt := -1
 	for i := 0; i < len(pattern); i++ {
-		if pattern[i] == '\\' {
-			if i+1 >= len(pattern) || strings.IndexByte(".+?^$()|[]{}*-", pattern[i+1]) < 0 {
-				return false, fmt.Errorf("unsupported ERE escape %q", pattern[i:i+2])
+		c := pattern[i]
+		if inBracket {
+			if c == ']' && i > openedAt+1 {
+				inBracket = false
+				translated.WriteByte(c)
+				continue
 			}
+			if c == '\\' {
+				translated.WriteString(`\\`)
+				continue
+			}
+			if strings.IndexByte(members, c) < 0 {
+				return nil, fmt.Errorf("unsupported ERE construct %q", pattern[i:i+1])
+			}
+			translated.WriteByte(c)
+			continue
+		}
+		if c == '[' {
+			inBracket = true
+			openedAt = i
+			translated.WriteByte(c)
+			continue
+		}
+		if c == '\\' {
+			if i+1 >= len(pattern) || strings.IndexByte(".+?^$()|[]{}*-", pattern[i+1]) < 0 {
+				return nil, fmt.Errorf("unsupported ERE escape %q", pattern[i:i+2])
+			}
+			translated.WriteString(pattern[i : i+2])
 			i++
 			continue
 		}
-		if strings.IndexByte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.^$|?*+()[]{}-", pattern[i]) < 0 {
-			return false, fmt.Errorf("unsupported ERE construct %q", pattern[i])
+		if strings.IndexByte(members, c) < 0 {
+			return nil, fmt.Errorf("unsupported ERE construct %q", pattern[i:i+1])
 		}
+		translated.WriteByte(c)
 	}
-	return regexp.MustCompile(pattern).MatchString(candidate), nil
+	compiled, err := regexp.Compile(translated.String())
+	if err != nil {
+		return nil, fmt.Errorf("translated ERE %q is not executable: %v", translated.String(), err)
+	}
+	return compiled, nil
 }
 
 // Canonical SemVer ERE acceptance corpus, shared by the pure-Go contract test and
@@ -579,17 +626,35 @@ var canonicalSemverInvalidCorpus = []string{
 	"1.0.0-alpha_beta",
 }
 
+// POSIX ERE treats every character inside a bracket expression as an ordinary
+// member, so [\.-] contains a literal backslash. Go reads "\." as an escape and
+// would mean a different set. The evaluator must keep the sets identical,
+// otherwise the pure-Go contract silently checks a pattern grep would not match.
+func TestBracketExpressionsKeepBackslashAsLiteralMember(t *testing.T) {
+	const bracketERE = `^1\.0\.0[\.-]7$`
+	for _, candidate := range []string{"1.0.0\\7", "1.0.0.7", "1.0.0-7"} {
+		accepted, err := posixEREExists(bracketERE, candidate)
+		if err != nil {
+			t.Fatalf("bracket expression %q rejected: %v", bracketERE, err)
+		}
+		if !accepted {
+			t.Fatalf("candidate %q must match %q: a backslash inside a bracket expression is a POSIX member, not an escape", candidate, bracketERE)
+		}
+	}
+	accepted, err := posixEREExists(bracketERE, "1.0.0x7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted {
+		t.Fatalf("a member set must not accept characters outside it")
+	}
+}
+
 // TestCanonicalERECrossChecksPOSIXGrepWhenPresent keeps the pure-Go evaluation honest
 // against the reference POSIX implementation. Absent grep skips only this
 // cross-check; the enforced contract already ran in pure Go.
 func TestCanonicalERECrossChecksPOSIXGrepWhenPresent(t *testing.T) {
-	grepPath, err := exec.LookPath("grep")
-	if err != nil {
-		if composeGateRequested() {
-			t.Fatalf("grep is required to cross-check the canonical SemVer ERE; install coreutils or drop the gate flag")
-		}
-		t.Skipf("grep absent, cross-check skipped: %v", err)
-	}
+	grepPath := declaredToolPath(t, "grep")
 	grepAccepts := func(candidate string) bool {
 		t.Helper()
 		command := exec.Command(grepPath, "-Eq", canonicalSemverERE)
@@ -620,6 +685,29 @@ func TestCanonicalERECrossChecksPOSIXGrepWhenPresent(t *testing.T) {
 		}
 		if accepted || grepAccepts(candidate) {
 			t.Fatalf("pure-Go and POSIX grep disagree on invalid corpus member %q: pure=%v grep=%v", candidate, accepted, grepAccepts(candidate))
+		}
+	}
+
+	// The bracket expression is the one construct where the two languages can
+	// diverge, so the agreement must be checked on it as well as on the corpus.
+	const bracketERE = `^1\.0\.0[\.-]7$`
+	for _, candidate := range []string{"1.0.0\\7", "1.0.0.7", "1.0.0-7", "1.0.0x7"} {
+		accepted, err := posixEREExists(bracketERE, candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(grepPath, "-Eq", bracketERE)
+		command.Stdin = strings.NewReader(candidate + "\n")
+		runErr := command.Run()
+		grepHit := runErr == nil
+		if runErr != nil {
+			exitErr, ok := runErr.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 1 {
+				t.Fatalf("POSIX grep failed on bracket candidate %q: %v", candidate, runErr)
+			}
+		}
+		if accepted != grepHit {
+			t.Fatalf("pure-Go and POSIX grep disagree on bracket member %q: pure=%v grep=%v", candidate, accepted, grepHit)
 		}
 	}
 }
