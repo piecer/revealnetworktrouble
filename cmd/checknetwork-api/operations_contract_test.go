@@ -139,32 +139,30 @@ func TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites(t *testing.T)
 			t.Errorf("%s declares %v, want the contract prerequisite set %v", script, declared, expected)
 			continue
 		}
-		if !strings.Contains(body, "command -v \"$tool\"") {
-			t.Errorf("%s must check each declared prerequisite with command -v", script)
-			continue
-		}
 
-		// Missing declared tool: actionable named error, before any tool is executed.
-		missingGit := t.TempDir()
-		for _, tool := range declared {
-			if tool == "git" {
+		// Behavior pin, not a text pin: the contract is that an omitted prerequisite
+		// stops the script with an actionable error naming it. Searching the script for
+		// `command -v "$tool"` would only prove the string is present, so every omitted
+		// declared tool is exercised through the fixture instead.
+		for _, omitted := range []string{"git", "awk"} {
+			isolated := t.TempDir()
+			for _, tool := range declared {
+				if tool == omitted {
+					continue
+				}
+				source := declaredToolPath(t, tool)
+				if err := os.Symlink(source, filepath.Join(isolated, tool)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			output, err := runDeclaredToolEnv(t, script, isolated)
+			if err == nil {
+				t.Errorf("%s passed without %s; the prerequisite was not checked\n%s", script, omitted, output)
 				continue
 			}
-			source, err := exec.LookPath(tool)
-			if err != nil {
-				t.Fatalf("%s requires %s (declared prerequisite); install coreutils/git before running this contract", script, tool)
+			if !strings.Contains(string(output), "requires "+omitted) {
+				t.Errorf("%s must report an actionable prerequisite error naming %s, got:\n%s", script, omitted, output)
 			}
-			if err := os.Symlink(source, filepath.Join(missingGit, tool)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		output, err := runDeclaredToolEnv(t, script, missingGit)
-		if err == nil {
-			t.Errorf("%s passed without git; the prerequisite was not checked\n%s", script, output)
-			continue
-		}
-		if !strings.Contains(string(output), "requires git") {
-			t.Errorf("%s must report an actionable prerequisite error naming git, got:\n%s", script, output)
 		}
 	}
 
@@ -174,10 +172,7 @@ func TestCleanArchiveContractDeclaresAndChecksItsToolPrerequisites(t *testing.T)
 	sort.Strings(declared)
 	declaredPath := t.TempDir()
 	for _, tool := range declared {
-		source, err := exec.LookPath(tool)
-		if err != nil {
-			t.Fatalf("the clean archive contract requires %s (declared prerequisite); install coreutils/git before running it", tool)
-		}
+		source := declaredToolPath(t, tool)
 		if err := os.Symlink(source, filepath.Join(declaredPath, tool)); err != nil {
 			t.Fatal(err)
 		}

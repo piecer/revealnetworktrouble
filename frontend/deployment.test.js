@@ -153,7 +153,7 @@ test('stable nginx URLs ignore both validators and forbid storage', async () => 
 });
 
 const composeAvailable = spawnSync('docker', ['compose', 'version'], { encoding: 'utf8', timeout: 10000 }).status === 0;
-const composeSkip = !composeAvailable && process.env.CHECKNETWORK_RUN_COMPOSE_TESTS !== '1';
+const composeSkip = !composeAvailable && process.env.CHECKNETWORK_RUN_INTEGRATION_TESTS !== '1';
 test('single-port default publishes one loopback port and serves the workspace from the API listener', {
   skip: composeSkip
 }, async () => {
